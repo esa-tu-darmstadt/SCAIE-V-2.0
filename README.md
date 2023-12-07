@@ -92,6 +92,15 @@ shim.Generate("VexRiscv_5s"); // generates all the code
 ```
 The files of the 5 stage VexRiscv core will be modified so that it supports the new interface. (to set the core, use: "VexRiscv_5s", "VexRiscv_4s", "PicoRV32", "ORCA")
 
+## How can I try it out fast? 
+
+There is a DEMO that you can run. It contains an ISAX module which requires multiple SCAIE-V interfaces and simply generates some patterns. These patterns are then checked within a simple testbench. In our evaluation flow we used multiple real ISAXes and evaluated them using cocotb. In this DEMO the ISAX module is just there to show how to use the SCAIE-V tool. For this: 
+- run the DemoTest_VexRiscv5.java class. This will update the VexRiscv source files and generate CommonLogicModule (SCAL) 
+- generate verilog from the VexRiscv files 
+- use the wrapper in the DemoFiles folder (testbench.v)
+- simulate the testbench module.  
+
+The DemoFiles folder also contains already generated VexRiscv verilog code and CommonLogicModule.sv as reference. 
 
 ## A more detailed specification of the SCAIE-V Interface 
 If you want to design your own ISAX, you need to comply to the SCAIE-V Specification. In the following are defined its main characteristics. 
@@ -179,6 +188,7 @@ The WrMyreg interface must provide the address in the earliest stage in which a 
 
 
 ## What do I have to consider when extending SCAIE-V for new cores? 
+Here are some examples that must be considered when adding SCAIE-V to a core: 
 - Generate SCAIE-V IOs
 - make sure no illegal instruction is generated when an ISAX is in the pipeline
 - make sure no result is commited when user valid bit is not set & ensure that core's data hazard mechanism does not take the result if valid = 0
@@ -201,9 +211,6 @@ docker run -it -t   -v $(pwd):/src   -w /src    hdlc/ghdl:yosys   yosys -m ghdl 
 
 ## What is the current status of the project? 
 The project is quite new and we are constantly working on improving it & testing it with different configurations. We already evaluated multiple configurations through automatic testing (cocotb). 
-
-## This ReadMe does not help me much. Where can I find more information? 
-This is the first version of the ReadMe file. In the following weeks we will upload a more detailed version. 
 
 ## How can I cite this work? 
 You can cite the following paper, which used the first SCAIE-V version of the tool:
