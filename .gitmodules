@@ -1,0 +1,12 @@
+[submodule "EclipseWork/SCAIEV/CoresSrc/Piccolo"]
+	path = EclipseWork/SCAIEV/CoresSrc/Piccolo
+	url = https://github.com/bluespec/Piccolo.git
+[submodule "EclipseWork/SCAIEV/CoresSrc/VexRiscv"]
+	path = EclipseWork/SCAIEV/CoresSrc/VexRiscv
+	url = https://github.com/SpinalHDL/VexRiscv.git
+[submodule "EclipseWork/SCAIEV/CoresSrc/picorv32"]
+	path = EclipseWork/SCAIEV/CoresSrc/picorv32
+	url = https://github.com/YosysHQ/picorv32.git
+[submodule "EclipseWork/SCAIEV/CoresSrc/orca"]
+	path = EclipseWork/SCAIEV/CoresSrc/orca
+	url = https://github.com/cahz/orca.git
