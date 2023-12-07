@@ -7,7 +7,6 @@ import scaiev.frontend.FNode;
 import scaiev.frontend.FrontendNodeException;
 import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
-import scaiev.test.DemoTest.TestScenario;
 
 public class DemoTest_VexRiscv5 {
 
