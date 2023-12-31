@@ -9,6 +9,7 @@ public class SCAIEVNode {
 		validResp("_validResp"),        // ! considered to return valid response from core to ISAX
 		addr("_addr"),
 		addrReq("_addr_valid"),
+		rdAddr("_rdAddr"),
 		addrCommited("_addrCommited"),
 		isWrite("_write");				// for memory transctions for example, to make sure it is a write mem transaction
 		public final String suffix;

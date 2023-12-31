@@ -339,8 +339,9 @@ public class VexRiscv extends CoreBackend{
 						if(spawnValid && !operation.nameQousinNode.isEmpty() && this.op_stage_instr.containsKey(BNode.GetSCAIEVNode(operation.nameQousinNode)) && operation.isInput)
 							continue;
 						SCAIEVNode adjOperation = BNode.GetAdjSCAIEVNode(operation,adjacent);
-						if(adjOperation != BNode.WrRD_validData)
-							interfaces += language.CreateInterface(adjOperation,stageNr, "");	
+						if(adjOperation != BNode.WrRD_validData) {
+							interfaces += language.CreateInterface(adjOperation,stageNr, "");
+						}
 					}
 				}
 			 }

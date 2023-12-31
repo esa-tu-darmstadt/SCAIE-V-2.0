@@ -28,7 +28,7 @@ public static void main(String[] args) {
 		SCAIEVInstr isax3  = shim.addInstr("ISAX3","-------", "010", "0001011", "R");
 		HashSet<AdjacentNode> valid_addr = new HashSet<AdjacentNode>();
 		valid_addr.add(AdjacentNode.validReq);
-		valid_addr.add(AdjacentNode.addr);	
+		//valid_addr.add(AdjacentNode.addr);	
 		isax3.PutSchedNode(FNode.WrMem, 2, valid_addr); // memory write
 		isax3.PutSchedNode(FNode.RdInstr, 2);
 		isax3.PutSchedNode(FNode.RdIValid, 2);

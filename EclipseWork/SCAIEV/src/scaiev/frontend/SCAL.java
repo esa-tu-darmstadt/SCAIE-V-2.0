@@ -607,6 +607,7 @@ public class SCAL implements SCALBackendAPI {
     	System.out.println("Info. SCAL. spawn_instr_stage = "+spawn_instr_stage);
     	System.out.println("Info. SCAL. op_ins = "+this.op_stage_instr);
     	for(SCAIEVNode node : spawn_instr_stage.keySet() ) {
+    		
     		if(node.DH || node.name.contains("Mem")) { // for internal regs with DH, RegF or mem transfers
     		 String fireNodeSuffix = "";
 	    	 if(!node.nameQousinNode.isEmpty() && priority.containsKey(node.nameQousinNode)) {
@@ -724,11 +725,29 @@ public class SCAL implements SCALBackendAPI {
 	    		 SCAIEVNode addrNode = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetAddr());
 
 		         // FIFO Module: Required to store addr in a FIFO? 
-	    		 if(SETTINGWithAddr && this.ISAXes.get(ISAX).GetRunsAsDecoupled() &&  BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetAddr())!= null) { // make addr fifo available also without scoreboard, but NOT for stall mechanism, for which addr is in pipeline instr reg already
-	    			 String addrSig = myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), startSpawnStage, "")+"[11:7],\n"; // write data
+	    		 // Yes if: 1) wrrd and SETTINGWithAddr set = node with Addr sig to core but not to ISAX and SCAL uses FIFO addr 
+	    		 //         2) mem without optional addr sig, and SETTINGWithAddr set = no cutsom addr from user, addr comes from core and FIFO addr enabled
+	    		 boolean FIFOAddrRequired = false; 
+	    		 if(this.ISAXes.get(ISAX).GetRunsAsDecoupled() &&  addrNode!= null) {
+	    			 // Case 1: 
+	    			 if(addrNode.noInterfToISAX && SETTINGWithAddr)
+	    				 FIFOAddrRequired = true; 
+	    			 if(node.name.contains("Mem"))
+	    			 if(!ISAXes.get(ISAX).GetSchedWith(node, _snode -> _snode.GetStartCycle() >= node.commitStage).HasAdjSig(AdjacentNode.addr))
+	    				 if(SETTINGWithAddr)
+	    					 FIFOAddrRequired = true; 
+	    				 else 
+	    					 System.out.println("CRITICAL WARNING. SCAL. Spawn Detected, FIFO Addr not enabled within SCAL, and user does not provide custom addr. Functionality issue");
+	    			 
+	    		 } 
+	    		 if(FIFOAddrRequired) { // make addr fifo available also without scoreboard, but NOT for stall mechanism, for which addr is in pipeline instr reg already
+	    			 String addrSig = myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), startSpawnStage, "")+"[11:7],\n"; // WrRD address
 	    			 if(BNode.IsUserBNode(node))
 	    				 addrSig =  myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node,AdjacentNode.addr), startSpawnStage, "")+",\n";
-	    			 logic += "\n"+this.FIFOmoduleName + " #( "+(ISAXes.get(ISAX).GetFirstNode(node).GetStartCycle()-startSpawnStage)+", "+dataW +" ) "+this.FIFOmoduleName+"_"+node+"_"+ISAX+"_"+spawnStage+"_inst (\n"
+	    			 else if(!addrNode.noInterfToISAX) // if this node has in theory interf to ISAX, we need default value from core (as for Mem)
+	    				 addrSig =  myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node,AdjacentNode.rdAddr).NodeNegInput(), startSpawnStage, "")+",\n";
+	    			 
+	    			 logic += "\n"+this.FIFOmoduleName + " #( "+(ISAXes.get(ISAX).GetFirstNode(node).GetStartCycle()-startSpawnStage)+", "+dataW +" ) "+this.FIFOmoduleName+"_ADDR_"+node+"_"+ISAX+"_"+spawnStage+"_inst (\n"
 	    		 		+ myLanguage.tab+myLanguage.clk+",\n"
 	    		 		+ myLanguage.tab+myLanguage.reset+",\n"
 	    		 		+ myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage, ISAX)
@@ -736,11 +755,15 @@ public class SCAL implements SCALBackendAPI {
 	    		 		+ myLanguage.tab+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+",\n"            // read fifo
 	    		 		+ myLanguage.tab+addrSig // write data
 	    		 		+ "dummy"+ISAX+","
-	    		 		+ myLanguage.tab+myLanguage.CreateNodeName(addrNode,  spawnStage, ISAX)+"\n" // read data          
+	    		 		+ myLanguage.tab+myLanguage.CreateFamNodeName(addrNode,  spawnStage, ISAX,false)+"\n" // read data . No family node name (for Mem we need full name as on interf to ISAX)         
 	    		 		+ ");\n";
-	    			 declarations += "wire ["+addrNode.size+"-1:0] "+ myLanguage.CreateNodeName(addrNode,  spawnStage, ISAX)+";\n";
+	    			 declarations += "wire ["+addrNode.size+"-1:0] "+ myLanguage.CreateFamNodeName(addrNode,  spawnStage, ISAX,false)+";\n";
 	    			 declarations += "wire dummy"+ISAX+";\n";
 	    		 }
+	    		 
+	    	//	 Scheduled oldSched = new Scheduled();
+				//	oldSched = GetCheckUniqueSchedWith(parentNode, snode -> snode.GetStartCycle()>=spawnStage);
+					
 	    		 
 	    		 // Shift Module: Required to store valid bit (trigger of valid response)?
 	    		 if(this.ISAXes.get(ISAX).GetRunsAsDecoupled()) { // For STALL mechanism this is done based on counter, NOT on shift reg valid bit
