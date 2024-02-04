@@ -229,7 +229,7 @@ public class SCAIEVInstr {
 			return false;
 	}
 
-	private Scheduled GetCheckUniqueSchedWith(SCAIEVNode node, Predicate<Scheduled> cond) throws FrontendNodeException {
+	public Scheduled GetCheckUniqueSchedWith(SCAIEVNode node, Predicate<Scheduled> cond) throws FrontendNodeException {
 		Iterator<Scheduled> iter = GetSchedWithIterator(node, cond);
 		if (!iter.hasNext())
 			return null;

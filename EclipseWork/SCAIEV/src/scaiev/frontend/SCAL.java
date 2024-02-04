@@ -741,11 +741,21 @@ public class SCAL implements SCALBackendAPI {
 	    			 
 	    		 } 
 	    		 if(FIFOAddrRequired) { // make addr fifo available also without scoreboard, but NOT for stall mechanism, for which addr is in pipeline instr reg already
-	    			 String addrSig = myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), startSpawnStage, "")+"[11:7],\n"; // WrRD address
-	    			 if(BNode.IsUserBNode(node))
-	    				 addrSig =  myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node,AdjacentNode.addr), startSpawnStage, "")+",\n";
-	    			 else if(!addrNode.noInterfToISAX) // if this node has in theory interf to ISAX, we need default value from core (as for Mem)
-	    				 addrSig =  myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node,AdjacentNode.rdAddr).NodeNegInput(), startSpawnStage, "")+",\n";
+	    			 String addrReadSig = myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), startSpawnStage, "")+"[11:7],\n"; // WrRD address
+	    			 if(BNode.IsUserBNode(node) && addrNode!=null)
+	    				 addrReadSig =  myLanguage.CreateNodeName(addrNode, startSpawnStage, "")+",\n";
+	    			 else if(!addrNode.noInterfToISAX) { // if this node has in theory interf to ISAX, we are in FIFOAddrRequired bc user does not provide addr; we need addr from core (as for Mem)
+	    				 addrReadSig =  myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node,AdjacentNode.rdAddr).NodeNegInput(), startSpawnStage, "")+",\n";
+	    				// We need to update maps so that core provides this info 
+	    				System.out.println(" node and isax are: "+node+ISAX);
+	    				Scheduled oldSched = new Scheduled();
+	    				oldSched = ISAXes.get(ISAX).GetSchedWith(node, snode -> snode.GetStartCycle()>=spawnStage);
+	    				oldSched.AddAdjSig(AdjacentNode.rdAddr);
+	    				newInterfaceToCore.add(this.CreateAndRegisterTextInterfaceForCore(BNode.GetAdjSCAIEVNode(node,AdjacentNode.rdAddr).NodeNegInput(), startSpawnStage, "", ""));
+	    				System.out.println(" node and isax are: "+node+ISAX+" addr?"+ISAXes.get(ISAX).GetSchedWith(node, _snode -> _snode.GetStartCycle() >= node.commitStage).HasAdjSig(AdjacentNode.rdAddr));
+	    				
+	    				
+	    			 }
 	    			 
 	    			 logic += "\n"+this.FIFOmoduleName + " #( "+(ISAXes.get(ISAX).GetFirstNode(node).GetStartCycle()-startSpawnStage)+", "+dataW +" ) "+this.FIFOmoduleName+"_ADDR_"+node+"_"+ISAX+"_"+spawnStage+"_inst (\n"
 	    		 		+ myLanguage.tab+myLanguage.clk+",\n"
@@ -753,7 +763,7 @@ public class SCAL implements SCALBackendAPI {
 	    		 		+ myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage, ISAX)
 	    		 		  +" && ! "+myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), this.core.GetStartSpawnStage(), "")+",\n // no need for wrStall, it.s included in RdStall\n" // write fifo
 	    		 		+ myLanguage.tab+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+",\n"            // read fifo
-	    		 		+ myLanguage.tab+addrSig // write data
+	    		 		+ myLanguage.tab+addrReadSig // write data
 	    		 		+ "dummy"+ISAX+","
 	    		 		+ myLanguage.tab+myLanguage.CreateFamNodeName(addrNode,  spawnStage, ISAX,false)+"\n" // read data . No family node name (for Mem we need full name as on interf to ISAX)         
 	    		 		+ ");\n";
@@ -929,13 +939,13 @@ public class SCAL implements SCALBackendAPI {
 						boolean existingInstancesArePerIsax = this.ContainsOpInStage(operation, stage) && overrideIsaxes != null
 								&& this.op_stage_instr.get(operation).get(stage).stream().allMatch((String instr)->overrideIsaxes.contains(instr));
 						boolean doAddInterf = !this.ContainsOpInStage(operation, stage) || existingInstancesArePerIsax;
-						if (doAddInterf)
-							AddIn_op_stage_instr(operation,stage, SCAIEVInstr.noEncodingInstr+operation+stage);
+						if (doAddInterf) {
+							AddIn_op_stage_instr(operation,stage, SCAIEVInstr.noEncodingInstr+operation+stage); // Update the op_stage_instrhashmap
+							newInterfaceToCore.add(this.CreateAndRegisterTextInterfaceForCore(operation.NodeNegInput(), stage, "", ""));
+						}
 						SCAIEVInstr dummy = new SCAIEVInstr(SCAIEVInstr.noEncodingInstr+operation+stage);
 						dummy.PutSchedNode(operation, stage);
 						ISAXes.put(SCAIEVInstr.noEncodingInstr+operation+stage, dummy);
-						if (doAddInterf)
-							newInterfaceToCore.add(this.CreateAndRegisterTextInterfaceForCore(operation.NodeNegInput(), stage, "", ""));
 					}
 				}
 			} 
