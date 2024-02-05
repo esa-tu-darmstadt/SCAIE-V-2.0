@@ -43,7 +43,7 @@ public class BNode extends FNode{
 	public static SCAIEVNode RdMem_spawn_validReq  = new SCAIEVNode(RdMem_spawn	 , AdjacentNode.validReq	, 1, true, true); 
 	public static SCAIEVNode RdMem_spawn_validResp = new SCAIEVNode(RdMem_spawn	 , AdjacentNode.validResp	, 1, false, true) {{oneInterfToISAX = false;}};
 	public static SCAIEVNode RdMem_spawn_addr      = new SCAIEVNode(RdMem_spawn  , AdjacentNode.addr		, 32, true, true);
-	public static SCAIEVNode RdMem_spawn_rdAddr    = new SCAIEVNode(RdMem_spawn  , AdjacentNode.rdAddr		, 32, false, true);// {{noInterfToISAX = true; mustToCore = true;}};
+	public static SCAIEVNode RdMem_spawn_rdAddr    = new SCAIEVNode(RdMem_spawn  , AdjacentNode.rdAddr		, 32, false, true) {{noInterfToISAX = true; mustToCore = true;}};
 	public static SCAIEVNode RdMem_spawn_write     = new SCAIEVNode(RdMem_spawn  , AdjacentNode.isWrite     , 1, true, true) {{noInterfToISAX = true; mustToCore = true;}};
 	public static SCAIEVNode RdMem_spawn_allowed   = new SCAIEVNode(RdMem_spawn  , AdjacentNode.spawnAllowed, 1, false, true);
 	
@@ -51,7 +51,7 @@ public class BNode extends FNode{
 	public static SCAIEVNode WrMem_spawn_validReq  = new SCAIEVNode(WrMem_spawn  , AdjacentNode.validReq	, 1, true, true); 
 	public static SCAIEVNode WrMem_spawn_addr      = new SCAIEVNode(WrMem_spawn  , AdjacentNode.addr		, 32, true, true);
 	public static SCAIEVNode WrMem_spawn_rdAddr    = new SCAIEVNode(WrMem_spawn  , AdjacentNode.rdAddr		, 32, false, true);// {{noInterfToISAX = true; mustToCore = true;}};
-	public static SCAIEVNode WrMem_spawn_validResp = new SCAIEVNode(WrMem_spawn  , AdjacentNode.validResp	, 1, false, true) {{oneInterfToISAX = false;}};
+	public static SCAIEVNode WrMem_spawn_validResp = new SCAIEVNode(WrMem_spawn  , AdjacentNode.validResp	, 1, false, true) {{oneInterfToISAX = false;  mustToCore = true;}};
 	public static SCAIEVNode WrMem_spawn_write     = new SCAIEVNode(WrMem_spawn  , AdjacentNode.isWrite     , 1, true, true) {{noInterfToISAX = true; mustToCore = true;}};
 	public static SCAIEVNode WrMem_spawn_allowed   = new SCAIEVNode(WrMem_spawn  , AdjacentNode.spawnAllowed, 1, false, true);
 	

@@ -99,8 +99,10 @@ public class SCAIEVInstr {
 				} else if(node.isInput | (node==BNode.RdMem_spawn) ){ // spawn for reading state not supported for the moment. Just for write nodes. Or spawn as instr without decoding,which is actually mapped on read stage
 					// Memory spawn should have interf to core by default. It won't have to ISAX, as it's defined like this within BNode prop
 					for(SCAIEVNode adjNode : userBNode.GetAdjSCAIEVNodes(node))
-						if(adjNode.mustToCore)
+						if(adjNode.mustToCore) {
 							oldSched.AddAdjSig(adjNode.getAdj());
+						    System.out.println("INFO SCAIEVInstr. Adj Signal "+adjNode+ " added for node "+node);
+						}
 					// We must distinguish : a) SCAL must implement spawn as decoupled b) SCAL must implement spawn with stall
 					if(!decoupled) {
 						if(node.name.contains("Mem")) System.out.println("CRITICAL WARNING Stall not yet supported for memory. please select is_decoupled parameter");
