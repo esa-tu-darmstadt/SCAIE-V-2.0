@@ -159,7 +159,10 @@ public class VexRiscv extends CoreBackend{
 		String setupText  = "" ; 
 		int tabs = toFile.nrTabs;
 		String tab = toFile.tab;
-		boolean defaultMemAddr = (isax.HasNode(BNode.RdMem) && !isax.GetFirstNode(BNode.RdMem).HasAdjSig(AdjacentNode.addr)  ) ||  (isax.HasNode(BNode.WrMem) && !isax.GetFirstNode(BNode.WrMem).HasAdjSig(AdjacentNode.addr)  ) ;
+		boolean defaultMemAddr = (isax.HasNode(BNode.RdMem) && !isax.GetFirstNode(BNode.RdMem).HasAdjSig(AdjacentNode.addr)  ) ||  
+				                 (isax.HasNode(BNode.WrMem) && !isax.GetFirstNode(BNode.WrMem).HasAdjSig(AdjacentNode.addr)  ) || 
+				                 (isax.HasNode(BNode.RdMem_spawn) && !isax.GetFirstNode(BNode.RdMem_spawn).HasAdjSig(AdjacentNode.addr)  ) ||  
+				                 (isax.HasNode(BNode.WrMem_spawn) && !isax.GetFirstNode(BNode.WrMem_spawn).HasAdjSig(AdjacentNode.addr)  ) ;
 		setupText += tab.repeat(tabs)+"decoderService.add(\n";
 		
 		tabs++; 
@@ -627,6 +630,12 @@ public class VexRiscv extends CoreBackend{
                     + rdState
 			 		+ "            }\n"
 			 		+ "";
+			 
+			 
+			 // Add rdAddr needed if user does not implement it. Will be removed by synth tool if user implements it, because it won't be used within SCAL anyway 
+			 if(op_stage_instr.containsKey(BNode.WrMem_spawn) || op_stage_instr.containsKey(BNode.RdMem_spawn)) {
+				 logicText += language.CreateFamNodeName(BNode.GetAdjSCAIEVNode(BNode.WrMem_spawn, AdjacentNode.rdAddr), spawnStage, "",true)  + " := execute.input(SRC_ADD).asUInt ; \n ";
+			 }
 			 toFile.UpdateContent(filePlugin,logicText);
 			}
 		 
@@ -903,6 +912,8 @@ public class VexRiscv extends CoreBackend{
 	 	this.PutNode("Bool", stages.get(stageMem) +"", stages.get(stageMem), BNode.WrMem_spawn_validResp,spawnStage);
 	 	this.PutNode("UInt", stages.get(stageMem) +"", stages.get(stageMem), BNode.RdMem_spawn_addr,spawnStage);
 	 	this.PutNode("UInt", stages.get(stageMem) +"", stages.get(stageMem), BNode.WrMem_spawn_addr,spawnStage);
+	 	this.PutNode("UInt", stages.get(stageMem) +"", stages.get(stageMem), BNode.RdMem_spawn_rdAddr,spawnStage);
+	 	this.PutNode("UInt", stages.get(stageMem) +"", stages.get(stageMem), BNode.WrMem_spawn_rdAddr,spawnStage);
 	 	this.PutNode("Bool", stages.get(stageMem) +"", stages.get(stageMem), BNode.WrMem_spawn_write,spawnStage);
 	 	this.PutNode("Bool", stages.get(stageMem) +"", stages.get(stageMem), BNode.RdMem_spawn_write,spawnStage);
 	 	

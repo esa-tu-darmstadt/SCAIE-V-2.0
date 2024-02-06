@@ -20,21 +20,21 @@ public static void main(String[] args) {
 		isax1.PutSchedNode(FNode.WrRD, 2); 
 
 		SCAIEVInstr isax2  = shim.addInstr("ISAX2","-------", "011", "0001011", "R");
-		isax2.PutSchedNode(FNode.RdRS1, 3); 
-		isax2.PutSchedNode(FNode.RdRS2, 3);
-		isax2.PutSchedNode(FNode.RdIValid, 3);
+		isax2.PutSchedNode(FNode.RdRS1, 2); 
+		isax2.PutSchedNode(FNode.RdRS2, 2);
+		isax2.PutSchedNode(FNode.RdIValid, 2);
 		isax2.PutSchedNode(FNode.WrRD, 3, AdjacentNode.validReq); // Wr Register file
 		
 		SCAIEVInstr isax3  = shim.addInstr("ISAX3","-------", "010", "0001011", "R");
 		HashSet<AdjacentNode> valid_addr = new HashSet<AdjacentNode>();
 		valid_addr.add(AdjacentNode.validReq);
 		//valid_addr.add(AdjacentNode.addr);	
-		isax3.PutSchedNode(FNode.WrMem, 2, valid_addr); // memory write
+		isax3.PutSchedNode(FNode.WrMem, 0, valid_addr); // memory write
 		isax3.PutSchedNode(FNode.RdInstr, 2);
 		isax3.PutSchedNode(FNode.RdIValid, 2);
 		
 		SCAIEVInstr isax4  = shim.addInstr("ISAX4","-------", "010", "1111011", "R");
-		isax4.PutSchedNode(FNode.RdMem, 2); 
+		isax4.PutSchedNode(FNode.RdMem, 0); 
 		
 		SCAIEVInstr isax5  = shim.addInstr("ISAX5","-------", "101", "0001011", "R");
 		valid_addr.add(AdjacentNode.validResp); // add also valid resp for spawn
@@ -49,8 +49,8 @@ public static void main(String[] args) {
 		isax6.SetAsDecoupled(true);
 		
 		SCAIEVInstr isax7  = shim.addInstr("ISAX7","-------", "111", "0101011", "R");
-		isax7.PutSchedNode(FNode.WrStall, 3); 
-		isax7.PutSchedNode(FNode.RdStall, 3); 
+		isax7.PutSchedNode(FNode.WrStall, 2); 
+		isax7.PutSchedNode(FNode.RdStall, 2); 
 		isax7.PutSchedNode(FNode.WrPC, 2, AdjacentNode.validReq);
 		isax7.PutSchedNode(FNode.RdPC, 1);
 		
@@ -62,7 +62,8 @@ public static void main(String[] args) {
 		// Generate SCAIE-V for a 5 stage Virtual Core
 		try {
 			//shim.Generate("RandomCore");
-			shim.Generate("VexRiscv_5s", null);
+		//	shim.Generate("VexRiscv_5s", null);
+			shim.Generate("Piccolo", null);
 		} catch (FrontendNodeException e) {
 			e.printStackTrace();
 		}
