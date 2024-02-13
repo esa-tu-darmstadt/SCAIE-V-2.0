@@ -20,7 +20,7 @@ public class BNode extends FNode{
 	
 	public static SCAIEVNode WrRD_valid        = new SCAIEVNode(FNode.WrRD   	, AdjacentNode.validReq	, 1 , true, false); 
 	public static SCAIEVNode WrRD_validData    = new SCAIEVNode(FNode.WrRD   	, AdjacentNode.validData, 1 , true, false) {{noInterfToISAX = true; DH = true;}}; 
-	//public static SCAIEVNode WrRD_addr         = new SCAIEVNode(FNode.WrRD		, AdjacentNode.addr		, 5 , true, false);
+	public static SCAIEVNode WrRD_addr         = new SCAIEVNode(FNode.WrRD		, AdjacentNode.addr		, 5 , true, false); // JUST for dynamic decoupled wrrd
 	public static SCAIEVNode WrRD_addr_valid   = new SCAIEVNode(BNode.WrRD	, AdjacentNode.addrReq	, 5 , true, false);
 	public static SCAIEVNode RdMem_validReq    = new SCAIEVNode(FNode.RdMem		, AdjacentNode.validReq	, 1 , true, false); 
 	public static SCAIEVNode WrMem_validReq    = new SCAIEVNode(FNode.WrMem		, AdjacentNode.validReq	, 1 , true, false); 

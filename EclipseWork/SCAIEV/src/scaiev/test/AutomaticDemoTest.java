@@ -108,6 +108,7 @@ public class AutomaticDemoTest {
 							ArrayList<Integer> additionalStages = new ArrayList<Integer>();
 						    boolean addEarliest = false;
 						    boolean decoupled = false;
+						    boolean dynamic_decoupled = false;
 						    HashSet<AdjacentNode> adjSignals = new HashSet<AdjacentNode> () ;
 							for(Object nodeSetting: readNode.keySet()) {								
 								if(nodeSetting.toString().equals("interface")) {
@@ -157,6 +158,13 @@ public class AutomaticDemoTest {
 									adjSignals.add(AdjacentNode.addr);
 								if(nodeSetting.toString().equals("is decoupled"))
 									decoupled = true;
+								if(nodeSetting.toString().equals("is dynamic decoupled")) {
+									dynamic_decoupled = true;
+									decoupled = true;
+									nodeStage = 10000;
+									adjSignals.add(AdjacentNode.validReq);
+									adjSignals.add(AdjacentNode.addr); // is a must for dynamic decoupled, to be able to associate them in case of wrrd
+								}
 							}
 							if(!addEarliest) {
 								if(FNode.IsUserFNode(FNode.GetSCAIEVNode(nodeName)) && (FNode.GetSCAIEVNode(nodeName).elements>1))  {

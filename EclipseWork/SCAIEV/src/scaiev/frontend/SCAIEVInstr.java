@@ -25,6 +25,7 @@ public class SCAIEVInstr {
 	private String instr_name;
 	private String instr_type;
 	private boolean decoupled = false;
+	private boolean dynamic_decoupled = true;
 	private HashMap<SCAIEVNode, List<Scheduled>> node_scheduled = new HashMap<SCAIEVNode, List<Scheduled>>();
 
 	public boolean ignoreEncoding = false; 
@@ -344,6 +345,9 @@ public class SCAIEVInstr {
 		return decoupled;
 	}
 	
+	public boolean GetRunsAsDynamicDecoupled () {
+		return dynamic_decoupled;
+	}
 	
 	public HashMap<SCAIEVNode, List<Scheduled>> GetSchedNodes(){
 		return node_scheduled;

@@ -730,7 +730,7 @@ public class SCAL implements SCALBackendAPI {
 	    		 boolean FIFOAddrRequired = false; 
 	    		 if(this.ISAXes.get(ISAX).GetRunsAsDecoupled() &&  addrNode!= null) {
 	    			 // Case 1: 
-	    			 if(addrNode.noInterfToISAX && SETTINGWithAddr)
+	    			 if(addrNode.noInterfToISAX && !this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled() && SETTINGWithAddr)
 	    				 FIFOAddrRequired = true; 
 	    			 if(node.name.contains("Mem"))
 	    			 if(!ISAXes.get(ISAX).GetSchedWith(node, _snode -> _snode.GetStartCycle() >= node.commitStage).HasAdjSig(AdjacentNode.addr))
@@ -767,10 +767,10 @@ public class SCAL implements SCALBackendAPI {
 					
 	    		 
 	    		 // Shift Module: Required to store valid bit (trigger of valid response)?
-	    		 if(this.ISAXes.get(ISAX).GetRunsAsDecoupled()) { // For STALL mechanism this is done based on counter, NOT on shift reg valid bit
+	    		 if(this.ISAXes.get(ISAX).GetRunsAsDecoupled() || this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled()) { // For STALL mechanism this is done based on counter, NOT on shift reg valid bit
 		    		 dataW = BNode.GetAdjSCAIEVNode(node, AdjacentNode.validReq).size;
 		    		 declarations +=  "wire "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+this.ShiftmoduleSuffix+";\n";
-		    		 if(SETTINGWithValid ){ // Make shift reg available also without scoreboard, before was:  && DecoupledStrategy.withDH == this.SETTINGdecStrategy/* && !isax_registered_valid*/) {	    				
+		    		 if(SETTINGWithValid && !this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled()){ // Make shift reg available also without scoreboard; for dynamic decoupled, latency unknown, so valid comes from user	    				
 		    			 logic +=  this.ShiftmoduleName + " #( "+(ISAXes.get(ISAX).GetFirstNode(node).GetStartCycle()-startSpawnStage)+", "+dataW +" ) "+this.ShiftmoduleName+"_"+node+"_"+ISAX+"_"+spawnStage+"_inst (\n"
 			   			 		+ myLanguage.tab+myLanguage.clk+",\n"
 			   			 		+ myLanguage.tab+myLanguage.reset+",\n"
@@ -780,10 +780,10 @@ public class SCAL implements SCALBackendAPI {
 			   			 		+ myLanguage.tab+stallShiftReg+",\n"
 			   			 		+ myLanguage.tab+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+"\n" // read data          
 			   			 		+ ");\n";
-		    		 } else 
-		    			 logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+" = "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+";\n";
-	    		
-		    		 
+		    		 } else if(!this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled())
+		    			 logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+" = "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+";\n"; 		
+		    		 else // this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled() 
+		    			 logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+" = |"+myLanguage.CreateNodeName(addrNode,  spawnStage, ISAX)+";\n";
 	    		 }
 	    		 
 	    		 // Add Stall mechanism if no DH desired
@@ -1126,14 +1126,14 @@ public class SCAL implements SCALBackendAPI {
 				instrName = "";
 				if(!adjOperation.oneInterfToISAX)
 					instrName = instruction;
-				if(adjOperation.noInterfToISAX)
+				if(adjOperation.noInterfToISAX && !(adjOperation.mandatory && ISAXes.get(instruction).GetRunsAsDynamicDecoupled())) 			
 					continue;
+
 		    // TODO revert this after fixing null pointer exception
 			//	if(snode.HasAdjSig(adjacent)) {
 				if(ISAXes.get(instruction).GetFirstNode(operation).HasAdjSig(adjacent)) {
 					boolean oneInterf = adjOperation.oneInterfToISAX;
 					//boolean notReqSpawnSig = ((SETTINGdecWithValid && adjOperation.DHSpawnModule && adjOperation.isSpawn() && adjOperation.getAdj()==AdjacentNode.validReq) || (SETTINGdecWithAddr && adjOperation.DHSpawnModule && adjOperation.isSpawn() && adjOperation.getAdj()==AdjacentNode.addr));
-					
 					if(!removeFrCoreInterf.contains(new NodeStagePair(adjOperation, stage)))   {
 						String scalPinName = this.myLanguage.CreateFamNodeName(adjOperation, stage, instrName, false);
 						String isaxPinName = this.myLanguage.CreateFamNodeName(adjOperation.NodeNegInput(), stage, instrName, false);

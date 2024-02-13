@@ -5,11 +5,11 @@ public class SCAIEVNode {
 		none(" "),					    // ! considered null
 		spawnAllowed("_spawnAllowed"),  // for spawn, optional, synchronously keeps spawn fire active 
 		validReq("_validReq"),			// ! considered to trigger node and be mandatory
-		validData("_validData"),		// Currently used for wrrd data hazard mechanism. Not mandatory
+		validData("_validData"),		// Currently used for wrrd/wrrd_user_node data hazard mechanism. Not mandatory
 		validResp("_validResp"),        // ! considered to return valid response from core to ISAX
 		addr("_addr"),
 		addrReq("_addr_valid"),
-		rdAddr("_rdAddr"),
+		rdAddr("_rdAddr"),              // for exp for memory accesses when SCAL needs to get from core the adress
 		addrCommited("_addrCommited"),
 		isWrite("_write");				// for memory transctions for example, to make sure it is a write mem transaction
 		public final String suffix;
