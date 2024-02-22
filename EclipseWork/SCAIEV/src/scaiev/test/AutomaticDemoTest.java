@@ -175,6 +175,7 @@ public class AutomaticDemoTest {
 								for(int i = 1; i< additionalStages.size();i++) {
 									newSCAIEVInstr.PutSchedNode(FNode.GetSCAIEVNode(nodeName),i);
 								}
+								newSCAIEVInstr.SetAsDynamicDecoupled(dynamic_decoupled);
 								newSCAIEVInstr.SetAsDecoupled(decoupled);
 								System.out.println("INFO. Just added for instr. "+instrName+" nodeName "+nodeName+" nodeStage = "+nodeStage+" hasValid "+ adjSignals.contains(AdjacentNode.validReq) +" hasAddr "+ adjSignals.contains(AdjacentNode.addr)+ " hasValidResp "+ adjSignals.contains(AdjacentNode.validResp));
 							}

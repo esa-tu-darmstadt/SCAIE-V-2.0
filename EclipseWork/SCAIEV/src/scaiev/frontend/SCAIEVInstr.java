@@ -25,7 +25,7 @@ public class SCAIEVInstr {
 	private String instr_name;
 	private String instr_type;
 	private boolean decoupled = false;
-	private boolean dynamic_decoupled = true;
+	private boolean dynamic_decoupled = false;
 	private HashMap<SCAIEVNode, List<Scheduled>> node_scheduled = new HashMap<SCAIEVNode, List<Scheduled>>();
 
 	public boolean ignoreEncoding = false; 
@@ -205,7 +205,11 @@ public class SCAIEVInstr {
 	public void SetAsDecoupled (boolean decoupled) {
 		this.decoupled = decoupled;
 	}
-	
+	public void SetAsDynamicDecoupled (boolean dynamic_decoupled) {
+		this.dynamic_decoupled = dynamic_decoupled;
+		if(dynamic_decoupled)
+			this.decoupled = true;
+	}
 	public void SetEncoding(String encodingF7, String encodingF3,String encodingOp, String instrType) {		 
 		 this.encodingOp = encodingOp;
 		 this.encodingF3 = encodingF3;
