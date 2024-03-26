@@ -67,7 +67,6 @@ public class Bluespec extends GenerateText {
 		String current_module = bottom_module;
 		String prev_module = "";
 		String instName = "";
-		System.out.println("!!!!!!! operation "+operation);
 		while(!prev_module.contentEquals(top_module)) {
 			// Add interface OR local signal
 			if(!current_module.contentEquals(top_module) || top_interface) {  // top file should just instantiate signal in module instantiation and not generate top interface if top_interface = false
