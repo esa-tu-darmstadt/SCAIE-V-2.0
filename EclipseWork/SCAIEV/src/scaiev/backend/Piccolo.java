@@ -381,6 +381,10 @@ public class Piccolo extends CoreBackend{
 		String commit_stage = "stage2";
 		
 		if(op_stage_instr.containsKey(BNode.RdMem_spawn) || op_stage_instr.containsKey(BNode.WrMem_spawn)) {
+			// RdAddr node - requried when user does not provide addr signal 
+			String rdAddrLogic = language.CreateLocalNodeName(BNode.RdMem_spawn_rdAddr, spawnStage, "") + " := x.addr;\n";
+			this.toFile.UpdateContent(this.ModFile("mkCPU_Stage2"),"let funct3 = instr_funct3 (x.instr);", new ToWrite(rdAddrLogic,false,true,"")); //TODO Test
+
 			
 			// Fire and Commit Logic
 			String writeData = "32'd0";
@@ -525,6 +529,7 @@ public class Piccolo extends CoreBackend{
 	 	this.PutNode("Bool","","mkCPU", BNode.RdMem_spawn_validReq,spawnStage);
 	 	this.PutNode( "Bool", "near_mem.dmem.valid && isax_memONgoing_wire", "mkCPU", BNode.RdMem_spawn_validResp,spawnStage);
 	 	this.PutNode("Bit", "","mkCPU", BNode.RdMem_spawn_addr,spawnStage);
+	 	this.PutNode("Bit", "","mkCPU_Stage2", BNode.RdMem_spawn_rdAddr,spawnStage);
 	 	this.PutNode( "Bool", "", "mkCPU", BNode.RdMem_spawn_write,spawnStage);
 	 	
 	 	this.PutNode("Bit", "", "mkCPU", BNode.WrMem_spawn,spawnStage);
@@ -532,6 +537,7 @@ public class Piccolo extends CoreBackend{
 	 	this.PutNode( "Bool", "near_mem.dmem.valid && isax_memONgoing_wire", "mkCPU", BNode.WrMem_spawn_validResp,spawnStage);
 	 	this.PutNode( "Bool", "", "mkCPU", BNode.WrMem_spawn_write,spawnStage);	
 	 	this.PutNode("Bit", "","mkCPU", BNode.WrMem_spawn_addr,spawnStage);
+	 	this.PutNode("Bit", "","mkCPU_Stage2", BNode.WrMem_spawn_rdAddr,spawnStage); // x.addr
 	 	
 	 	this.PutNode( "Bool", "stage3.out.ostatus == OSTATUS_PIPE","mkCPU", BNode.ISAX_spawnAllowed,0);
 	 	

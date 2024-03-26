@@ -547,6 +547,8 @@ public class PicoRV32 extends CoreBackend {
 	this.PutNode( " ", "", "picorv32", BNode.WrMem_spawn_validReq,spawnStage);
 	this.PutNode( " ", "","picorv32", BNode.RdMem_spawn_addr,spawnStage);
 	this.PutNode( " ", "","picorv32", BNode.WrMem_spawn_addr,spawnStage);
+	this.PutNode( " ", "reg_op1 + decoded_imm","picorv32", BNode.RdMem_spawn_rdAddr,spawnStage); //TODO to be tested
+	this.PutNode( " ", "reg_op1 + decoded_imm","picorv32", BNode.WrMem_spawn_rdAddr,spawnStage);
 	this.PutNode( " ", "","picorv32", BNode.RdMem_spawn_write,spawnStage);
 	this.PutNode( " ", "","picorv32", BNode.WrMem_spawn_write,spawnStage);
 	

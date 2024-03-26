@@ -26,6 +26,7 @@ import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAL;
 import scaiev.frontend.Scheduled;
+import scaiev.frontend.SCAIEVNode.AdjacentNode;
 
 
 public class SCAIEV {	
@@ -45,12 +46,8 @@ public class SCAIEV {
 	
 	
 	public SCAIEV() {
-		// Add currently supported nodes 
-		FNode frontend_nodes = new FNode ();
-		Set<SCAIEVNode> supported_nodes = frontend_nodes.GetAllFrontendNodes();
-		
-
-		System.out.println("SHIM. Instantiated shim layer. Supported nodes are: "+supported_nodes.toString());
+		// Print currently supported nodes 
+		System.out.println("SHIM. Instantiated shim layer. Supported nodes are: "+FNodes.toString());
 		this.coreDatab = new CoreDatab();
 		coreDatab.ReadAvailCores("./Cores");
 	}
@@ -79,6 +76,7 @@ public class SCAIEV {
 		
 		// Select Core
 		Core core = coreDatab.GetCore(coreName);
+		
 		AddCommitStagesToNodes(core); // update FNodes based on core datasheet (their commit stages, only for relevant nodes)
 
 		// Create HashMap with <operations, <stages,instructions>>. 
@@ -155,6 +153,7 @@ public class SCAIEV {
 		int rdrsStage = core.GetNodes().get(BNode.RdRS1).GetEarliest();
 		int memstage = core.GetNodes().get(BNode.RdMem).GetEarliest();
 		boolean barrierInstrRequired = false;
+		
 		for(String instructionName : instrSet.keySet()) {
 			SCAIEVInstr instruction = instrSet.get(instructionName);
 			
@@ -180,7 +179,7 @@ public class SCAIEV {
 						}
 						
 					}
-				}
+				} 
 			
 			// STEP 2: Update Instruction metadata for backend
 			// Now, after storing actual spawn stages in case of spawn IF using stall method, let's update ISAX schedule 
@@ -189,6 +188,7 @@ public class SCAIEV {
 			// STEP 3: Add nodes to op_stage_instr
 			HashMap<SCAIEVNode, List<Scheduled>> schedNodes = instruction.GetSchedNodes();
 			for(SCAIEVNode operation : schedNodes.keySet()) {
+				
 				for (Scheduled sched : schedNodes.get(operation)) {
 					SCAIEVNode addOperation = operation; 
 					int actualSpawnStage = spawnStage; 
@@ -205,6 +205,7 @@ public class SCAIEV {
 							barrierInstrRequired = true;
 						}
 					}
+						
 					if(!op_stage_instr.containsKey(addOperation)) 
 						op_stage_instr.put(addOperation, new HashMap<Integer,HashSet<String>>()); 
 					if(!op_stage_instr.get(addOperation).containsKey(stage))
@@ -261,18 +262,19 @@ public class SCAIEV {
 	}
 	
 	private void AddCommitStagesToNodes (Core core){
+		
 		// Add commit stage of core 
-		BNode.RdMem.commitStage = core.GetNodes().get(BNode.RdMem).GetEarliest();
+		BNodes.RdMem.commitStage = core.GetNodes().get(BNode.RdMem).GetEarliest();
 		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(BNode.RdMem))
 			nodeAdj.commitStage = core.maxStage;
-		BNode.WrMem.commitStage = core.GetNodes().get(BNode.WrMem).GetEarliest();
+		BNodes.WrMem.commitStage = core.GetNodes().get(BNode.WrMem).GetEarliest();
 		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(BNode.WrMem))
 			nodeAdj.commitStage = core.maxStage;
-		BNode.WrRD.commitStage = core.maxStage;
+		BNodes.WrRD.commitStage = core.maxStage;
 		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(BNode.WrRD))
 			nodeAdj.commitStage = core.maxStage;
-		BNode.WrPC.commitStage = core.maxStage;	
-		BNode.WrPC_valid.commitStage =  core.maxStage;
+		BNodes.WrPC.commitStage = core.maxStage;	
+		BNodes.WrPC_valid.commitStage =  core.maxStage;
 		
 		// Add commit stage info of WrUser node. First write nodes, than read nodes 
 		for(SCAIEVNode node : this.BNodes.GetAllBackNodes()) {
@@ -320,6 +322,7 @@ public class SCAIEV {
 			}
 			
 		}
+		
 	} 
 	
 	private void AddUserNodesToCore (Core core){

@@ -25,6 +25,7 @@ public class SCAIEVInstr {
 	private String instr_name;
 	private String instr_type;
 	private boolean decoupled = false;
+	private boolean dynamic_decoupled = false;
 	private HashMap<SCAIEVNode, List<Scheduled>> node_scheduled = new HashMap<SCAIEVNode, List<Scheduled>>();
 
 	public boolean ignoreEncoding = false; 
@@ -99,8 +100,10 @@ public class SCAIEVInstr {
 				} else if(node.isInput | (node==BNode.RdMem_spawn) ){ // spawn for reading state not supported for the moment. Just for write nodes. Or spawn as instr without decoding,which is actually mapped on read stage
 					// Memory spawn should have interf to core by default. It won't have to ISAX, as it's defined like this within BNode prop
 					for(SCAIEVNode adjNode : userBNode.GetAdjSCAIEVNodes(node))
-						if(adjNode.mustToCore)
+						if(adjNode.mustToCore) {
 							oldSched.AddAdjSig(adjNode.getAdj());
+						    System.out.println("INFO SCAIEVInstr. Adj Signal "+adjNode+ " added for node "+node);
+						}
 					// We must distinguish : a) SCAL must implement spawn as decoupled b) SCAL must implement spawn with stall
 					if(!decoupled) {
 						if(node.name.contains("Mem")) System.out.println("CRITICAL WARNING Stall not yet supported for memory. please select is_decoupled parameter");
@@ -202,7 +205,11 @@ public class SCAIEVInstr {
 	public void SetAsDecoupled (boolean decoupled) {
 		this.decoupled = decoupled;
 	}
-	
+	public void SetAsDynamicDecoupled (boolean dynamic_decoupled) {
+		this.dynamic_decoupled = dynamic_decoupled;
+		if(dynamic_decoupled)
+			this.decoupled = true;
+	}
 	public void SetEncoding(String encodingF7, String encodingF3,String encodingOp, String instrType) {		 
 		 this.encodingOp = encodingOp;
 		 this.encodingF3 = encodingF3;
@@ -229,7 +236,7 @@ public class SCAIEVInstr {
 			return false;
 	}
 
-	private Scheduled GetCheckUniqueSchedWith(SCAIEVNode node, Predicate<Scheduled> cond) throws FrontendNodeException {
+	public Scheduled GetCheckUniqueSchedWith(SCAIEVNode node, Predicate<Scheduled> cond) throws FrontendNodeException {
 		Iterator<Scheduled> iter = GetSchedWithIterator(node, cond);
 		if (!iter.hasNext())
 			return null;
@@ -342,6 +349,9 @@ public class SCAIEVInstr {
 		return decoupled;
 	}
 	
+	public boolean GetRunsAsDynamicDecoupled () {
+		return dynamic_decoupled;
+	}
 	
 	public HashMap<SCAIEVNode, List<Scheduled>> GetSchedNodes(){
 		return node_scheduled;
