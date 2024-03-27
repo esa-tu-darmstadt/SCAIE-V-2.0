@@ -273,8 +273,8 @@ public class SCAIEV {
 		BNodes.WrRD.commitStage = core.maxStage;
 		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(BNode.WrRD))
 			nodeAdj.commitStage = core.maxStage;
-		BNodes.WrPC.commitStage = core.maxStage;	
-		BNodes.WrPC_valid.commitStage =  core.maxStage;
+		BNodes.WrPC.commitStage = core.GetNodes().get(BNode.WrPC).GetEarliest(); // risky: was core.maxStage; Updated it so that always wrpc would be mapped to 0 when nodeStage=100 in automatic demo class	
+		BNodes.WrPC_valid.commitStage =  core.GetNodes().get(BNode.WrPC).GetEarliest();
 		
 		// Add commit stage info of WrUser node. First write nodes, than read nodes 
 		for(SCAIEVNode node : this.BNodes.GetAllBackNodes()) {
