@@ -94,7 +94,7 @@ public class SCAIEVInstr {
 			if(node.isSpawn() && !node.isAdj() && isSpawn) { // If we look at a main spawn node & the user wants this spawn operation (>=spawnStage)
 				Scheduled oldSched = new Scheduled();
 				oldSched = GetCheckUniqueSchedWith(parentNode, snode -> snode.GetStartCycle()>=spawnStage);
-				// This is no spawn in traditional (scaiev trad) sense, it's an instruction that writes right away based on its valid bit. Not really started by an opcode
+				// This is no spawn in traditional (scaiev trad) sense, it's an instruction that writes right away based on its valid bit. Not really started by an opcode. Always block
 				if(this.HasNoOp()) {
 					oldSched.UpdateStartCycle(parentNode.commitStage); // for write nodes, take the WB stage of that node // for read nodes, take the "read regfile" stage
 				} else if(node.isInput | (node==BNode.RdMem_spawn) ){ // spawn for reading state not supported for the moment. Just for write nodes. Or spawn as instr without decoding,which is actually mapped on read stage

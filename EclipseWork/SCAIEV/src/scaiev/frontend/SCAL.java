@@ -733,11 +733,11 @@ public class SCAL implements SCALBackendAPI {
 	    			 if(addrNode.noInterfToISAX && !this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled() && SETTINGWithAddr)
 	    				 FIFOAddrRequired = true; 
 	    			 if(node.name.contains("Mem"))
-	    			 if(!ISAXes.get(ISAX).GetSchedWith(node, _snode -> _snode.GetStartCycle() >= node.commitStage).HasAdjSig(AdjacentNode.addr))
-	    				 if(SETTINGWithAddr)
-	    					 FIFOAddrRequired = true; 
-	    				 else 
-	    					 System.out.println("CRITICAL WARNING. SCAL. Spawn Detected, FIFO Addr not enabled within SCAL, and user does not provide custom addr. Functionality issue");
+	    				 if(!ISAXes.get(ISAX).GetSchedWith(node, _snode -> _snode.GetStartCycle() >=  BNode.GetSCAIEVNode(node.nameParentNode).commitStage).HasAdjSig(AdjacentNode.addr)) // risky: here was node instead of parent node. Changed for recognizing spawn mem in stage 3 of vex. Might be that it was changed back for other feature
+		    				 if(SETTINGWithAddr)
+		    					 FIFOAddrRequired = true; 
+		    				 else 
+		    					 System.out.println("CRITICAL WARNING. SCAL. Spawn Detected, FIFO Addr not enabled within SCAL, and user does not provide custom addr. Functionality issue");
 	    			 
 	    		 } 
 	    		 if(FIFOAddrRequired) { // make addr fifo available also without scoreboard, but NOT for stall mechanism, for which addr is in pipeline instr reg already
@@ -1209,6 +1209,17 @@ public class SCAL implements SCALBackendAPI {
 				AddRdIValid(lookAtIsax, node,this.core.GetStartSpawnStage(),maxStageRdInstr);
 		}
 		
+		// Add RdIValid for fence and kill instr if spawn present
+		for(SCAIEVNode node : this.spawn_instr_stage.keySet()) {
+			HashSet<String> lookAtIsax =  new HashSet<>();
+			for(String instr : this.spawn_instr_stage.get(node).keySet()) {
+				if(this.ISAXes.get(instr).GetRunsAsDecoupled()) // for instr that run with stall we don't need fence and kill synchro 
+					lookAtIsax.add(instr);
+			}
+			if(!lookAtIsax.isEmpty())
+				AddRdIValid(lookAtIsax, node,this.core.GetStartSpawnStage(),maxStageRdInstr);
+		}
+				
 		// Add RdIvalid for nodes which require a WrNode_ValidReq signal also in earlier stages, not only where the user needs (due to core's uA)	
 		if(!this.node_earliestStageValid.isEmpty()) {                  // if core has any nodes which requrie valid signals in earlier stages
 	    	 for(SCAIEVNode node : node_earliestStageValid.keySet()) {  // go through these nodes

@@ -26,6 +26,7 @@ import scaiev.frontend.SCAIEVNode.AdjacentNode;
 public class AutomaticDemoTest {
 	public static HashMap<String, Integer> earliest_operation = new HashMap<String, Integer>();
 	
+	//TODO mem for always for cores which req in earlier, make sure default is 0 if no instru with opode
 	
 	public static void main(String[] args) {
 		//////////   SETTINGS   //////////
@@ -137,7 +138,7 @@ public class AutomaticDemoTest {
 										nodeStage = (int) readNode.get(nodeSetting);
 									}
 									if(is_always) // For read/writes without opcode: now set as spawn without decoding; in scaiev mapped on Read stage /WB stage; are direct read/writes
-										if( FNode.GetSCAIEVNode(nodeName)==null | (FNode.GetSCAIEVNode(nodeName)!=null && FNode.GetSCAIEVNode(nodeName).DH))
+										if( FNode.GetSCAIEVNode(nodeName)==null | (FNode.GetSCAIEVNode(nodeName)!=null ))
 											nodeStage = 10000; // immediate write
 								}
 								
