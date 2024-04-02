@@ -940,7 +940,7 @@ public class SCAL implements SCALBackendAPI {
 			    			 + "	.RdIValid_i("+allIValid+"), \n"
 			    			 + "    ."+this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+"("+this.myLanguage.CreateLocalNodeName(BNode.RdIValid, this.core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+"),\n"
 			    			 + "    ."+this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName())+"("+this.myLanguage.CreateLocalNodeName(BNode.RdIValid, this.core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName())+"),\n"
-			    			 + "	.commit_spawn({32{(ISAX_fire2_r_Mem_5_reg ) & "+myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidResponse()).NodeNegInput(), spawnStage, "")+" }} & "+myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetAddr()).NodeNegInput(), spawnStage, "")+"),       		    \n"
+			    			 + "	.commit_spawn(ISAX_fire2_r_"+node.familyName+"_"+core.GetSpawnStage()+"_reg & "+myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidResponse()).NodeNegInput(), spawnStage, "")+"),\n"
 			    			 + "	.stall_RDRS_o(to_CORE_stall_RS_"+node+"_o_s),  \n"
 			    			 + "    .valid_spawn_o(valid_spawn_"+node+"_s)\n"
 			    			 + "    );\n";
