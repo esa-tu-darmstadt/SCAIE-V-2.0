@@ -1,15 +1,23 @@
 - instruction: sqrt_decoupled
   mask: "000011000000-----000-----0001011"
   schedule:
-    - interface: RdRS1
-      stage: 2
-    - interface: RdStall
-      stage: 2
-    - interface: RdStall
-      stage: 3
-    - interface: RdStall
-      stage: 4
-    - interface: WrRD
-      stage: 12
+    - interface: WrMem
+      stage: 9
       is decoupled: 1
+
+- instruction: sqrt_decoupled2
+  mask: "000011000000-----000-----0101011"
+  schedule:
+    - interface: WrMem
+      stage: 9    
+      is dynamic decoupled: 1
+    - interface: WrRd
+      stage: 9
+      is dynamic decoupled: 1
+- always: zol
+  schedule:
+    - interface: WrRD
+      has valid: 1
+      stage: 20
+
 - last stage: 4
