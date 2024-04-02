@@ -75,7 +75,7 @@ public class GenerateText {
 	public String allISAXNameText(String separator, String textBefore, String textAfter, HashSet<String> ISAXes) { // ISAXes array of ISAXes that are required, for exp in case of decoupled would be array with names of instr that are decoupled
 		String returnString = "";
 		for(String ISAXname : ISAXes) {
-			if(!ISAXname.contains("DUMMY")) {// ela!
+			if(!ISAXname.contains("DUMMY")) {
 				if(!returnString.contentEquals(""))
 					returnString += (separator);
 				returnString += (textBefore+ISAXname+textAfter);

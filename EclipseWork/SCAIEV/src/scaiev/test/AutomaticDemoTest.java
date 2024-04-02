@@ -102,14 +102,14 @@ public class AutomaticDemoTest {
 							System.out.println("ERROR. Please first give instr name and encoding in yaml file");
 						System.out.println("INFO. Just added instr. "+instrName+" with f7 "+f7+" f3 "+f3+" op "+op);
 						SCAIEVInstr newSCAIEVInstr  = shim.addInstr(instrName,f7,f3,op,is_always?"<always>":"R"); // TODO R is here by default
+						boolean decoupled = false;
+					    boolean dynamic_decoupled = false;
 						List<LinkedHashMap> nodes =  (List<LinkedHashMap>) readInstr.get(setting);
 						for(LinkedHashMap readNode : nodes) {
 							String nodeName = "";
 							int nodeStage = 0;
 							ArrayList<Integer> additionalStages = new ArrayList<Integer>();
 						    boolean addEarliest = false;
-						    boolean decoupled = false;
-						    boolean dynamic_decoupled = false;
 						    HashSet<AdjacentNode> adjSignals = new HashSet<AdjacentNode> () ;
 							for(Object nodeSetting: readNode.keySet()) {								
 								if(nodeSetting.toString().equals("interface")) {
@@ -178,7 +178,7 @@ public class AutomaticDemoTest {
 								}
 								newSCAIEVInstr.SetAsDynamicDecoupled(dynamic_decoupled);
 								newSCAIEVInstr.SetAsDecoupled(decoupled);
-								System.out.println("INFO. Just added for instr. "+instrName+" nodeName "+nodeName+" nodeStage = "+nodeStage+" hasValid "+ adjSignals.contains(AdjacentNode.validReq) +" hasAddr "+ adjSignals.contains(AdjacentNode.addr)+ " hasValidResp "+ adjSignals.contains(AdjacentNode.validResp));
+								System.out.println("INFO. Just added for instr. "+instrName+" nodeName "+nodeName+" nodeStage = "+nodeStage+" hasValid "+ adjSignals.contains(AdjacentNode.validReq) +" hasAddr "+ adjSignals.contains(AdjacentNode.addr)+ " hasValidResp "+ adjSignals.contains(AdjacentNode.validResp)+ "is decoupled:"+decoupled + " is dynamic decoupled: "+dynamic_decoupled);
 							}
 						}
 					}				
