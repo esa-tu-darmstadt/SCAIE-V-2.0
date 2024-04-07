@@ -132,7 +132,7 @@ public class VexRiscv extends CoreBackend{
 			 for(int i=1;i<this.vex_core.maxStage+2;i++)
 				 if(op_stage_instr.get(BNode.WrPC).containsKey(i))
 					 toFile.UpdateContent(filePlugin,"var jumpInterface_"+i+": Flow[UInt] = null");
-		 if(op_stage_instr.containsKey(BNode.RdMem) || op_stage_instr.containsKey(BNode.WrMem) )
+		 if(op_stage_instr.containsKey(BNode.RdMem) || op_stage_instr.containsKey(BNode.WrMem) || op_stage_instr.containsKey(BNode.RdMem_spawn) ||   op_stage_instr.containsKey(BNode.WrMem_spawn))
 			 toFile.UpdateContent(filePlugin,"var dBusAccess : DBusAccess = null");
 		 
 		 if(ContainsOpInStage(BNode.WrPC,0) || op_stage_instr.containsKey(BNode.WrPC_spawn) || ContainsOpInStage(BNode.RdPC,0)) 
