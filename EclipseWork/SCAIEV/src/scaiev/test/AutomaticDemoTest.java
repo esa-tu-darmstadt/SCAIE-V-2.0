@@ -160,12 +160,12 @@ public class AutomaticDemoTest {
 								if(nodeSetting.toString().equals("is decoupled")) {
 									decoupled = true;
 									if(decoupled && !dynamic_decoupled)
-										System.out.println("CRITICAL WARNING. AutomaticDemoTest. The tool currently supports either decoupled instruction or dynamic dec. instr. (so all nodes must obey to 1 of the 2, mixture currently not possible). Thus, having a node \"is decoupled\" and the next one dynamic decoupled will lead to faulty generation. Make them both either dynamic or not dyn.");
+										System.out.println("WARNING. AutomaticDemoTest. The tool currently supports either decoupled instruction or dynamic dec. instr. (so all nodes must obey to 1 of the 2, mixture currently not possible). Thus, having a node \"is decoupled\" and the next one dynamic decoupled will lead to faulty generation. Make them both either dynamic or not dyn.");
 									
 								}
 								if(nodeSetting.toString().equals("is dynamic decoupled")) {
 									if(decoupled && !dynamic_decoupled)
-										System.out.println("CRITICAL WARNING. AutomaticDemoTest. The tool currently supports either decoupled instruction or dynamic dec. instr. (so all nodes must obey to 1 of the 2, mixture currently not possible). Thus, having a node \"is decoupled\" and the next one dynamic decoupled will lead to faulty generation. Make them both either dynamic or not dyn.");
+										System.out.println("WARNING. AutomaticDemoTest. The tool currently supports either decoupled instruction or dynamic dec. instr. (so all nodes must obey to 1 of the 2, mixture currently not possible). Thus, having a node \"is decoupled\" and the next one dynamic decoupled will lead to faulty generation. Make them both either dynamic or not dyn.");
 									dynamic_decoupled = true;
 									decoupled = true;
 									nodeStage = 10000;

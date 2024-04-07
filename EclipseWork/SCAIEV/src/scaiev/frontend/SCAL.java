@@ -1403,7 +1403,7 @@ public class SCAL implements SCALBackendAPI {
 				for(int stage = this.core.GetNodes().get(BNode.WrStall).GetEarliest(); stage<=maxStall; stage++) // TODO workaround
 						AddToCoreInterfHashMap (BNode.WrStall,stage);
 				
-				if(operation.DH) {
+				if(operation.allowMultipleSpawn) { // mem and wrrd need this for fence, kill spawn instr. WrRd needs it for scoreboard too for DH
 					AddToCoreInterfHashMap (BNode.RdInstr,this.core.GetStartSpawnStage());
 					for(int stage = this.core.GetStartSpawnStage()+1; stage <= this.core.maxStage; stage ++ ) {
 						AddToCoreInterfHashMap (BNode.RdStall,stage);
@@ -1767,7 +1767,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 					+ this.FIFOmoduleName+" #( 4,"+totalBitsNr+" ) SimpleFIFO_"+node+"_"+ISAX+"_valid_INPUTs_inst ( \n"
 					+ "    clk_i, \n"
 					+ "    rst_i, \n"
-					+ "    "+ myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName()) +" ,\n"
+					+ "    "+ myLanguage.CreateLocalNodeName(BNode.RdIValid, core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName()) +" ,\n"
 					+ "    "+node+"_"+ISAX+"_FIFO_write_s, \n"
 					+ "    "+node+"_"+ISAX+"_FIFO_read_s, \n"
 					+ "    "+node+"_"+ISAX+"_FIFO_in_s, \n"

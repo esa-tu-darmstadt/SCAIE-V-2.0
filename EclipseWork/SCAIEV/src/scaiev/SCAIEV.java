@@ -22,6 +22,7 @@ import scaiev.coreconstr.CoreNode;
 import scaiev.drc.DRC;
 import scaiev.frontend.FNode;
 import scaiev.frontend.FrontendNodeException;
+import scaiev.frontend.SCAIEVDRC;
 import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAL;
@@ -130,6 +131,7 @@ public class SCAIEV {
 		success = coreInstanceOpt.map(coreInstance ->
 			coreInstance.Generate(instrSet, op_stage_instr, this.extensionName, core, outPath)
 		).orElse(false);
+		
 		
 		Yaml netlistYaml = new Yaml();
 		String netlistPath = "scaiev_netlist.yaml";
