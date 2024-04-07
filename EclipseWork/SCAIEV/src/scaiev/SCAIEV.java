@@ -218,7 +218,7 @@ public class SCAIEV {
 		// Check if any spawn and if yes, add the barrier instr (WrRD spawn & Internal state spawn) 
 		boolean barrierNeeded = false;
 		for(SCAIEVNode node : op_stage_instr.keySet() )
-			if(node.isSpawn() && node.DH)
+			if(node.isSpawn())
 				barrierNeeded = true;
 		if(barrierNeeded && barrierInstrRequired) {
 			AddIn_op_stage_instr(BNode.RdRS1,rdrsStage,"disaxkill");

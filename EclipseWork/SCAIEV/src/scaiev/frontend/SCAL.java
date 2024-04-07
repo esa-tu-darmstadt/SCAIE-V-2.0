@@ -255,8 +255,6 @@ public class SCAL implements SCALBackendAPI {
 	    myLanguage.BNode = BNode;
 	    String interfToISAX = "",  interfToCore = "",  declarations = "",  logic = "", otherModules = "";
 	     
-
-		
 	    //////////////////////   GENERATE LOGIC FOR INTERNAL STATES ////////////
     	// Generate module for private registers
 	    System.out.println("INFO. First generating ISAX private registers");  
@@ -1472,6 +1470,7 @@ public class SCAL implements SCALBackendAPI {
 			ISAXSetWithIValid = new RdIValidStageDesc();
 		// Store only instr with opcode 
 		HashSet<String> addISAX = new HashSet<String>();
+		
 		for(String instr : lookAtISAX) {
 			if(!ISAXes.get(instr).HasNoOp())
 				addISAX.add(instr);
