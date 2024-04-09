@@ -928,7 +928,7 @@ public class SCAL implements SCALBackendAPI {
 						}
 					}
 				if(!lookAtIsax.isEmpty()) {
-					allIValid = this.myLanguage.OpIfNEmpty(allIValid, " || ")+ this.myLanguage.allISAXNameText(" || ", this.BNode.RdIValid.name, "_"+core.GetStartSpawnStage()+"_s",lookAtIsax ); 
+					allIValid = this.myLanguage.OpIfNEmpty(allIValid, " || ")+ this.myLanguage.allISAXNameText(" || ", this.BNode.RdIValid.name+"_", "_"+core.GetStartSpawnStage()+"_s",lookAtIsax ); 
 					declarations +=  "wire valid_spawn_"+node+"_s;\n";
 					logic +=  SpawnCountNoDH + " "+SpawnCountNoDH +"_inst ( \n"
 			    			 + "	.clk_i("+myLanguage.clk+"),                           \n"
