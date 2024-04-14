@@ -771,7 +771,7 @@ public class SCAL implements SCALBackendAPI {
 					
 	    		 
 	    		 // Shift Module: Required to store valid bit (trigger of valid response)?
-	    		 if(this.ISAXes.get(ISAX).GetRunsAsDecoupled() && !this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled()) { // For STALL mechanism this is done based on counter, NOT on shift reg valid bit
+	    		 if(this.ISAXes.get(ISAX).GetRunsAsDecoupled()) { 
 		    		 dataW = BNode.GetAdjSCAIEVNode(node, AdjacentNode.validReq).size;
 		    		 declarations +=  "wire "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+this.ShiftmoduleSuffix+";\n";
 		    		 if(SETTINGWithValid && !this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled()){ // Make shift reg available also without scoreboard; for dynamic decoupled, latency unknown, so valid comes from user	    				
