@@ -780,18 +780,29 @@ public class SCAL implements SCALBackendAPI {
 			   			 		+ myLanguage.tab+myLanguage.reset+",\n"
 			   			 		+ myLanguage.tab+myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), startSpawnStage, "")+",\n" 
 			   			 		+ myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+",\n"	       			 
-			   			 		+ myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage, ISAX)+",\n" // insert data into shift reg
+			   			 	    + myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName())+",\n"	       			 
+		   			 		    + myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage, ISAX)+",\n" // insert data into shift reg
 			   			 		+ myLanguage.tab+flush+",\n"
 			   			 		+ myLanguage.tab+stallShiftReg+",\n"
+			   			 		+ myLanguage.tab+"stall_fence_"+node+"_"+ISAX+", //stall fr fence \n"
 			   			 		+ myLanguage.tab+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+"\n" // read data          
 			   			 		+ ");\n";
-		    		 } else if(!this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled())
+		    			// Stall stages due to fence 
+		    			for(int stage=0; stage <= startSpawnStage;stage++) {
+		    	    		if(!stallStages[stage].isEmpty())
+		    	 	    		stallStages[stage] += " || ";
+		    	 	    	stallStages[stage] +=  "stall_fence_"+node+"_"+ISAX+"_o_s";
+		    			}
+		    		    declarations += "wire stall_fence_"+node+"_"+ISAX+"_o_s; // Stall signal for decoupled instr due to fence\n";
+			    			
+		    		 } else if(!this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled()) {
+		    			 System.out.println("SCAL. WARNING. User selected no shift reg for a decoupled instr. Thus user must implement fence & kill instr within ISAX");
 		    			 logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+" = "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+";\n"; 		
-		    		 else // this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled() 
+		    		 } else // this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled() 
 		    			 logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+" = |"+myLanguage.CreateNodeName(addrNode,  spawnStage, ISAX)+";\n";
 	    		 }
 	    		 
-	    		 // Add Stall mechanism if no DH desired
+	    		 // Add Stall mechanism if multicycle 
 	    		 if(!this.ISAXes.get(ISAX).GetRunsAsDecoupled()) {
 	    			 SCAIEVNode nonSpawnNode = BNode.GetSCAIEVNode(node.nameParentNode);
 	    			 declarations += "wire "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s;\n";
@@ -808,11 +819,11 @@ public class SCAL implements SCALBackendAPI {
 	    			for(int stage=0; stage <= (startSpawnStage+1);stage++) {
 	    	    		if(!stallStages[stage].isEmpty())
 	    	 	    		stallStages[stage] += " || ";
-	    	 	    	stallStages[stage] +=  "to_CORE_stall_WB_"+node+"_"+ISAX+"_o_s";
+	    	 	    	stallStages[stage] +=  "stall_multicycle_"+node+"_"+ISAX+"_o_s";
 	    			}
-	    		    declarations += "reg to_CORE_stall_WB_"+node+"_"+ISAX+"_o_s;\n";
+	    		    declarations += "reg stall_multicycle_"+node+"_"+ISAX+"_o_s; // Stall signal for multicycle instr that does not run decoupled\n";
 	    			logic += "always @(*)  \n"
-	    			 		+ myLanguage.tab + "to_CORE_stall_WB_"+node+"_"+ISAX+"_o_s = "+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage+1, ISAX)+" &&  !"+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s;\n";
+	    			 		+ myLanguage.tab + "stall_multicycle_"+node+"_"+ISAX+"_o_s = "+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage+1, ISAX)+" &&  !"+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s;\n";
 	    			
 	    			// Send Result
 	    			declarations += myLanguage.CreateDeclSig(nonSpawnNode, (startSpawnStage+1), ISAX, false, myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage+1), ISAX));
@@ -1856,15 +1867,18 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 		+ "	input 				rst_i,  \n"
 		+ " input  [31:0]       instr_i,\n"
 		+ " input               "+ myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+",\n"
+		+ " input               "+ myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName())+",\n"		
 		+  "input  [DATAW-1:0]  data_i,  \n"
 		+ "	`ifdef LATER_FLUSHES \n"
 		+ "		input  [WB_STAGE-START_STAGE:1] flush_i,  \n"
 		+ "	`endif input [WB_STAGE-START_STAGE:0] stall_i, \n"
+		+ " output              stall_o,\n" 
 		+ "	output [DATAW-1:0]  data_o  \n"
 		+ "	); \n"
 		+ "	 \n"
 		+ "reg [DATAW-1:0] shift_reg [NR_ELEMENTS:1] ;	 \n"
 		+ "wire kill_spawn;  \n"
+		+ "assign stall_o = (DATAW ==1) ? (|shift_reg & "+myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName())+") : 0;\n // if shift reg used for 1b valid, stall when fence"
 		+ "always @(posedge clk_i) begin   \n"
 		+ "   if(!stall_i[0])  shift_reg[1] <= data_i;  \n"
 		+ "   if((flush_i[1] && stall_i[0]) || ( stall_i[0] && !stall_i[1])) //  (flush_i[0] && !stall_i[0]) not needed, data_i should be zero in case of flush for shift valid bits in case of flush  \n"
@@ -1985,7 +1999,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "    input "+sizeZero+" WrRD_spawn_addr_i,                                    \n"
 				+ "    input  cancel_from_user_valid_i,// user validReq bit was zero, but we need to clear its scoreboard dirty bit \n"
 				+ "    input "+sizeZero+"cancel_from_user_addr_i,\n"
-				+ "    output stall_RDRS_o, //  stall from ISAX,  barrier ISAX,  OR spawn DH   \n"
+				+ "    output stall_RDRS_o, //  stall from ISAX,  OR spawn DH   \n"
 				+ "    input  [WB_STAGE-START_STAGE:0] stall_RDRS_i, // input from core. core stalled. Includes user stall, as these sigs are combined within core  \n"
 				+ ");                                                                     \n"
 				+ "  \n"
@@ -2074,21 +2088,13 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "  rd_table_temp = (rd_table_mem | mask_start) & mask_stop_or_flush;    \n"
 				+ " end                                                                        \n"
 				+ "  \n"
-				+ "always @(posedge clk_i)                                                \n"
-				+ "begin   \n"
-				+ "    if((|rd_table_mem) == 0)      \n"
-				+ "        barrier_set <= 0;   \n"
-				+ "    else if("+rdIValidFence+" && !flush_i[0])                                                                  \n"
-				+ "        barrier_set <= 1;   							   \n"
-				+ "end    \n"
-				+ "wire stall_fr_barrier = barrier_set;  \n"
 				+ "                                                                       \n"
 				+ "assign dirty_bit_rs1 = rd_table_mem[RdInstr_RDRS_i[19:15]];     \n"
 				+ "assign dirty_bit_rd =  rd_table_mem[RdInstr_RDRS_i[11:7]];   \n"
 				+ "assign data_hazard_rs1 =  !flush_i[0] &&  dirty_bit_rs1 && ("+DH_rs1+");  \n"
 				+ "assign data_hazard_rd =  !flush_i[0] && dirty_bit_rd   && ("+DH_rd+");  \n"
 				+ RdRS2DH
-				+ "assign stall_RDRS_o = data_hazard_rs1 || data_hazard_rs2 || data_hazard_rd || stall_fr_barrier;           \n"
+				+ "assign stall_RDRS_o = data_hazard_rs1 || data_hazard_rs2 || data_hazard_rd;           \n"
 				+ "  \n"                                                            
 				+ "endmodule        \n"
 				+ ""; // TODO ISAX Encoding

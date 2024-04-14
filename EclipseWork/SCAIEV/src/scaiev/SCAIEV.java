@@ -22,7 +22,6 @@ import scaiev.coreconstr.CoreNode;
 import scaiev.drc.DRC;
 import scaiev.frontend.FNode;
 import scaiev.frontend.FrontendNodeException;
-import scaiev.frontend.SCAIEVDRC;
 import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAL;
@@ -45,7 +44,9 @@ public class SCAIEV {
     // SCAIE-V Adaptive Layer
     private SCAL scalLayer = new SCAL();
 	
-	
+    // DRC 
+    boolean errLevelHigh = true;
+    
 	public SCAIEV() {
 		// Print currently supported nodes 
 		System.out.println("SHIM. Instantiated shim layer. Supported nodes are: "+FNodes.toString());
@@ -54,7 +55,7 @@ public class SCAIEV {
 	}
 	
 	public void SetErrLevel (boolean errLevelHigh) {
-		DRC.SetErrLevel(errLevelHigh);
+		this.errLevelHigh = errLevelHigh;
 	}
 	public SCAIEVInstr addInstr(String name, String encodingF7, String encodingF3,String encodingOp, String instrType) {
 		SCAIEVInstr newISAX = new SCAIEVInstr(name,encodingF7, encodingF3,encodingOp, instrType);
@@ -88,9 +89,12 @@ public class SCAIEV {
 		
 		AddUserNodesToCore(core);
 		scalLayer.BNode = BNodes; scalLayer.FNode = FNodes;	
+		
 		// Check errors
-		//	DRC.CheckSchedErr(core,op_stage_instr);
-		//	DRC.CheckEncPresent(instrSet);
+		DRC drc = new DRC(instrSet, op_stage_instr, core, BNodes);
+		drc.SetErrLevel(errLevelHigh);
+		drc.CheckSchedErr(core,op_stage_instr);
+		drc.CheckEncPresent(instrSet);
 		
 		// Get metadata from core required by SCAL
 		Optional<CoreBackend> coreInstanceOpt = Optional.empty();
