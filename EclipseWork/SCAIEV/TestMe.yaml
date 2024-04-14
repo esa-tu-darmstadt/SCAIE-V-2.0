@@ -1,23 +1,14 @@
-- instruction: sqrt_decoupled
-  mask: "000011000000-----000-----0001011"
+- instruction: isaxmem
+  mask: "1101000----------000-----0001011"
+  schedule:
+    - interface: RdMem
+      stage: 7
+      is dynamic decoupled: 1
+- instruction: check
+  mask: "1101000----------000-----0001011"
   schedule:
     - interface: WrMem
-      stage: 9
-      is decoupled: 1
-
-- instruction: sqrt_decoupled2
-  mask: "000011000000-----000-----0101011"
-  schedule:
-    - interface: WrMem
-      stage: 9    
-      is dynamic decoupled: 1
-    - interface: WrRd
-      stage: 9
-      is dynamic decoupled: 1
-- always: zol
-  schedule:
-    - interface: WrRD
+      stage: 7
+      has addr: 1
       has valid: 1
-      stage: 20
-
-- last stage: 4
+      is decoupled: 1

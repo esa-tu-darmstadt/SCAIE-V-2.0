@@ -122,7 +122,6 @@ public class SCAL implements SCALBackendAPI {
 	private String FIFOmoduleName = "SimpleFIFO";
 	private String ShiftmoduleName = "SimpleShift";
 	private String CountermoduleName = "SimpleCounter";
-	private String SpawnCountNoDH = "SpawnCountNoDH";
 	private String ShiftmoduleSuffix = "_shiftreg_s";
 	////!!!!!!!!!!!!!
 	// SCAL Settings 
@@ -855,13 +854,7 @@ public class SCAL implements SCALBackendAPI {
     					 RdRS1Sig = myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(parentRdNode, AdjacentNode.addr).NodeNegInput(),  this.core.GetStartSpawnStage(), "");
     				 else 
     					 RdRS1Sig = "5'd0";
-    			 // In  case of dynamic decoupled execution, assign the signal that would have come out of the shift register to the one from scoreboard 
-    			 for(String instr : this.op_stage_instr.get(node).get(this.core.GetSpawnStage())) {
-					 if(this.ISAXes.get(instr).GetRunsAsDynamicDecoupled()  && !ISAXes.get(instr).HasNoOp()) {
-						 declarations +=  "wire "+myLanguage.CreateNodeName( BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest()),  spawnStage, instr)+this.ShiftmoduleSuffix+";\n";	 
-						 logic += "assign "+myLanguage.CreateNodeName(  BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest()),  spawnStage, instr)+this.ShiftmoduleSuffix+" =  valid_spawn_"+node+"_s;\n";
-					 }			
-    			 }
+    			 
     			 
     			 // Compute cancel signal in case of user validReq = 0 
     			 logic += CreateUserCancelSpawn(node, spawnStage);
@@ -881,7 +874,6 @@ public class SCAL implements SCALBackendAPI {
     			 + "    .cancel_from_user_addr_i("+myLanguage.CreateNodeName(BNode.cancel_from_user+"_"+node, spawnStage, "",false)+"),\n"
     			 + "	.stall_RDRS_o(to_CORE_stall_RS_"+node+"_o_s),  \n"
     			 + "	.stall_RDRS_i("+stallFrCore+"),  \n"
-    			 + "    .valid_spawn_o(valid_spawn_"+node+"_s)\n"
     			 + "    );\n";
     			 
     			 // Stall stages because of DH 
@@ -893,67 +885,6 @@ public class SCAL implements SCALBackendAPI {
     	    	 
     		     otherModules += DHModule(node);
     		 }
-	    	 
-	    	// ARBITRATION FOR NODES WITHOUT DH (currently for Rd/WrMem --> familyName Mem)
-	    	if(this.ContainsOpInStage(node, spawnStage) && (!node.DH) && !stallStages[0].contains("to_CORE_stall_RS_"+node.familyName+"_o_s")) {  
-	    		 // Construct a list with all instr that are a spawn of this node & the family node (exp Rd/WrMem)
-	    		String allIValid = "";
-				int maxLatency = 0;
-	    		HashSet<String> lookAtIsax =  new HashSet<>();
-	    		SCAIEVNode validReqNode = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest());
-	    		 
-	    		// Create list with IValid of all such instructions
-	    		for(String instr : this.spawn_instr_stage.get(node).keySet()) {
-	       		 	if(ISAXes.get(instr).GetRunsAsDecoupled() && !ISAXes.get(instr).HasNoOp()) { // user can set in CoreDSL if it's decoupled or not. So multiple wrmem can be implemented differently. In theory this not needed bc of spawnStage
-	       		 		lookAtIsax.add(instr);
-	       		 		if(this.spawn_instr_stage.get(node).get(instr) > maxLatency) 
-	       		 			maxLatency = this.spawn_instr_stage.get(node).get(instr);
-	       		 		if(ISAXes.get(instr).GetRunsAsDynamicDecoupled() && !ISAXes.get(instr).HasNoOp()) {
-	       		 			declarations +=  "wire "+myLanguage.CreateNodeName(validReqNode,  spawnStage, instr)+this.ShiftmoduleSuffix+";\n";	 
-		       		 		logic += "assign "+myLanguage.CreateNodeName( validReqNode,  spawnStage, instr)+this.ShiftmoduleSuffix+" =  valid_spawn_"+node+"_s;\n";
-						}
-					}
-	    		}
-	    		
-	    		if(spawn_instr_stage.containsKey(node.familyName))
-					for(String instr : this.spawn_instr_stage.get(node.familyName).keySet()) {
-						if(this.ISAXes.get(instr).GetRunsAsDecoupled()) {// user can set in CoreDSL if it's decoupled or not. So multiple wrmem can be implemented differently. In theory this not needed bc of spawnStage
-							lookAtIsax.add(instr);
-							if(this.spawn_instr_stage.get(BNode.GetSCAIEVNode(node.familyName)).get(instr) > maxLatency) 
-		       		 			maxLatency = this.spawn_instr_stage.get(BNode.GetSCAIEVNode(node.familyName)).get(instr);
-							if(ISAXes.get(instr).GetRunsAsDynamicDecoupled() && !ISAXes.get(instr).HasNoOp()) {
-		       		 			declarations +=  "wire "+myLanguage.CreateNodeName(validReqNode,  spawnStage, instr)+this.ShiftmoduleSuffix+";\n";	 
-			       		 		logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, instr)+this.ShiftmoduleSuffix+" =  valid_spawn_"+node+"_s;\n";
-							}
-						}
-					}
-				if(!lookAtIsax.isEmpty()) {
-					allIValid = this.myLanguage.OpIfNEmpty(allIValid, " || ")+ this.myLanguage.allISAXNameText(" || ", this.BNode.RdIValid.name+"_", "_"+core.GetStartSpawnStage()+"_s",lookAtIsax ); 
-					declarations +=  "wire valid_spawn_"+node+"_s;\n";
-					logic +=  SpawnCountNoDH + " "+SpawnCountNoDH +"_inst ( \n"
-			    			 + "	.clk_i("+myLanguage.clk+"),                           \n"
-			    			 + "	.rst_i("+myLanguage.reset+"),             \n"
-			    			 + "	.flush_i({"+flush+","+ myLanguage.CreateNodeName(BNode.RdFlush.NodeNegInput(), this.core.GetStartSpawnStage(), "")+"}),	 \n"
-			    			 + "	.stall_i("+stallFrCore+"),  \n"
-			    			 + "	.RdIValid_i("+allIValid+"), \n"
-			    			 + "    ."+this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+"("+this.myLanguage.CreateLocalNodeName(BNode.RdIValid, this.core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+"),\n"
-			    			 + "    ."+this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName())+"("+this.myLanguage.CreateLocalNodeName(BNode.RdIValid, this.core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName())+"),\n"
-			    			 + "	.commit_spawn(ISAX_fire2_r_"+node.familyName+"_"+core.GetSpawnStage()+"_reg & "+myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidResponse()).NodeNegInput(), spawnStage, "")+"),\n"
-			    			 + "	.stall_RDRS_o(to_CORE_stall_RS_"+node+"_o_s),  \n"
-			    			 + "    .valid_spawn_o(valid_spawn_"+node+"_s)\n"
-			    			 + "    );\n";
-				    
-		    		
-					 // Stall stages because of Fence
-					 for(int stage=0; stage <= this.core.GetStartSpawnStage();stage++) {
-						if(!stallStages[stage].isEmpty())
-							stallStages[stage] += " || ";
-						stallStages[stage] +=  "to_CORE_stall_RS_"+node+"_o_s";
-					 }
-					 
-					 otherModules += SpawnCountNoDHModule((int)Math.ceil(Math.log(maxLatency)/+Math.log(2)), lookAtIsax.size()); 
-				}
-	    	}
     	 }
     	}
     	if((SETTINGwithInputFIFO || SETTINGWithAddr) && !spawn_instr_stage.isEmpty()) { // Address storage needs fifo, OR input need FIFO if mul inputs possible till resolved 
@@ -1300,24 +1231,16 @@ public class SCAL implements SCALBackendAPI {
 		// Add RdIValid for fence and kill instr if spawn present
 		for(SCAIEVNode node : this.spawn_instr_stage.keySet()) {
 			boolean fencekillNeeded = false;
-			boolean dynamicDecNeededNoDH = false;
 			HashSet<String> decoupedIsaxNoDH =  new HashSet<>();
 			for(String instr : this.spawn_instr_stage.get(node).keySet()) {
 				if(this.ISAXes.get(instr).GetRunsAsDecoupled() && (!this.ISAXes.get(instr).HasNoOp())) { // for instr that run decoupled (NOT always), we need kill & fence 
 					fencekillNeeded = true;
-					if((this.ISAXes.get(instr).HasNoOp())) // add only memory op, no WrRD, they don't need the counter module, they use scoreboard module for fence and kill
-						decoupedIsaxNoDH.add(instr);
-					if(this.ISAXes.get(instr).GetRunsAsDynamicDecoupled() && (this.ISAXes.get(instr).HasNoOp())) // if we have any dynamic decoupled instr, we must generate all valid bits of dec instr for impl kill instr
-						dynamicDecNeededNoDH = true;
 				}
 			}
 			if(fencekillNeeded) {
 				HashSet<String> lookAtIsax =  new HashSet<>();
 				lookAtIsax.add(PredefInstr.kill.instr.GetName());
 				lookAtIsax.add(PredefInstr.fence.instr.GetName());
-				if(dynamicDecNeededNoDH)
-					lookAtIsax.addAll(decoupedIsaxNoDH);
-				System.out.println("this.core.GetStartSpawnStage() "+this.core.GetStartSpawnStage());
 				AddRdIValid(lookAtIsax, node,this.core.GetStartSpawnStage(),maxStageRdInstr);
 			}
 		}
@@ -2041,22 +1964,12 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 		String rdIValidKill = this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName()); 
 		String rdIValidFence = this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName()); 
 		
-		// Check if valid_spawn_o needed
-		String dynamicInstrPresent = "0";
-		for(String instr : this.op_stage_instr.get(spawnNode).get(this.core.GetSpawnStage())) {
-			if(this.ISAXes.get(instr).GetRunsAsDynamicDecoupled()  && !ISAXes.get(instr).HasNoOp()) {
-				dynamicInstrPresent = "1"; 
-				break;
-			}
-				
-		}
 				
 		returnStr +=  "module spawndatah_"+spawnNode+"#(\n"
 				+ " parameter RD_W_P = "+sizeAddr+",\n"
 				+ " parameter INSTR_W_P = 32, \n"
 				+ " parameter START_STAGE = "+this.core.GetStartSpawnStage()+", \n"
 				+ " parameter WB_STAGE = "+this.core.maxStage+",\n"
-				+ " parameter DYNAMIC_DEC = "+dynamicInstrPresent+"\n"
 				+ "                                                                      \n"
 				+ ")(                                                                    \n"
 				+ "   input clk_i,                                                           \n"
@@ -2074,7 +1987,6 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "    input "+sizeZero+"cancel_from_user_addr_i,\n"
 				+ "    output stall_RDRS_o, //  stall from ISAX,  barrier ISAX,  OR spawn DH   \n"
 				+ "    input  [WB_STAGE-START_STAGE:0] stall_RDRS_i, // input from core. core stalled. Includes user stall, as these sigs are combined within core  \n"
-				+ "    output               valid_spawn_o\n"
 				+ ");                                                                     \n"
 				+ "  \n"
 				+ "                                                                      \n"
@@ -2092,7 +2004,6 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "reg  [2**RD_W_P-1:0] rd_table_mem ;      \n"
 				+ "reg  [2**RD_W_P-1:0] rd_table_temp;  \n"
 				+ "   \n"
-				+ "assign valid_spawn_o =  DYNAMIC_DEC ? (|rd_table_mem) : 0;  \n"
 				+ "`ifdef LATER_FLUSHES_DH                                                                       \n"
 				+ "    reg  [RD_W_P-1:0] RdInstr_7_11_reg[WB_STAGE - START_STAGE-1:0];     \n"
 				+ "    reg [WB_STAGE-START_STAGE:1] RdIValid_reg;   \n"
@@ -2183,77 +2094,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ ""; // TODO ISAX Encoding
 		return returnStr;
 	}
-	
-	
-	private String SpawnCountNoDHModule (int COUNT_WIDTH, int INSTR_NR ) {
-		String logic = ""; 
 		
-		logic = " module "+SpawnCountNoDH+" #(\n"
-				+ "    parameter COUNT_WIDTH = "+COUNT_WIDTH+",\n"
-				+ "    parameter INSTR_NR = "+INSTR_NR+",\n"
-				+ "    parameter START_STAGE = "+this.core.GetStartSpawnStage()+",  \n"
-				+ "    parameter WB_STAGE = "+this.core.maxStage+"                                           \n"
-				+ ")\n"
-				+ "(\n"
-				+ "    input clk_i, \n"
-				+ "    input rst_i,   \n"
-				+ "    input [WB_STAGE-START_STAGE:0] flush_i,  \n"
-				+ "    input [WB_STAGE-START_STAGE:0] stall_i,\n"
-				+ "    input                RdIValid_i,\n"
-				+ "    input                "+this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+", \n"
-				+ "    input                "+this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName())+",\n"
-				+ "    input                commit_spawn,    \n"
-				+ "    output               stall_RDRS_o, \n"
-				+ "    output               valid_spawn_o\n"
-				+ ");\n"
-				+ "\n"
-				+ "reg signed  [COUNT_WIDTH:0] counter; \n"
-				+ "reg [$clog2(WB_STAGE-START_STAGE):0] flushed_ones;\n"
-				+ "\n"
-				+ "\n"
-				+ "assign valid_spawn_o = counter>0;\n"
-				+ "assign WrStall_o = "+this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName())+" & (counter>0) | RdIValid_i &  (counter<0) ;\n"
-				+ "\n"
-				+ "reg [WB_STAGE-START_STAGE:1] RdIValid_reg;   \n"
-				+ "    always @(posedge clk_i ) begin   \n"
-				+ "        if(!stall_i[0])  \n"
-				+ "            RdIValid_reg[1] <= RdIValid_i; // or of all decoupled spawn  \n"
-				+ "        if((flush_i[1] && stall_i[0]) || (flush_i[0] && !stall_i[0]) || ( stall_i[0] && !stall_i[1]))  \n"
-				+ "            RdIValid_reg[1] <= 0 ;\n"
-				+ "        for(int k=2;k<=(WB_STAGE - START_STAGE);k=k+1) begin   \n"
-				+ "            if((flush_i[k] && stall_i[k-1]) || (flush_i[k-1] && !stall_i[k-1]) || ( stall_i[k-1] && !stall_i[k]))  \n"
-				+ "		          RdIValid_reg[k] <=0;  \n"
-				+ "		       else if(!stall_i[k-1]) \n"
-				+ "                RdIValid_reg[k] <= RdIValid_reg[k-1];  \n"
-				+ "        end   \n"
-				+ "        if(rst_i) begin  \n"
-				+ "            for(int k=1;k<(WB_STAGE - START_STAGE);k=k+1) \n"
-				+ "                RdIValid_reg[k] <= 0; \n"
-				+ "        end      \n"
-				+ "    end  \n"
-				+ "    \n"
-				+ "always @(posedge clk_i) begin \n"
-				+ "    if(rst_i) \n"
-				+ "        counter <= 0; \n"
-				+ "    else if("+this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+" & (~counter[COUNT_WIDTH]) & (~stall_i[0])) // no need to check flush, rdivalid is 0 in case of flush\n"
-				+ "        counter <= -counter; // should be no flush possible of started isaxes, wrpc stalls\n"
-				+ "    else if (commit_spawn & counter[COUNT_WIDTH] )\n"
-				+ "        counter <=  counter + 1;\n"
-				+ "    else \n"
-				+ "        counter <=  counter - commit_spawn + (RdIValid_i & (~stall_i[0])) - flushed_ones;\n"
-				+ "end\n"
-				+ "always @(*) begin \n"
-				+ "    flushed_ones = 0;\n"
-				+ "    for(int k=2;k<=(WB_STAGE - START_STAGE);k=k+1) begin  \n"
-				+ "        flushed_ones = flushed_ones +  RdIValid_reg[k] & flush_i[k];\n "
-				+ "    end\n"
-				+ "end \n"
-				+ "\n"
-				+ "endmodule\n";
-		return logic;
-		
-	}
-	
 
 	///////////////////////////////////////// FUNCTIONS: CREATE Interface and scaiev_netlist ////////////////////
 	/**
