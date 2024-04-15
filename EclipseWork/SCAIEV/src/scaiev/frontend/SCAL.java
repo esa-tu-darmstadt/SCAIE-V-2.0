@@ -1052,10 +1052,7 @@ public class SCAL implements SCALBackendAPI {
 		HashSet<String> instructions = op_stage_instr.get(operation).getOrDefault(stage, emptyHashSet);
 		for(String instruction : instructions) {
 			// Generate main FNode interface 
-			//String instrName = "";
 			dataT = this.virtualBackend.NodeDataT(operation, stage);
-			//if( !operation.isInput && operation.oneInterfToISAX)
-			//	instrName = instruction;
 			if( !removeFrCoreInterf.contains(new NodeStagePair(operation, stage))) {
 				String interfaceInstr = "";
 				if (nodePerISAXOverride.getOrDefault(operation, emptyHashSet).contains(instruction))
@@ -1076,7 +1073,7 @@ public class SCAL implements SCALBackendAPI {
 				dataT = this.virtualBackend.NodeDataT(adjOperation, stage);
 				// TODO revert
 			//	if(snode.HasAdjSig(adjacent) || (adjOperation.MandatoryAdjSig())) {
-				if(ISAXes.get(instruction).GetFirstNode(operation).HasAdjSig(adjacent) || adjOperation.DefaultMandatoryAdjSig() || adjOperation.mandatory ) {
+				if(ISAXes.get(instruction).GetFirstNode(operation).HasAdjSig(adjacent) || adjOperation.DefaultMandatoryAdjSig() || adjOperation.mandatory || adjOperation.mustToCore ) {
 					if(!operation.nameQousinNode.isEmpty()) 
 						adjOperation = new SCAIEVNode(adjOperation.replaceRadixNameWith(operation.familyName),adjOperation.size,adjOperation.isInput);
 					if (adjacent == AdjacentNode.spawnAllowed && !adjSpawnAllowedNodes.contains(adjOperation) && !BNode.IsUserBNode(adjOperation))
@@ -1878,7 +1875,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 		+ "	 \n"
 		+ "reg [DATAW-1:0] shift_reg [NR_ELEMENTS:1] ;	 \n"
 		+ "wire kill_spawn;  \n"
-		+ "assign stall_o = (DATAW ==1) ? (|shift_reg & "+myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName())+") : 0;\n // if shift reg used for 1b valid, stall when fence"
+		+ "assign stall_o = (DATAW ==1) ? (|shift_reg & "+myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName())+") : 0; // if shift reg used for 1b valid, stall when fence \n"
 		+ "always @(posedge clk_i) begin   \n"
 		+ "   if(!stall_i[0])  shift_reg[1] <= data_i;  \n"
 		+ "   if((flush_i[1] && stall_i[0]) || ( stall_i[0] && !stall_i[1])) //  (flush_i[0] && !stall_i[0]) not needed, data_i should be zero in case of flush for shift valid bits in case of flush  \n"
