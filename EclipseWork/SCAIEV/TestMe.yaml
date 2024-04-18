@@ -1,21 +1,15 @@
-- instruction: isaxmem
-  mask: "1101000----------000-----0001011"
+- instruction: sqrt_decoupled
+  mask: "000011000000-----000-----0001011"
   schedule:
-    - interface: WrMem
-      stage: 9
-      has addr: 1
-      is decoupled: 1
+    - interface: RdRS1
+      stage: 2
     - interface: RdStall
       stage: 2
     - interface: RdStall
       stage: 3
     - interface: RdStall
       stage: 4
-    - interface: RdInstr
-      stage: 4
-    - interface: RdRS1
-      stage: 2
-    - interface: RdRS2
-      stage: 2
-    - interface: RdIValid
-      stage: 2
+    - interface: WrRD
+      stage: 12
+      is decoupled: 1
+- last stage: 4
