@@ -132,7 +132,7 @@ public class VexRiscv extends CoreBackend{
 			 for(int i=1;i<this.vex_core.maxStage+2;i++)
 				 if(op_stage_instr.get(BNode.WrPC).containsKey(i))
 					 toFile.UpdateContent(filePlugin,"var jumpInterface_"+i+": Flow[UInt] = null");
-		 if(op_stage_instr.containsKey(BNode.RdMem) || op_stage_instr.containsKey(BNode.WrMem) )
+		 if(op_stage_instr.containsKey(BNode.RdMem) || op_stage_instr.containsKey(BNode.WrMem) || op_stage_instr.containsKey(BNode.RdMem_spawn) ||   op_stage_instr.containsKey(BNode.WrMem_spawn))
 			 toFile.UpdateContent(filePlugin,"var dBusAccess : DBusAccess = null");
 		 
 		 if(ContainsOpInStage(BNode.WrPC,0) || op_stage_instr.containsKey(BNode.WrPC_spawn) || ContainsOpInStage(BNode.RdPC,0)) 
@@ -457,7 +457,6 @@ public class VexRiscv extends CoreBackend{
 			 
 			 if(this.ContainsOpInStage(BNode.RdMem_spawn, spawnStage)) {
 				 rdData += "io."+language.CreateNodeName(BNode.RdMem_spawn, spawnStage, "") +" := 0\n";
-				 rdData += "io."+language.CreateNodeName(BNode.RdMem_spawn_validResp, spawnStage, "") +" := "+this.language.GetDict(DictWords.False)+"\n";
 			 }
 			 
 			 // Do we need Rd/Wr Mem custom address? 
@@ -483,15 +482,16 @@ public class VexRiscv extends CoreBackend{
 			 // Is it a write or a read? Is it a valid mem ? What is the transfer size? 
 			 String writeText = "False";
 			 String valid = "";
-			 String valid_1 = "";
+			 String valid_1 = "False";
 			 String spawnvalid = "";
 			 String invalidTransfer = "";
 			 String transferSize = "";
+			 String defaultSigs = "";
 			 
 			 if(op_stage_instr.containsKey(BNode.WrMem)) {
 				 writeText = "io."+language.CreateNodeName(BNode.WrMem_validReq, memStage, "");
 				 valid += "io."+language.CreateNodeName(BNode.WrMem_validReq, memStage, ""); 
-				 valid_1 += "io."+language.CreateNodeName(BNode.WrMem_validReq, memStage-1, ""); 
+				 valid_1 = "io."+language.CreateNodeName(BNode.WrMem_validReq, memStage-1, ""); 
 			 }
 			 if(op_stage_instr.containsKey(BNode.WrMem_spawn)) 
 				 writeText = language.OpIfNEmpty(writeText, " || ") +  "io."+language.CreateNodeName(BNode.WrMem_spawn_write, spawnStage, "");
@@ -499,6 +499,7 @@ public class VexRiscv extends CoreBackend{
 				 valid   = language.OpIfNEmpty(valid  , " || ") +  "io."+language.CreateNodeName(BNode.RdMem_validReq, memStage, ""); 
 				 valid_1 = language.OpIfNEmpty(valid_1, " || ") +  "io."+language.CreateNodeName(BNode.RdMem_validReq, memStage-1, ""); 
 			 }
+			 
 			 if(op_stage_instr.containsKey(BNode.WrMem_spawn) || op_stage_instr.containsKey(BNode.RdMem_spawn)) 
 				 spawnvalid += " || io."+language.CreateNodeName(BNode.RdMem_spawn_validReq,spawnStage, ""); 
 			 
@@ -527,6 +528,7 @@ public class VexRiscv extends CoreBackend{
 			 }	 
 			 if(op_stage_instr.containsKey(BNode.RdMem_spawn) | op_stage_instr.containsKey(BNode.WrMem_spawn)) {
 				 invalidTransfer = language.OpIfNEmpty(invalidTransfer  , " || ") + "io."+ language.CreateNodeName(BNode.RdMem_spawn_validReq,spawnStage, "");
+				 defaultSigs += "io."+language.CreateNodeName(BNode.RdMem_spawn_validResp, spawnStage, "")+" := "+this.language.GetDict(DictWords.False)+";  \n";
 			 }
 				
 			 // Compute data size. For common instr this is INSTRUCTION [14:13] , for spawn this is 2 
@@ -591,6 +593,7 @@ public class VexRiscv extends CoreBackend{
 			 		+ "            dBusAccess.cmd.address.assignDontCare() \n"
 			 		+ "            dBusAccess.cmd.data.assignDontCare() \n"
 			 		+ "            dBusAccess.cmd.writeMask.assignDontCare()\n"
+			 		+ defaultSigs
 			 		+ "            \n"
 			 		+ "            val ldst_in_decode = Bool()		    \n"
 			 		+ "            when(state !==  State.IDLE) {\n"
@@ -634,7 +637,7 @@ public class VexRiscv extends CoreBackend{
 			 
 			 // Add rdAddr needed if user does not implement it. Will be removed by synth tool if user implements it, because it won't be used within SCAL anyway 
 			 if(op_stage_instr.containsKey(BNode.WrMem_spawn) || op_stage_instr.containsKey(BNode.RdMem_spawn)) {
-				 logicText += language.CreateFamNodeName(BNode.GetAdjSCAIEVNode(BNode.WrMem_spawn, AdjacentNode.rdAddr), spawnStage, "",true)  + " := execute.input(SRC_ADD).asUInt ; \n ";
+				 logicText += "io."+language.CreateFamNodeName(BNode.GetAdjSCAIEVNode(BNode.WrMem_spawn, AdjacentNode.rdAddr), spawnStage, "",true)  + " := execute.input(SRC_ADD).asUInt ; \n ";
 			 }
 			 toFile.UpdateContent(filePlugin,logicText);
 			}

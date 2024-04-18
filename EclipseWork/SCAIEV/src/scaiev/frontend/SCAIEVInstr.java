@@ -98,9 +98,9 @@ public class SCAIEVInstr {
 				if(this.HasNoOp()) {
 					oldSched.UpdateStartCycle(parentNode.commitStage); // for write nodes, take the WB stage of that node // for read nodes, take the "read regfile" stage
 				} else if(node.isInput | (node==BNode.RdMem_spawn) ){ // spawn for reading state not supported for the moment. Just for write nodes. Or spawn as instr without decoding,which is actually mapped on read stage
-					// Memory spawn should have interf to core by default. It won't have to ISAX, as it's defined like this within BNode prop
+					// Memory spawn write sig should have interf to core by default. It won't have to ISAX, as it's defined like this within BNode prop
 					for(SCAIEVNode adjNode : userBNode.GetAdjSCAIEVNodes(node))
-						if(adjNode.mustToCore) {
+						if(adjNode.mustToCore && adjNode.noInterfToISAX) { // we need noInterf, otherwise addr signal added on ISAX interf even when not re by user
 							oldSched.AddAdjSig(adjNode.getAdj());
 						    System.out.println("INFO SCAIEVInstr. Adj Signal "+adjNode+ " added for node "+node);
 						}

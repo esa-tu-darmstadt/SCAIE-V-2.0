@@ -44,7 +44,9 @@ public class SCAIEV {
     // SCAIE-V Adaptive Layer
     private SCAL scalLayer = new SCAL();
 	
-	
+    // DRC 
+    boolean errLevelHigh = true;
+    
 	public SCAIEV() {
 		// Print currently supported nodes 
 		System.out.println("SHIM. Instantiated shim layer. Supported nodes are: "+FNodes.toString());
@@ -53,7 +55,7 @@ public class SCAIEV {
 	}
 	
 	public void SetErrLevel (boolean errLevelHigh) {
-		DRC.SetErrLevel(errLevelHigh);
+		this.errLevelHigh = errLevelHigh;
 	}
 	public SCAIEVInstr addInstr(String name, String encodingF7, String encodingF3,String encodingOp, String instrType) {
 		SCAIEVInstr newISAX = new SCAIEVInstr(name,encodingF7, encodingF3,encodingOp, instrType);
@@ -87,9 +89,12 @@ public class SCAIEV {
 		
 		AddUserNodesToCore(core);
 		scalLayer.BNode = BNodes; scalLayer.FNode = FNodes;	
+		
 		// Check errors
-		//	DRC.CheckSchedErr(core,op_stage_instr);
-		//	DRC.CheckEncPresent(instrSet);
+		DRC drc = new DRC(instrSet, op_stage_instr, core, BNodes);
+		drc.SetErrLevel(errLevelHigh);
+		drc.CheckSchedErr(core,op_stage_instr);
+		drc.CheckEncPresent(instrSet);
 		
 		// Get metadata from core required by SCAL
 		Optional<CoreBackend> coreInstanceOpt = Optional.empty();
@@ -130,6 +135,7 @@ public class SCAIEV {
 		success = coreInstanceOpt.map(coreInstance ->
 			coreInstance.Generate(instrSet, op_stage_instr, this.extensionName, core, outPath)
 		).orElse(false);
+		
 		
 		Yaml netlistYaml = new Yaml();
 		String netlistPath = "scaiev_netlist.yaml";
@@ -218,13 +224,13 @@ public class SCAIEV {
 		// Check if any spawn and if yes, add the barrier instr (WrRD spawn & Internal state spawn) 
 		boolean barrierNeeded = false;
 		for(SCAIEVNode node : op_stage_instr.keySet() )
-			if(node.isSpawn() && node.DH)
+			if(node.isSpawn())
 				barrierNeeded = true;
 		if(barrierNeeded && barrierInstrRequired) {
 			AddIn_op_stage_instr(BNode.RdRS1,rdrsStage,"disaxkill");
 			AddIn_op_stage_instr(BNode.RdRS1,rdrsStage,"disaxfence");
-			SCAIEVInstr kill = addInstr("disaxkill","-------", "110", "0001011", "S");
-			SCAIEVInstr fence = addInstr("disaxfence","-------", "111", "0001011", "S");
+			SCAIEVInstr kill  = SCAL.PredefInstr.kill.instr;
+			SCAIEVInstr fence = SCAL.PredefInstr.fence.instr;
 			kill.PutSchedNode(FNode.RdRS1,rdrsStage);  
 			fence.PutSchedNode(FNode.RdRS1, rdrsStage);  
 			instrSet.put("disaxkill", kill);
