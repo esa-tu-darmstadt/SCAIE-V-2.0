@@ -487,6 +487,7 @@ public class SCAL implements SCALBackendAPI {
 	     // op_stage_instr contains as spawn node "node" only if there are any instr that require decoupled. Hence , if bellow will only generate for decoupled instr
 	     if(this.ContainsOpInStage(node, spawnStage) && node.allowMultipleSpawn) { // if user opts for stall-based solution, it's not possible to have multiple results in parallel and the core anyway waits for spawn result (so no fire logic)
 	    	 String priorityStr = "";
+	    	 String inputFIFOStr = ""; // list as prio list, but with not empty FIFO signal (FIFO for inputs)
 	    	 String fireNodeSuffix = "";
 	    	
 	    	 // Prepare for qousin if needed (with qousin = mem for exp, wrrrd is normal)
@@ -529,12 +530,17 @@ public class SCAL implements SCALBackendAPI {
 					 logic += myLanguage.CreateAssign(myLanguage.CreateFamNodeName(node,spawnStage,ISAX,false), myLanguage.CreateNodeName(node.NodeNegInput(),spawnStage,""));
 		   		// update priority list
 		   		 priorityStr   = Verilog.OpIfNEmpty(priorityStr, " || ") + myLanguage.CreateRegNodeName(BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest()), spawnStage,ISAX);
+		   		 inputFIFOStr  = Verilog.OpIfNEmpty(inputFIFOStr, " + ") + node+"_"+ISAX+"_FIFO_notempty_s ";
 		   	 }
 		   	 
 		   	 // Compute sum (decides if we still have spawn) + compute fire logic (ISAX_fire_r, ISAX_fire2_r)
 		   	 if(node.nameQousinNode.isEmpty() || !cousinNodePresent || priority.containsKey(node.nameQousinNode)) {
+		   		 String InputFIFOSum = ""; 
+		   		 if (this.SETTINGwithInputFIFO) 
+		   			InputFIFOSum = " + "+inputFIFOStr;
 		   		 String sumNodeName =  myLanguage.CreateLocalNodeName(this.ISAX_spawn_sum, spawnStage, fireNodeSuffix);
-		    	 logic += "assign "+sumNodeName +" = "+this.ISAX_spawn_sum.size+"'("+priorityStr.replace(" || ", ") + "+this.ISAX_spawn_sum.size+"'(")+");\n";
+		    	 logic += "assign "+sumNodeName +" = "+this.ISAX_spawn_sum.size+"'("+priorityStr.replace(" || ", ") + "+this.ISAX_spawn_sum.size+"'(")+InputFIFOSum+");\n";
+		    	 
 		    	 logic += "assign "+ myLanguage.CreateLocalNodeName(this.ISAX_fire_s, spawnStage,fireNodeSuffix)+" = "+priorityStr.replace(myLanguage.regSuffix,"_s")+";\n";
 		    	 String stall3 = "";
 	    		 if (ContainsOpInStage(BNode.WrStall,this.core.GetStartSpawnStage()))
@@ -694,7 +700,7 @@ public class SCAL implements SCALBackendAPI {
 				 stallFrCore = "{"+stallFrCore ;
 			 }
     		 // Some declarations won't be used, but doesn.t matter
-    		 declarations += "wire to_CORE_stall_RS_"+node+"_o_s;\n";
+    		 declarations += "wire to_CORE_stall_RS_"+node+"_s;\n";
     		 
     		 ///////////////////    SCAL SPAWN MODULES /////////////////////////
     		 // Instantiate modules for FIFO Addr, shift reg for valid request bit...
@@ -784,16 +790,16 @@ public class SCAL implements SCALBackendAPI {
 		   			 		    + myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage, ISAX)+",\n" // insert data into shift reg
 			   			 		+ myLanguage.tab+flush+",\n"
 			   			 		+ myLanguage.tab+stallShiftReg+",\n"
-			   			 		+ myLanguage.tab+"stall_fence_"+node+"_"+ISAX+", //stall fr fence \n"
+			   			 		+ myLanguage.tab+"stall_fence_"+node+"_"+ISAX+"_s, //stall fr fence \n"
 			   			 		+ myLanguage.tab+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+"\n" // read data          
 			   			 		+ ");\n";
 		    			// Stall stages due to fence 
 		    			for(int stage=0; stage <= startSpawnStage;stage++) {
 		    	    		if(!stallStages[stage].isEmpty())
 		    	 	    		stallStages[stage] += " || ";
-		    	 	    	stallStages[stage] +=  "stall_fence_"+node+"_"+ISAX+"_o_s";
+		    	 	    	stallStages[stage] +=  "stall_fence_"+node+"_"+ISAX+"_s";
 		    			}
-		    		    declarations += "wire stall_fence_"+node+"_"+ISAX+"_o_s; // Stall signal for decoupled instr due to fence\n";
+		    		    declarations += "wire stall_fence_"+node+"_"+ISAX+"_s; // Stall signal for decoupled instr due to fence\n";
 			    			
 		    		 } else if(!this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled()) {
 		    			 System.out.println("SCAL. WARNING. User selected no shift reg for a decoupled instr. Thus user must implement fence & kill instr within ISAX");
@@ -819,11 +825,11 @@ public class SCAL implements SCALBackendAPI {
 	    			for(int stage=0; stage <= (startSpawnStage+1);stage++) {
 	    	    		if(!stallStages[stage].isEmpty())
 	    	 	    		stallStages[stage] += " || ";
-	    	 	    	stallStages[stage] +=  "stall_multicycle_"+node+"_"+ISAX+"_o_s";
+	    	 	    	stallStages[stage] +=  "stall_multicycle_"+node+"_"+ISAX+"_s";
 	    			}
-	    		    declarations += "reg stall_multicycle_"+node+"_"+ISAX+"_o_s; // Stall signal for multicycle instr that does not run decoupled\n";
+	    		    declarations += "reg stall_multicycle_"+node+"_"+ISAX+"_s; // Stall signal for multicycle instr that does not run decoupled\n";
 	    			logic += "always @(*)  \n"
-	    			 		+ myLanguage.tab + "stall_multicycle_"+node+"_"+ISAX+"_o_s = "+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage+1, ISAX)+" &&  !"+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s;\n";
+	    			 		+ myLanguage.tab + "stall_multicycle_"+node+"_"+ISAX+"_s = "+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage+1, ISAX)+" &&  !"+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s;\n";
 	    			
 	    			// Send Result
 	    			declarations += myLanguage.CreateDeclSig(nonSpawnNode, (startSpawnStage+1), ISAX, false, myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage+1), ISAX));
@@ -883,7 +889,7 @@ public class SCAL implements SCALBackendAPI {
     			 + "	.WrRD_spawn_addr_i("+myLanguage.CreateNodeName(BNode.commited_rd_spawn+"_"+node, spawnStage, "",false)+"),  \n"
     			 + "    .cancel_from_user_valid_i("+myLanguage.CreateNodeName(BNode.cancel_from_user_valid+"_"+node, spawnStage, "",false)+"),\n"
     			 + "    .cancel_from_user_addr_i("+myLanguage.CreateNodeName(BNode.cancel_from_user+"_"+node, spawnStage, "",false)+"),\n"
-    			 + "	.stall_RDRS_o(to_CORE_stall_RS_"+node+"_o_s),  \n"
+    			 + "	.stall_RDRS_o(to_CORE_stall_RS_"+node+"_s),  \n"
     			 + "	.stall_RDRS_i("+stallFrCore+"),  \n"
     			 + "    );\n";
     			 
@@ -891,7 +897,7 @@ public class SCAL implements SCALBackendAPI {
     	    	 for(int stage=0; stage <= this.core.GetStartSpawnStage();stage++) {
     	 	    	if(!stallStages[stage].isEmpty())
     	 	    		stallStages[stage] += " || ";
-    	 	    	stallStages[stage] +=  "to_CORE_stall_RS_"+node+"_o_s";
+    	 	    	stallStages[stage] +=  "to_CORE_stall_RS_"+node+"_s";
     	 	     }
     	    	 
     		     otherModules += DHModule(node);
@@ -1498,7 +1504,7 @@ public class SCAL implements SCALBackendAPI {
 		 
 		 // If Scoreboard present here, we have to consider its stall to avoid deadlock:  exp, in execute there is a memory instr with DH 
 		 if (spawn_allowed_cond != null && this.SETTINGWithScoreboard) 
-			 spawn_allowed_cond += " || to_CORE_stall_RS_"+node+"_o_s";
+			 spawn_allowed_cond += " || to_CORE_stall_RS_"+node+"_s";
 		 return spawn_allowed_cond;
 	}
 	
@@ -1679,6 +1685,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 	
 		if(this.SETTINGwithInputFIFO) {
 			SCAIEVNode validReq = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest());
+			SCAIEVNode validResp = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidResponse());		
 			SCAIEVNode addr = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetAddr());
 			// Check out if addr needed
 			boolean hasAddr = false;
@@ -1698,7 +1705,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 					+ this.FIFOmoduleName+" #( 4,"+totalBitsNr+" ) SimpleFIFO_"+node+"_"+ISAX+"_valid_INPUTs_inst ( \n"
 					+ "    clk_i, \n"
 					+ "    rst_i, \n"
-					+ "    "+ myLanguage.CreateLocalNodeName(BNode.RdIValid, core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName()) +" ,\n"
+					+ "    1'b0, // If result already returned, must be commited even if isaxkill \n"
 					+ "    "+node+"_"+ISAX+"_FIFO_write_s, \n"
 					+ "    "+node+"_"+ISAX+"_FIFO_read_s, \n"
 					+ "    "+node+"_"+ISAX+"_FIFO_in_s, \n"
@@ -1708,7 +1715,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 			
 			// Compute inputs to FIFO 
 			// Write in FIFO?
-			String FIFO_write = "assign "+node+"_"+ISAX+"_FIFO_write_s = ("+myLanguage.CreateRegNodeName(validReq, spawnStage, ISAX) + " && "+myLanguage.CreateLocalNodeName(validReq, spawnStage, ISAX)+");\n";
+			String FIFO_write = "assign "+node+"_"+ISAX+"_FIFO_write_s = ("+myLanguage.CreateRegNodeName(validReq, spawnStage, ISAX) + " && "+myLanguage.CreateNodeName(validReq,  spawnStage, ISAX)+ShiftmoduleSuffix+");\n";
 			logic += FIFO_write;
 			// What data to write in FIFO?
 			String FIFO_in = node+"_"+ISAX+"_FIFO_in_s = "; 
@@ -1726,13 +1733,13 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 			String userOptValid = "";
 			if(ISAXes.get(ISAX).GetFirstNode(node).HasAdjSig(AdjacentNode.validReq))
 				userOptValid = myLanguage.CreateFamNodeName(validReq, spawnStage, ISAX, false)+" && ";
-			String FIFO_out = myLanguage.CreateLocalNodeName(validReq, spawnStage, ISAX) +" = "+userOptValid +myLanguage.CreateFamNodeName(validReq, spawnStage, ISAX, true)+ShiftmoduleSuffix+"; // Signals rest of logic valid spawn sig\n";
+			String FIFO_out = myLanguage.CreateLocalNodeName(validReq, spawnStage, ISAX) +" = "+userOptValid +myLanguage.CreateFamNodeName(validReq, spawnStage, ISAX, true)+ShiftmoduleSuffix+" && ((~"+fire2_reg+" | "+myLanguage.CreateFamNodeName(validResp, spawnStage, ISAX,false)+")); // Signals rest of logic valid spawn sig\n";
 			if(hasAddr)
 				FIFO_out +=  myLanguage.CreateLocalNodeName(addr, spawnStage, ISAX) +" = "+myLanguage.CreateFamNodeName(addr, spawnStage, ISAX,false)+";\n"; 
 			if(node.isInput)
 				FIFO_out +=  myLanguage.CreateLocalNodeName(node, spawnStage, ISAX) +" = "+myLanguage.CreateFamNodeName(node, spawnStage, ISAX,false)+";\n";
 			FIFO_out +=  node+"_"+ISAX+"_FIFO_read_s = 0;\n"
-					 +  "if("+node+"_"+ISAX+"_FIFO_notempty_s && !"+myLanguage.CreateRegNodeName(validReq, spawnStage, ISAX)+") begin \n"	
+					 +  "if("+node+"_"+ISAX+"_FIFO_notempty_s && (!"+myLanguage.CreateRegNodeName(validReq, spawnStage, ISAX)+" | "+myLanguage.CreateFamNodeName(validResp, spawnStage, ISAX,false)+")) begin \n"	
 					 + myLanguage.tab+" "+ myLanguage.CreateLocalNodeName(validReq, spawnStage, ISAX)+" = 1;\n "
 					 + node+"_"+ISAX+"_FIFO_read_s"+" = 1;\n ";
 			if(node.isInput)
@@ -1883,7 +1890,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 		+ "    if(|shift_reg[i])\n"
 		+ "      is_active = 1;\n"
 		+ "  end\n"
-		+ "end"
+		+ "end\n"
 		+ "assign stall_o = is_active & "+myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName())+";// stall when fence and active shift reg\n"
 		+ "always @(posedge clk_i) begin   \n"
 		+ "   if(!stall_i[0])  shift_reg[1] <= data_i;  \n"

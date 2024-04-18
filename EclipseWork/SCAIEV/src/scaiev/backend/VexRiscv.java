@@ -457,7 +457,6 @@ public class VexRiscv extends CoreBackend{
 			 
 			 if(this.ContainsOpInStage(BNode.RdMem_spawn, spawnStage)) {
 				 rdData += "io."+language.CreateNodeName(BNode.RdMem_spawn, spawnStage, "") +" := 0\n";
-				 rdData += "io."+language.CreateNodeName(BNode.RdMem_spawn_validResp, spawnStage, "") +" := "+this.language.GetDict(DictWords.False)+"\n";
 			 }
 			 
 			 // Do we need Rd/Wr Mem custom address? 
@@ -529,7 +528,7 @@ public class VexRiscv extends CoreBackend{
 			 }	 
 			 if(op_stage_instr.containsKey(BNode.RdMem_spawn) | op_stage_instr.containsKey(BNode.WrMem_spawn)) {
 				 invalidTransfer = language.OpIfNEmpty(invalidTransfer  , " || ") + "io."+ language.CreateNodeName(BNode.RdMem_spawn_validReq,spawnStage, "");
-				 defaultSigs += "io."+language.CreateNodeName(BNode.RdMem_spawn_validResp, spawnStage, "")+" := "+this.language.GetDict(DictWords.True)+";  \n";
+				 defaultSigs += "io."+language.CreateNodeName(BNode.RdMem_spawn_validResp, spawnStage, "")+" := "+this.language.GetDict(DictWords.False)+";  \n";
 			 }
 				
 			 // Compute data size. For common instr this is INSTRUCTION [14:13] , for spawn this is 2 
