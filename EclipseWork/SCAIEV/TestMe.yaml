@@ -12,4 +12,14 @@
     - interface: WrRD
       stage: 12
       is decoupled: 1
+- instruction: fence
+  mask: "00000000000000000111000000001011"
+  schedule:
+    - interface: RdFence
+      stage: 2
+- instruction: kill
+  mask: "00000000000000000110000000001011"
+  schedule:
+    - interface: RdKill
+      stage: 2
 - last stage: 4

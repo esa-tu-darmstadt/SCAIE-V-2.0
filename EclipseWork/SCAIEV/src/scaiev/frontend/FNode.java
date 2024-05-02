@@ -27,6 +27,8 @@ public class FNode{
 	public static SCAIEVNode WrFlush  = new SCAIEVNode("WrFlush",1,true){{oneInterfToISAX = false;}};
 	public static SCAIEVNode RdCSR  = new SCAIEVNode("RdCSR",32,false);
 	public static SCAIEVNode WrCSR  = new SCAIEVNode("WrCSR",32,true);
+	public static SCAIEVNode RdFence  = new SCAIEVNode("RdFence",1,false);
+	public static SCAIEVNode RdKill  = new SCAIEVNode("RdKill",1,false);
 	
 	public  HashSet<SCAIEVNode> user_FNode = new  HashSet<SCAIEVNode>();
 	public static String rdName = "Rd";
@@ -50,6 +52,8 @@ public class FNode{
 		fnodes.add(WrFlush);
 		fnodes.add(RdCSR);
 		fnodes.add(WrCSR);
+		fnodes.add(RdFence);
+		fnodes.add(RdKill);
 		if(!this.user_FNode.isEmpty()) fnodes.addAll(this.user_FNode);
 		return fnodes;
 	}

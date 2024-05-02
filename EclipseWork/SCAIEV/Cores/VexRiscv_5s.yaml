@@ -72,3 +72,13 @@
   latency: 0
   latest: 4
   costly: 5
+- operation: RdKill
+  earliest: 2
+  latency: 0
+  latest: 2
+  costly: 3
+- operation: RdFence
+  earliest: 2
+  latency: 0
+  latest: 2
+  costly: 3
