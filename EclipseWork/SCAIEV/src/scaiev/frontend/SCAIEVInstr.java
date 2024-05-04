@@ -106,8 +106,7 @@ public class SCAIEVInstr {
 						}
 					// We must distinguish : a) SCAL must implement spawn as decoupled b) SCAL must implement spawn with stall
 					if(!decoupled) {
-						if(node.name.contains("Mem")) System.out.println("CRITICAL WARNING Stall not yet supported for memory. please select is_decoupled parameter");
-						oldSched.UpdateStartCycle(core.GetStartSpawnStage()+1); // in stall strategy, result returned in start spawn stage + 1 
+						oldSched.UpdateStartCycle(core.GetStartSpawnStage()); // in stall strategy, operands read & result returned in start spawn stage
 					} else {
 						node_scheduled.remove(parentNode); // Remove parent node which was not spawn
 						PutSchedNode(node, oldSched); // Add spawn, leave user options for portability	

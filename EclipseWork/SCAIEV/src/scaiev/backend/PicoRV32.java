@@ -513,8 +513,8 @@ public class PicoRV32 extends CoreBackend {
 	this.PutNode( " ", "", "picorv32", BNode.RdMem_addr_valid,stageMem);
 	
 	this.PutNode( " ", "(!(decoder_trigger) || (cpu_state !=  cpu_state_fetch)) || "+language.CreateNodeName(BNode.WrStall, 0, ""), "picorv32", BNode.RdStall,0);
-	this.PutNode( " ", "(cpu_state !=  cpu_state_ld_rs1) || "+language.CreateNodeName(BNode.WrStall, 1, ""), "picorv32", BNode.RdStall,1);
-	this.PutNode( " ", language.CreateNodeName(BNode.WrStall, 2, "") + "|| ((cpu_state_exec ==  cpu_state) && (((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE) && (alu_wait || alu_wait_2))) ) || ((mem_do_prefetch || ~mem_done) && ((cpu_state == cpu_state_stmem ) ||(cpu_state == cpu_state_ldmem ) )) || (cpu_state ==  cpu_state_fetch) || (cpu_state ==  cpu_state_ld_rs1)", "picorv32", BNode.RdStall,2);
+	this.PutNode( " ", "(cpu_state !=  cpu_state_ld_rs1) ", "picorv32", BNode.RdStall,1);
+	this.PutNode( " ",  " ((cpu_state_exec ==  cpu_state) && (((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE) && (alu_wait || alu_wait_2))) ) || ((mem_do_prefetch || ~mem_done) && ((cpu_state == cpu_state_stmem ) ||(cpu_state == cpu_state_ldmem ) )) || (cpu_state ==  cpu_state_fetch) || (cpu_state ==  cpu_state_ld_rs1)", "picorv32", BNode.RdStall,2);
 	this.PutNode( " ", "0", "picorv32", BNode.RdStall,3);
 	
 	this.PutNode( " ", "", "picorv32", BNode.WrStall,0);

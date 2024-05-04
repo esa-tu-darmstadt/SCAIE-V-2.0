@@ -331,7 +331,7 @@ public class VexRiscv extends CoreBackend{
 			 int stageNr = stage;
 			 if(spawnValid)
 				 stageNr =  this.vex_core.maxStage+1;
-			 if(spawnValid || ContainsOpInStage(operation,stage) || operation.equals(BNode.WrFlush)) {
+			 if(spawnValid || ContainsOpInStage(operation,stage) || operation.equals(BNode.WrFlush)) {					
 				if(!(stage ==0 && operation.equals(BNode.WrFlush)))
 					interfaces += language.CreateInterface(operation,stageNr, "");	
 				if(stage ==1 &&  ContainsOpInStage(operation,stage-1) && operation.equals(BNode.WrFlush) )
@@ -858,7 +858,7 @@ public class VexRiscv extends CoreBackend{
 	 		//assign rdInstr = stages.get(stage)+".input(INSTRUCTION)";
 	 		this.PutNode( "Bits", stages.get(stage)+".input(INSTRUCTION)", stages.get(stage), BNode.RdInstr,stage);
 	 		this.PutNode( "UInt", stages.get(stage)+".input(PC)", stages.get(stage),BNode.RdPC,stage);
-	 		this.PutNode( "Bool", stages.get(stage)+".arbitration.isStuck", stages.get(stage), BNode.RdStall,stage);
+	 		this.PutNode( "Bool", stages.get(stage)+".arbitration.isStuckByOthers", stages.get(stage), BNode.RdStall,stage);
 	 		this.PutNode( "Bool", stages.get(stage)+".arbitration.isFlushed || (!"+stages.get(stage)+".arbitration.isValid)", stages.get(stage), BNode.RdFlush,stage); //|| (!"+stages.get(stage)+".arbitration.isValid)"
 	 		this.PutNode(  "Bool", stages.get(stage)+".arbitration.haltByOther", stages.get(stage), BNode.WrStall,stage);
 	 		if(stage>0)

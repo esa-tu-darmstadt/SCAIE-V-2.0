@@ -822,22 +822,22 @@ public class SCAL implements SCALBackendAPI {
 					+ myLanguage.tab+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s\n);\n";
 	    			
 	    			// Stall stages to commit result of decoupled node
-	    			for(int stage=0; stage <= (startSpawnStage+1);stage++) {
+	    			for(int stage=0; stage <= startSpawnStage;stage++) {
 	    	    		if(!stallStages[stage].isEmpty())
 	    	 	    		stallStages[stage] += " || ";
 	    	 	    	stallStages[stage] +=  "stall_multicycle_"+node+"_"+ISAX+"_s";
 	    			}
 	    		    declarations += "reg stall_multicycle_"+node+"_"+ISAX+"_s; // Stall signal for multicycle instr that does not run decoupled\n";
 	    			logic += "always @(*)  \n"
-	    			 		+ myLanguage.tab + "stall_multicycle_"+node+"_"+ISAX+"_s = "+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage+1, ISAX)+" &&  !"+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s;\n";
+	    			 		+ myLanguage.tab + "stall_multicycle_"+node+"_"+ISAX+"_s = "+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage, ISAX)+" &&  !"+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s;\n";
 	    			
 	    			// Send Result
-	    			declarations += myLanguage.CreateDeclSig(nonSpawnNode, (startSpawnStage+1), ISAX, false, myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage+1), ISAX));
-	    			logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage+1), ISAX), myLanguage.CreateNodeName(node, this.core.GetSpawnStage(), ISAX));
+	    			declarations += myLanguage.CreateDeclSig(nonSpawnNode, (startSpawnStage), ISAX, false, myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage), ISAX));
+	    			logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage), ISAX), myLanguage.CreateNodeName(node, this.core.GetSpawnStage(), ISAX));
 	    			if(this.ISAXes.get(ISAX).GetNodes(nonSpawnNode).get(0).HasAdjSig(AdjacentNode.validReq)) {
 	    				SCAIEVNode validNonSpawnReq =BNode.GetAdjSCAIEVNode(nonSpawnNode, AdjacentNode.validReq);
-	    				declarations += myLanguage.CreateDeclSig(validNonSpawnReq, (startSpawnStage+1), ISAX, false, myLanguage.CreateNodeName(validNonSpawnReq, (startSpawnStage+1), ISAX));
-	    				logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(validNonSpawnReq, (startSpawnStage+1), ISAX), myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node, AdjacentNode.validReq), this.core.GetSpawnStage(), ISAX));
+	    				declarations += myLanguage.CreateDeclSig(validNonSpawnReq, (startSpawnStage), ISAX, false, myLanguage.CreateNodeName(validNonSpawnReq, (startSpawnStage), ISAX));
+	    				logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(validNonSpawnReq, (startSpawnStage), ISAX), myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node, AdjacentNode.validReq), this.core.GetSpawnStage(), ISAX));
 	    			}
 	    		 }
 
@@ -938,17 +938,14 @@ public class SCAL implements SCALBackendAPI {
 	    }
 	    
 	    // Create RdStall Logic 
-	    // New Stall concept:  RdStall set by core BUT for stall decoupled we need this 
+	    // New Stall concept: RdStall from core does not include WrStall from ISAX 
 	    for(int stage=0; stage <= this.core.maxStage;stage++) 
 	    	if (this.ContainsOpInStage(BNode.RdStall,  stage)) {
 	    	 	String rdstall_val = myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage, "");
 	    	 	String IStall = "";
-	    	 	if(stallStages[stage].contains("to_CORE_stall_WB_")) {
+	    	 	if(!stallStages[stage].isEmpty() || this.op_stage_instr.containsKey(BNode.WrStall)) {
 	    	 		for (SCAIEVNode node : this.spawn_instr_stage.keySet())
-	    	 			for(String instr : this.spawn_instr_stage.get(node).keySet())
-							if(!this.ISAXes.get(instr).GetRunsAsDecoupled())
-								IStall += " && !"+"to_CORE_stall_WB_"+node+"_"+instr+"_o_s " ;
-	    	 		rdstall_val += IStall; // TODO. RdStall comes from core only!!
+	    	 			rdstall_val += " || " + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, ""); 
 	    	 	}
 				logic += "assign "+myLanguage.CreateNodeName(BNode.RdStall, stage, "")+" = "+rdstall_val+";\n";
 	    		
@@ -1683,7 +1680,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
    				logic += wire +"["+adjOperation.size+"-1:0]"+ myLanguage.CreateLocalNodeName(adjOperation, spawnStage, ISAX)+";\n";
 		}
 	
-		if(this.SETTINGwithInputFIFO) {
+		if(this.SETTINGwithInputFIFO && this.ISAXes.get(ISAX).GetRunsAsDecoupled()) { // if it's not decoupled and is multicycle, no need for input FIFO
 			SCAIEVNode validReq = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest());
 			SCAIEVNode validResp = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidResponse());		
 			SCAIEVNode addr = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetAddr());

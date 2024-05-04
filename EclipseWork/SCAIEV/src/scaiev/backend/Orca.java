@@ -86,15 +86,14 @@ public class Orca extends CoreBackend {
 	private void IntegrateISAX_RdStall() {
 		if(op_stage_instr.containsKey(BNode.RdStall)) {
 			for(int stage : op_stage_instr.get(BNode.RdStall).keySet()) {
-				if(stage<3) {
-					if(!this.ContainsOpInStage(BNode.WrStall, stage))  {
-						toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, stage)),Parse.declare,	new ToWrite(language.CreateDeclSig(BNode.WrStall, stage, ""), false, true,""));				
-						toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, stage)),Parse.behav,	  new ToWrite(language.CreateLocalNodeName(BNode.WrStall, stage, "") + " <= '0';\n",false,true,""));
-					} else {
-						toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, stage)),Parse.behav,	  new ToWrite(language.CreateLocalNodeName(BNode.WrStall, stage, "") + " <= "+language.CreateNodeName(BNode.WrStall, stage, "")+";\n",false,true,""));
-						toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, stage)),Parse.declare,	new ToWrite(language.CreateDeclSig(BNode.WrStall, stage, ""), false, true,""));				
-						
-					}
+				if(stage==3) {
+					String RdStallText = this.language.CreateNodeName(BNode.RdStall, stage, "") + " <= not((not to_execute_valid) or (from_writeback_ready and\n"
+							+ "                                                   (((not lsu_select) or from_lsu_ready) and\n"
+							+ "                                                    ((not alu_select) or from_alu_ready) and\n"
+							+ "                                                    ((not syscall_select) or from_syscall_ready) and\n"
+							+ "                                                    ((not vcp_select) or vcp_ready)))) or (not  (from_writeback_ready));";
+					toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, 3)), "to_vcp_valid     <=",new ToWrite(RdStallText,false,true,""));
+					
 				}
 				if(stage==2) {
 					language.UpdateInterface(NodeAssignM(BNode.RdStall, stage), ISAX_frwrd_to_stage1_ready, "", stage, false, false); 
@@ -603,10 +602,10 @@ public class Orca extends CoreBackend {
 	 	this.PutNode( "std_logic", "", "load_store_unit", BNode.RdMem_addr_valid,stageMem);
 	 	
 	 
-	 	this.PutNode( "std_logic", "not (pc_fifo_write) or "+language.CreateLocalNodeName(BNode.WrStall, 0, ""), "instruction_fetch", BNode.RdStall,0);
+	 	this.PutNode( "std_logic", "not (pc_fifo_write) ", "instruction_fetch", BNode.RdStall,0);
 	 	this.PutNode( "std_logic", "not (decode_to_ifetch_ready) ", "orca_core", BNode.RdStall,1);
-	 	this.PutNode( "std_logic", "not ("+language.CreateLocalNodeName(ISAX_frwrd_to_stage1_ready, 2, "")+") or "+language.CreateLocalNodeName(BNode.WrStall, 2, ""), "orca_core", BNode.RdStall,2);
-	 	this.PutNode( "std_logic", "not (from_execute_ready) or (not (from_writeback_ready))  ", "execute", BNode.RdStall,3);	 // wrstall already within execute_to_decode_ready  	
+	 	this.PutNode( "std_logic", "not ("+language.CreateLocalNodeName(ISAX_frwrd_to_stage1_ready, 2, "")+")", "orca_core", BNode.RdStall,2);
+	 	this.PutNode( "std_logic", "", "execute", BNode.RdStall,3);	  	
 	 	this.PutNode( "std_logic", "not (from_writeback_ready)", "execute", BNode.RdStall,4);
 	 	
 	 	this.PutNode( "std_logic", "", "instruction_fetch", BNode.WrStall,0);
