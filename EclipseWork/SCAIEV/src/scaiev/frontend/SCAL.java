@@ -312,7 +312,7 @@ public class SCAL implements SCALBackendAPI {
     	 for(int stage = 0 ; stage <= core.maxStage; stage++) {
 			RdIValidStageDesc iValidStageDesc = stage_containsRdIValid.get(stage);
 			if (iValidStageDesc == null) iValidStageDesc = new RdIValidStageDesc();
-			String condStageValid = iValidStageDesc.validCond_isax.getOrDefault("", "") + " && !"+this.myLanguage.CreateNodeName(BNode.RdFlush.NodeNegInput(),stage, "");
+			String condStageValid = iValidStageDesc.validCond_isax.getOrDefault("", "") + " && !"+this.myLanguage.CreateLocalNodeName(BNode.RdFlush,stage, "");
 			if(!iValidStageDesc.instructions.isEmpty())
 				for(String instrName : iValidStageDesc.instructions) {
 					if(!ISAXes.get(instrName).HasNoOp()) { // If it's an instruction without opcode, we can not generate a RdIValid signal ( we can not decode). That logic is by default always enabled
@@ -347,7 +347,7 @@ public class SCAL implements SCALBackendAPI {
 			    	 declarations += this.myLanguage.CreateDeclReg(rdNode,stage,"");
 			    	 if(!addRdNodeReg.get(rdNode).contains(stage-1))
 			    		 signalAssign = this.myLanguage.CreateNodeName(rdNode.NodeNegInput(), stage-1, "");
-			    	 logic += this.myLanguage.CreateTextRegReset(signalName, "("+this.myLanguage.CreateNodeName(BNode.RdFlush.NodeNegInput(), stage-1, "")+") ? 0 : "+signalAssign, this.myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage-1, ""));
+			    	 logic += this.myLanguage.CreateTextRegReset(signalName, "("+this.myLanguage.CreateLocalNodeName(BNode.RdFlush, stage-1, "")+") ? 0 : "+signalAssign, this.myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage-1, ""));
 			     
 		    	 }
 		     }
@@ -446,9 +446,11 @@ public class SCAL implements SCALBackendAPI {
 					wrFlush = GenerateText.OpIfNEmpty(wrFlush, this.myLanguage.GetDict(DictWords.logical_or))+this.myLanguage.CreateNodeName(BNode.WrPC_valid.NodeNegInput(), stage+1, "");
 			if(!wrFlush.isEmpty()) 
 				logic += this.myLanguage.CreateAssign(myLanguage.CreateNodeName(FNode.WrFlush.NodeNegInput(), stage, "") , wrFlush); // assign flush signal which goes to core
-			// New spawn flush concept: rdflush comes only from core
-			//if(this.ContainsOpInStage(FNode.RdFlush, stage)) // TODO how does this work with spwn?
-			//	logic += this.myLanguage.CreateAssign(myLanguage.CreateNodeName(FNode.RdFlush, stage, "") , GenerateText.OpIfNEmpty(wrFlush, this.myLanguage.GetDict(DictWords.logical_or) ) +  myLanguage.CreateNodeName(FNode.RdFlush.NodeNegInput(), stage, "") );
+			// New spawn flush concept: rdflush from core only says if core flushed 
+			declarations += this.myLanguage.CreateDeclSig(FNode.RdFlush,stage,"",false); // declare rdflus_s to be used within scal and forwarded to user isax
+			logic += this.myLanguage.CreateAssign(myLanguage.CreateLocalNodeName(FNode.RdFlush, stage, "") , GenerateText.OpIfNEmpty(wrFlush, this.myLanguage.GetDict(DictWords.logical_or) ) +  myLanguage.CreateNodeName(FNode.RdFlush.NodeNegInput(), stage, "") );		
+			if(this.ContainsOpInStage(FNode.RdFlush, stage)) 
+				logic += this.myLanguage.CreateAssign(myLanguage.CreateNodeName(FNode.RdFlush, stage, "") , myLanguage.CreateLocalNodeName(FNode.RdFlush, stage, ""));
 		
 		}
 	    
@@ -678,11 +680,7 @@ public class SCAL implements SCALBackendAPI {
 					 if(flStage> startSpawnStage+1)
 						 flush = ","+flush;
 					 if(flStage <= core.GetNodes().get(BNode.RdFlush).GetLatest())
-					 {
-						 flush = myLanguage.CreateNodeName(BNode.RdFlush.NodeNegInput(),  flStage, "")+flush;
-						 if(ContainsOpInStage(BNode.WrFlush,flStage))
-							 flush = myLanguage.CreateLocalNodeName(BNode.WrFlush, flStage, "")+ " || "+flush;
-					 }
+						 flush = myLanguage.CreateLocalNodeName(BNode.RdFlush,  flStage, "")+flush;
 					 else
 						 flush = "1'b0" + flush;
 					 if(ContainsOpInStage(BNode.WrStall,flStage))
@@ -718,7 +716,7 @@ public class SCAL implements SCALBackendAPI {
 				    	 declarations += this.myLanguage.CreateDeclReg(BNode.RdInstr,stage,"");
 				    	 if(!addRdNodeReg.containsKey(BNode.RdInstr) || !addRdNodeReg.get(BNode.RdInstr).contains(stage-1))
 				    		 signalAssign = this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), stage-1, "");
-				    	 logic += this.myLanguage.CreateTextRegReset(signalName, "("+this.myLanguage.CreateNodeName(BNode.RdFlush.NodeNegInput(), stage-1, "")+") ? 0 : "+signalAssign, this.myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage-1, ""));
+				    	 logic += this.myLanguage.CreateTextRegReset(signalName, "("+this.myLanguage.CreateLocalNodeName(BNode.RdFlush, stage-1, "")+") ? 0 : "+signalAssign, this.myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage-1, ""));
 				     
 	    		     }
 	    		 }
@@ -880,7 +878,7 @@ public class SCAL implements SCALBackendAPI {
     			 logic +=  "spawndatah_"+node+" spawndatah_"+node+"_inst(        \n"
     			 + "	.clk_i("+myLanguage.clk+"),                           \n"
     			 + "	.rst_i("+myLanguage.reset+"),             \n"
-    			 + "	.flush_i({"+flush+","+ myLanguage.CreateNodeName(BNode.RdFlush.NodeNegInput(), this.core.GetStartSpawnStage(), "")+"}),	 \n"
+    			 + "	.flush_i({"+flush+","+ myLanguage.CreateLocalNodeName(BNode.RdFlush, this.core.GetStartSpawnStage(), "")+"}),	 \n"
     			 + "	.RdIValid_ISAX0_2_i("+allIValid+"), \n"
     			 + "	.RdInstr_RDRS_i({"+instrSig+"[31:20], "+RdRS1Sig+","+instrSig+"[14:12],"+destSig+" ,"+instrSig+"[6:0] }),     \n"
     			 + "    ."+this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+"("+this.myLanguage.CreateLocalNodeName(BNode.RdIValid, this.core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+"),\n"

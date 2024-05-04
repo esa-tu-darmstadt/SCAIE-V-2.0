@@ -522,10 +522,10 @@ public class PicoRV32 extends CoreBackend {
 	this.PutNode( " ", "", "picorv32", BNode.WrStall,2);
 	this.PutNode( " ", "", "picorv32", BNode.WrStall,3);
 	
-	this.PutNode( " ", "(!(decoder_trigger) || (cpu_state !=  cpu_state_fetch)) || "+language.CreateLocalNodeName(BNode.WrFlush, 0, ""), "picorv32", BNode.RdFlush,0);
-	this.PutNode( " ", "(cpu_state !=  cpu_state_ld_rs1) || "+language.CreateLocalNodeName(BNode.WrFlush, 1, ""), "picorv32", BNode.RdFlush,1);
+	this.PutNode( " ", "(!(decoder_trigger) || (cpu_state !=  cpu_state_fetch)) ", "picorv32", BNode.RdFlush,0);
+	this.PutNode( " ", "(cpu_state !=  cpu_state_ld_rs1) ", "picorv32", BNode.RdFlush,1);
 	this.PutNode( " ", " ~(|cpu_state[3:0]) || "+ language.CreateLocalNodeName(BNode.WrFlush, 2, ""), "picorv32", BNode.RdFlush,2);
-	this.PutNode( " ",  "(cpu_state !=  cpu_state_fetch) || "+language.CreateLocalNodeName(BNode.WrFlush, 3, ""), "picorv32", BNode.RdFlush,3); // TODO should be improved
+	this.PutNode( " ",  "(cpu_state !=  cpu_state_fetch)", "picorv32", BNode.RdFlush,3); // TODO should be improved
 	
 // WrFlush does not make sense without WrPC for this core and WrFlush is set in SCAL in case of WrPC
 	this.PutNode( " ", "", "picorv32", BNode.WrFlush,0);
