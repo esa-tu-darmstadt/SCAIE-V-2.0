@@ -219,8 +219,6 @@ public class Orca extends CoreBackend {
 			decl_lineToBeInserted += "signal "+ISAX_execute_to_rf_valid_s+" : std_logic;\n";
 			decl_lineToBeInserted += "signal "+ISAX_execute_to_rf_data_s+" : std_logic_vector(REGISTER_SIZE-1 downto 0);\n";
 			toFile.UpdateContent(this.ModFile("orca_core"),Parse.declare, new ToWrite(decl_lineToBeInserted,false,true,""));
-			language.UpdateInterface("orca",BNode.WrRD_valid, "",3,true,false);
-			language.UpdateInterface("orca",BNode.WrRD_validData, "",3,true,false);
 					
 			// Send to decode correct result
 			toFile.ReplaceContent(this.ModFile("orca_core"),"to_rf_data   =>", new ToWrite("to_rf_data => "+ISAX_execute_to_rf_data_s+",",true,false,"D : decode"));
@@ -234,14 +232,14 @@ public class Orca extends CoreBackend {
 						+ "    els";
 			}
 			if(this.ContainsOpInStage(BNode.WrRD, 3)) {
-				wrrdDataBody +=  "if( "+language.CreateRegNodeName(BNode.WrRD_valid, 3, "")+" = '1' &&  "+language.CreateRegNodeName(BNode.WrRD_validData, 3, "")+"= '1' ) then\n"
-						+ tab+"to_rf_data <= "+language.CreateRegNodeName(BNode.WrRD, 3, "")+"; \n"
-						+ "endif";			
+				wrrdDataBody +=  "if( "+language.CreateRegNodeName(BNode.WrRD_valid, 3, "")+" = '1' and  "+language.CreateRegNodeName(BNode.WrRD_validData, 3, "")+" = '1' ) then\n"
+						+ tab+ISAX_execute_to_rf_data_s +" <= "+language.CreateRegNodeName(BNode.WrRD, 3, "")+"; \n"
+						+ "    els";			
 			}
 			
 			if(this.ContainsOpInStage(BNode.WrRD, 4)) {
 				language.UpdateInterface("orca",BNode.WrRD_validData, "",4,true,false);
-				wrrdDataBody +=  "if( "+language.CreateNodeName(BNode.WrRD_validData, 4, "")+" = '1' && "+language.CreateRegNodeName(BNode.WrRD_validData, 4, "")+" = '0') then\n"
+				wrrdDataBody +=  "if( "+language.CreateNodeName(BNode.WrRD_validData, 4, "")+" = '1' and "+language.CreateRegNodeName(BNode.WrRD_validData, 4, "")+" = '0') then\n"
 						+ tab+ISAX_execute_to_rf_data_s+" <= "+language.CreateNodeName(BNode.WrRD, 4, "")+"; \n"
 						+ "    els";
 			}
@@ -261,7 +259,7 @@ public class Orca extends CoreBackend {
 						+ tab+ISAX_execute_to_rf_valid_s+" <=  '1';\n"
 						+ "    els";
 			}
-			wrrdValid += "e\n"+ tab+ISAX_execute_to_rf_valid_s+" <= execute_to_rf_valid;\nend if;\n";		
+			wrrdValid =  this.language.OpIfNEmpty( "e\n", wrrdValid) + tab+ISAX_execute_to_rf_valid_s+" <= execute_to_rf_valid;\n " +this.language.OpIfNEmpty("end if;\n", wrrdValid);		
 			toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateInProc(false, wrrdValid),false,true,""));
 			
 			
