@@ -447,17 +447,19 @@ public class SCAL implements SCALBackendAPI {
 			if(!wrFlush.isEmpty()) 
 				logic += this.myLanguage.CreateAssign(myLanguage.CreateNodeName(FNode.WrFlush.NodeNegInput(), stage, "") , wrFlush); // assign flush signal which goes to core
 			// New spawn flush concept: rdflush from core only says if core flushed 
-			declarations += this.myLanguage.CreateDeclSig(FNode.RdFlush,stage,"",false); // declare rdflus_s to be used within scal and forwarded to user isax
-			logic += this.myLanguage.CreateAssign(myLanguage.CreateLocalNodeName(FNode.RdFlush, stage, "") , GenerateText.OpIfNEmpty(wrFlush, this.myLanguage.GetDict(DictWords.logical_or) ) +  myLanguage.CreateNodeName(FNode.RdFlush.NodeNegInput(), stage, "") );		
-			if(this.ContainsOpInStage(FNode.RdFlush, stage)) 
+			if(this.ContainsOpInStage(FNode.RdFlush, stage)  | (this.addToCoreInterf.containsKey(FNode.RdFlush) && this.addToCoreInterf.get(FNode.RdFlush).contains(stage)) )  {
 				logic += this.myLanguage.CreateAssign(myLanguage.CreateNodeName(FNode.RdFlush, stage, "") , myLanguage.CreateLocalNodeName(FNode.RdFlush, stage, ""));
-		
+				declarations += this.myLanguage.CreateDeclSig(FNode.RdFlush,stage,"",false); // declare rdflus_s to be used within scal and forwarded to user isax
+				logic += this.myLanguage.CreateAssign(myLanguage.CreateLocalNodeName(FNode.RdFlush, stage, "") , GenerateText.OpIfNEmpty(wrFlush, this.myLanguage.GetDict(DictWords.logical_or) ) +  myLanguage.CreateNodeName(FNode.RdFlush.NodeNegInput(), stage, "") );		
+				
+			}
 		}
 	    
 		
 	    ////////////////////// LOGIC FOR WR STALL //////////////////////
 	    // Has to be handled separately because spawn operations need to update it. 
 	    String [] stallStagesPrefix = new String[ this.core.maxStage+1];
+	    String donStallISAX = ""; // used by multicycle instructions, which should stall only the core but not the ISASX.
 	    String [] stallStages = new String[ this.core.maxStage+1];
 	    for(int stage= this.core.maxStage; stage >=0;stage--) {
 	    	stallStages[stage] ="";
@@ -811,7 +813,7 @@ public class SCAL implements SCALBackendAPI {
 	    			 SCAIEVNode nonSpawnNode = BNode.GetSCAIEVNode(node.nameParentNode);
 	    			 declarations += "wire "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s;\n";
 	    			 logic +=  this.CountermoduleName+"  #(\n"
-					+ ( spawn_instr_stage.get(node).get(ISAX) - this.core.GetStartSpawnStage()) + "\n"
+					+ ( spawn_instr_stage.get(node).get(ISAX) - this.core.GetStartSpawnStage() + 1) + "\n"
 					+ ") counter_"+ISAX+"_inst (\n"
 					+ myLanguage.tab+myLanguage.clk+", \n"
 					+ myLanguage.tab+myLanguage.reset+", \n"
@@ -828,7 +830,7 @@ public class SCAL implements SCALBackendAPI {
 	    		    declarations += "reg stall_multicycle_"+node+"_"+ISAX+"_s; // Stall signal for multicycle instr that does not run decoupled\n";
 	    			logic += "always @(*)  \n"
 	    			 		+ myLanguage.tab + "stall_multicycle_"+node+"_"+ISAX+"_s = "+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage, ISAX)+" &&  !"+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s;\n";
-	    			
+	    			donStallISAX += " && !stall_multicycle_"+node+"_"+ISAX+"_s";
 	    			// Send Result
 	    			declarations += myLanguage.CreateDeclSig(nonSpawnNode, (startSpawnStage), ISAX, false, myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage), ISAX));
 	    			logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage), ISAX), myLanguage.CreateNodeName(node, this.core.GetSpawnStage(), ISAX));
@@ -943,7 +945,7 @@ public class SCAL implements SCALBackendAPI {
 	    	 	String IStall = "";
 	    	 	if(!stallStages[stage].isEmpty() || this.op_stage_instr.containsKey(BNode.WrStall)) {
 	    	 		for (SCAIEVNode node : this.spawn_instr_stage.keySet())
-	    	 			rdstall_val += " || " + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, ""); 
+	    	 			rdstall_val += " || (" + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, "") +donStallISAX +" ) "; 
 	    	 	}
 				logic += "assign "+myLanguage.CreateNodeName(BNode.RdStall, stage, "")+" = "+rdstall_val+";\n";
 	    		
@@ -1846,7 +1848,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ " else if(counter>0)   \n"
 				+ "	 counter <= counter-1; \n"
 				+ "end \n"
-				+ "assign zero_o = (counter == 0 );"
+				+ "assign zero_o = (counter == 1 );"
 				+ "endmodule\n"
 				+ "\n";
 		return CounterModuleContent;
