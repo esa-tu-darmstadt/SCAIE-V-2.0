@@ -238,7 +238,7 @@ public class Orca extends CoreBackend {
 			}
 			
 			if(this.ContainsOpInStage(BNode.WrRD, 4)) {
-				language.UpdateInterface("orca",BNode.WrRD_validData, "",4,true,false);
+				//language.UpdateInterface("orca",BNode.WrRD_validData, "",4,true,false);
 				wrrdDataBody +=  "if( "+language.CreateNodeName(BNode.WrRD_validData, 4, "")+" = '1' and "+language.CreateRegNodeName(BNode.WrRD_validData, 4, "")+" = '0') then\n"
 						+ tab+ISAX_execute_to_rf_data_s+" <= "+language.CreateNodeName(BNode.WrRD, 4, "")+"; \n"
 						+ "    els";
@@ -259,7 +259,7 @@ public class Orca extends CoreBackend {
 						+ tab+ISAX_execute_to_rf_valid_s+" <=  '1';\n"
 						+ "    els";
 			}
-			wrrdValid =  this.language.OpIfNEmpty( "e\n", wrrdValid) + tab+ISAX_execute_to_rf_valid_s+" <= execute_to_rf_valid;\n " +this.language.OpIfNEmpty("end if;\n", wrrdValid);		
+			wrrdValid =  this.language.OpIfNEmpty(wrrdValid, "e\n") + tab+ISAX_execute_to_rf_valid_s+" <= execute_to_rf_valid;\n " +this.language.OpIfNEmpty(wrrdValid,"end if;\n");		
 			toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateInProc(false, wrrdValid),false,true,""));
 			
 			
@@ -281,7 +281,7 @@ public class Orca extends CoreBackend {
 			// If we have writes both in stage 3 and 4, we need to know which data to take in 4, for this we need if _validData[4] && !_validData_reg[3] --> reg for validData[3]
 			decl_lineToBeInserted += this.language.CreateDeclReg(BNode.WrRD_validData, 4, ""); 
 			if(this.ContainsOpInStage(BNode.WrRD, 3)) { 
-				language.UpdateInterface("orca",BNode.WrRD_validData, "",3,true,false);
+				//language.UpdateInterface("orca",BNode.WrRD_validData, "",3,true,false);
 				if(this.ContainsOpInStage(BNode.WrRD, 4))
 					toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateTextRegResetStall(language.CreateRegNodeName(BNode.WrRD_validData, 4, ""), language.CreateNodeName(BNode.WrRD_validData, 3, ""), "from_execute_ready"),false,true,"")); // add logic			
 			} else 
