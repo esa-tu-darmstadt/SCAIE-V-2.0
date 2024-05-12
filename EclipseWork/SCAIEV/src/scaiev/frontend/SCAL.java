@@ -1334,8 +1334,17 @@ public class SCAL implements SCALBackendAPI {
 				int maxStall = core.maxStage;
 				if(operation.equals(BNode.WrMem_spawn) || operation.equals(BNode.RdMem_spawn) )
 					maxStall = core.GetNodes().get(BNode.WrMem).GetEarliest();
-				for(int stage = this.core.GetNodes().get(BNode.WrStall).GetEarliest(); stage<=maxStall; stage++) // TODO workaround
-						AddToCoreInterfHashMap (BNode.WrStall,stage);
+				
+				// Add WrStall ONLY if needed (multicycle does not need to stall entire core)
+				boolean allMulticycle = true; 
+				for(String instr : this.spawn_instr_stage.get(operation).keySet())
+					if(ISAXes.get(instr).GetRunsAsDecoupled())
+						allMulticycle = false;
+				if(!allMulticycle) { // Decoupled stall entire core
+					for(int stage = this.core.GetNodes().get(BNode.WrStall).GetEarliest(); stage<=maxStall; stage++) // TODO workaround
+							AddToCoreInterfHashMap (BNode.WrStall,stage);
+				} else // Multicycle only
+					AddToCoreInterfHashMap (BNode.WrStall,this.core.GetNodes().get(BNode.GetSCAIEVNode(operation.nameParentNode)).GetEarliest());
 				
 				if(operation.allowMultipleSpawn) { // mem and wrrd need this for fence, kill spawn instr. WrRd needs it for scoreboard too for DH
 					AddToCoreInterfHashMap (BNode.RdInstr,this.core.GetStartSpawnStage());

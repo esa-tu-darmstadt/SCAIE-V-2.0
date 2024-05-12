@@ -64,7 +64,7 @@ public class VHDL extends GenerateText {
 			if(!current_module.contentEquals(top_module) || top_interface) {  // top file should just instantiate signal in module instantiation and not generate top interface
 				System.out.println("INTEGRATE. DEBUG. Inserting in components.vhd with prereq "+ current_module);
 				this.toFile.UpdateContent(coreBackend.ModInterfFile(current_module),"port (", new ToWrite(CreateTextInterface(operation,stage,instr,special_case),true,false," "+current_module+" "));
-				this.toFile.UpdateContent(coreBackend.ModFile(current_module),"port (", new ToWrite(CreateTextInterface(operation,stage,instr,special_case),true,false," "+current_module+" "));		
+				this.toFile.UpdateContent(coreBackend.ModFile(current_module),"port (", new ToWrite(CreateTextInterface(operation,stage,instr,special_case),true,false,"entity "+current_module+" "));		
 			} else if(current_module.contentEquals(top_module)) {
 				this.toFile.UpdateContent(coreBackend.ModFile(current_module),"architecture rtl",new ToWrite(CreateDeclSig(operation, stage, instr),true,false," "+current_module+" "));
 			}
