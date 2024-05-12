@@ -231,19 +231,23 @@ public class Orca extends CoreBackend {
 						+ tab+ISAX_execute_to_rf_data_s+" <= "+language.CreateNodeName(BNode.WrRD_spawn, 5, "")+"; \n"
 						+ "    els";
 			}
-			if(this.ContainsOpInStage(BNode.WrRD, 3)) {
-				wrrdDataBody +=  "if( "+language.CreateRegNodeName(BNode.WrRD_valid, 3, "")+" = '1' and  "+language.CreateRegNodeName(BNode.WrRD_validData, 3, "")+" = '1' ) then\n"
-						+ tab+ISAX_execute_to_rf_data_s +" <= "+language.CreateRegNodeName(BNode.WrRD, 3, "")+"; \n"
-						+ "    els";			
-			}
-			
 			if(this.ContainsOpInStage(BNode.WrRD, 4)) {
 				//language.UpdateInterface("orca",BNode.WrRD_validData, "",4,true,false);
 				wrrdDataBody +=  "if( "+language.CreateNodeName(BNode.WrRD_validData, 4, "")+" = '1' and "+language.CreateRegNodeName(BNode.WrRD_validData, 4, "")+" = '0') then\n"
 						+ tab+ISAX_execute_to_rf_data_s+" <= "+language.CreateNodeName(BNode.WrRD, 4, "")+"; \n"
 						+ "    els";
+				toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateInProc(false, wrrdDataBody),false,true,""));
 			}
-			wrrdDataBody += "e\n"+ tab+ISAX_execute_to_rf_data_s+" <= execute_to_rf_data;\nend if;\n";		
+			if(this.ContainsOpInStage(BNode.WrRD, 3)) {
+				String replaceText  = "if lui_select = '1' then"; 
+				String addText =  "if( "+language.CreateNodeName(BNode.WrRD_valid, 3, "")+" = '1' and  "+language.CreateNodeName(BNode.WrRD_validData, 3, "")+" = '1' ) then\n"
+						          + tab + "from_alu_data <= "+language.CreateNodeName(BNode.WrRD, 3, "")+"; \n"
+						          + tab + "from_alu_valid <= '1';\n"
+						          + "elsif lui_select = '1' then\n";
+				toFile.ReplaceContent(this.ModFile("arithmetic_unit"),replaceText, new ToWrite(addText,false,true,""));
+			}
+			
+			wrrdDataBody +=  this.language.OpIfNEmpty(wrrdDataBody, "e\n") + tab+ISAX_execute_to_rf_data_s+" <= execute_to_rf_data;\n"+this.language.OpIfNEmpty(wrrdDataBody,"end if;\n");				
 			toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateInProc(false, wrrdDataBody),false,true,""));
 			
 			
@@ -258,7 +262,8 @@ public class Orca extends CoreBackend {
 				wrrdValid +=  "if( "+language.CreateNodeName(BNode.WrRD_valid, 4, "")+" = '1' and (execute_to_rf_select /=\"00000\") ) then\n"
 						+ tab+ISAX_execute_to_rf_valid_s+" <=  '1';\n"
 						+ "    els";
-			}
+			} else // default signal to avoid error in wrapper
+				language.UpdateInterface("orca",BNode.WrRD_valid, "",4,true,false);
 			wrrdValid =  this.language.OpIfNEmpty(wrrdValid, "e\n") + tab+ISAX_execute_to_rf_valid_s+" <= execute_to_rf_valid;\n " +this.language.OpIfNEmpty(wrrdValid,"end if;\n");		
 			toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateInProc(false, wrrdValid),false,true,""));
 			
@@ -280,11 +285,9 @@ public class Orca extends CoreBackend {
 			// Compute ValidData DH Signal 
 			// If we have writes both in stage 3 and 4, we need to know which data to take in 4, for this we need if _validData[4] && !_validData_reg[3] --> reg for validData[3]
 			decl_lineToBeInserted += this.language.CreateDeclReg(BNode.WrRD_validData, 4, ""); 
-			if(this.ContainsOpInStage(BNode.WrRD, 3)) { 
-				//language.UpdateInterface("orca",BNode.WrRD_validData, "",3,true,false);
-				if(this.ContainsOpInStage(BNode.WrRD, 4))
+			if(this.ContainsOpInStage(BNode.WrRD, 3) && this.ContainsOpInStage(BNode.WrRD, 4)) 
 					toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateTextRegResetStall(language.CreateRegNodeName(BNode.WrRD_validData, 4, ""), language.CreateNodeName(BNode.WrRD_validData, 3, ""), "from_execute_ready"),false,true,"")); // add logic			
-			} else 
+			else if(this.ContainsOpInStage(BNode.WrRD, 4))
 				toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateRegNodeName(BNode.WrRD_validData, 4, "") + " <= '0';\n",false,true,"")); // add default logic			
 			
 
@@ -534,7 +537,7 @@ public class Orca extends CoreBackend {
 		PutModule(pathORCA+"/components.vhd","instruction_fetch"	, pathORCA+"/instruction_fetch.vhd", "orca_core","instruction_fetch");
 		PutModule(pathORCA+"/components.vhd","decode"				, pathORCA+"/decode.vhd",			   "orca_core","decode");
 		PutModule(pathORCA+"/components.vhd","execute"				, pathORCA+"/execute.vhd", 		   "orca_core","execute");
-		PutModule(pathORCA+"/components.vhd","arithmetic_unit"		, pathORCA+"/alu.vhd",			   "execute",  "arithmetic_unit ");
+		PutModule(pathORCA+"/components.vhd","arithmetic_unit"		, pathORCA+"/alu.vhd",			   "execute",  "arithmetic_unit");
 		PutModule(pathORCA+"/components.vhd","branch_unit"			, pathORCA+"/branch_unit.vhd",	   "execute",  "branch_unit");
 		PutModule(pathORCA+"/components.vhd","load_store_unit"		, pathORCA+"/load_store_unit.vhd",   "execute",  "load_store_unit");
 		PutModule(pathORCA+"/components.vhd","orca_core"			, pathORCA+"/orca_core.vhd",		   "orca",     "orca_core");
@@ -566,10 +569,10 @@ public class Orca extends CoreBackend {
 	 	this.PutNode( "std_logic_vector", "rs2_data", "decode", BNode.RdRS2,2);
 	 	this.PutNode( "std_logic_vector", "rs2_data", "execute", BNode.RdRS2,3);	
 	 	
-	 	this.PutNode( "std_logic_vector", "", "execute", BNode.WrRD,3); 
+	 	this.PutNode( "std_logic_vector", "", "arithmetic_unit", BNode.WrRD,3); 
 	 	this.PutNode( "std_logic_vector", "", "execute", BNode.WrRD,4); 
-	 	this.PutNode( "std_logic", "", "execute", BNode.WrRD_valid,3); 
-	 	this.PutNode( "std_logic", "", "execute", BNode.WrRD_validData,3); 
+	 	this.PutNode( "std_logic", "", "arithmetic_unit", BNode.WrRD_valid,3); 
+	 	this.PutNode( "std_logic", "", "arithmetic_unit", BNode.WrRD_validData,3); 
 	 	//this.PutNode( "std_logic_vector", "", "orca_core", BNode.WrRD_addr,4);
 	 	this.PutNode( "std_logic", "", "execute", BNode.WrRD_valid,4);
 	 	this.PutNode( "std_logic", "", "execute", BNode.WrRD_validData,4); 

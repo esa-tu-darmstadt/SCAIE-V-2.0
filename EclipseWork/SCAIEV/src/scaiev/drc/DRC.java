@@ -61,13 +61,13 @@ public class DRC {
 				 if(op_stage_instr.get(operation).containsKey(stage)) {
 					 if( !operation.isSpawn()) {
 						 if(!core.GetNodes().containsKey(operation)) {
-							 System.out.println("ERROR. DRC. Requested operation "+operation+" does not exist ");
+							 System.out.println("ERROR. DRC. Requested operation "+operation+" does not exist. Input schedule was: "+op_stage_instr);
 							 System.exit(1);					
 						 }						 
 						 end_constrain_cycle = core.GetNodes().get(operation).GetLatest();
 						 start_constrain_cycle = core.GetNodes().get(operation).GetEarliest();
 						 if(stage<start_constrain_cycle || stage>end_constrain_cycle) {
-							 System.out.println("ERROR. DRC. For an instruction node "+operation+" was scheduled in wrong cycle ");
+							 System.out.println("ERROR. DRC. For an instruction node "+operation+" was scheduled in wrong cycle "+stage+". Earliest = "+start_constrain_cycle+" latest = "+end_constrain_cycle);
 							 System.exit(1);					
 						 }
 					 } else if(operation.isSpawn() && (stage==max_stage+1))
