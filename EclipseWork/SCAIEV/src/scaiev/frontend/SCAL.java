@@ -1854,7 +1854,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "	 counter <= 0; \n"
 				+ " else if(write_valid_i && !stall_i && counter==0)   \n"
 				+ "	 counter <= NR_CYCLES-1; \n"
-				+ " else if(counter>0)   \n"
+				+ " else if((counter>1) || counter == 1 && !stall_i)   \n"
 				+ "	 counter <= counter-1; \n"
 				+ "end \n"
 				+ "assign zero_o = (counter == 1 );"

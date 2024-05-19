@@ -159,10 +159,10 @@ public class VexRiscv extends CoreBackend{
 		String setupText  = "" ; 
 		int tabs = toFile.nrTabs;
 		String tab = toFile.tab;
-		boolean defaultMemAddr = (isax.HasNode(BNode.RdMem) && !isax.GetFirstNode(BNode.RdMem).HasAdjSig(AdjacentNode.addr)  ) ||  
-				                 (isax.HasNode(BNode.WrMem) && !isax.GetFirstNode(BNode.WrMem).HasAdjSig(AdjacentNode.addr)  ) || 
-				                 (isax.HasNode(BNode.RdMem_spawn) && !isax.GetFirstNode(BNode.RdMem_spawn).HasAdjSig(AdjacentNode.addr)  ) ||  
-				                 (isax.HasNode(BNode.WrMem_spawn) && !isax.GetFirstNode(BNode.WrMem_spawn).HasAdjSig(AdjacentNode.addr)  ) ;
+		boolean defaultRdMemAddr = (isax.HasNode(BNode.RdMem) && !isax.GetFirstNode(BNode.RdMem).HasAdjSig(AdjacentNode.addr)  ) ||  
+				                   (isax.HasNode(BNode.RdMem_spawn) && !isax.GetFirstNode(BNode.RdMem_spawn).HasAdjSig(AdjacentNode.addr)  ) ;
+		boolean defaultWrMemAddr = (isax.HasNode(BNode.WrMem) && !isax.GetFirstNode(BNode.WrMem).HasAdjSig(AdjacentNode.addr)  ) ||  
+				                   (isax.HasNode(BNode.WrMem_spawn) && !isax.GetFirstNode(BNode.WrMem_spawn).HasAdjSig(AdjacentNode.addr)  ) ;
 		setupText += tab.repeat(tabs)+"decoderService.add(\n";
 		
 		tabs++; 
@@ -177,16 +177,16 @@ public class VexRiscv extends CoreBackend{
 		// OP1
 		if(isax.HasNode(BNode.RdImm) && isax.GetInstrType().equals("U"))
 			setupText += tab.repeat(tabs)+"SRC1_CTRL                -> Src1CtrlEnum.IMU,\n";
-		else if(isax.HasNode(BNode.RdRS1) || defaultMemAddr )
+		else if(isax.HasNode(BNode.RdRS1) || defaultWrMemAddr || defaultRdMemAddr )
 			setupText += tab.repeat(tabs)+"SRC1_CTRL                -> Src1CtrlEnum.RS,\n";
 		
 		// OP2
-		if(isax.HasNode(BNode.RdImm) || defaultMemAddr) {
-			if(isax.GetInstrType().equals("I") || defaultMemAddr) {
+		if(isax.HasNode(BNode.RdImm) ||  defaultWrMemAddr || defaultRdMemAddr) {
+			if(isax.GetInstrType().equals("I") || defaultRdMemAddr) {
 				setupText += tab.repeat(tabs)+"SRC2_CTRL                -> Src2CtrlEnum.IMI,\n";
 				setupText += tab.repeat(tabs)+"SRC_USE_SUB_LESS  	     -> False,\n"; //  EC
 			}
-			else if(isax.GetInstrType().equals("S"))
+			else if(isax.GetInstrType().equals("S") || defaultWrMemAddr)
 				setupText += tab.repeat(tabs)+"SRC2_CTRL                -> Src2CtrlEnum.IMS,\n";
 		}
 		else 
@@ -215,7 +215,7 @@ public class VexRiscv extends CoreBackend{
 		String add_comma = "";
 		if(isax.HasNode(BNode.WrRD))
 			add_comma = tab.repeat(tabs)+",";
-		if(isax.HasNode(BNode.RdRS1) || defaultMemAddr)
+		if(isax.HasNode(BNode.RdRS1) ||  defaultWrMemAddr || defaultRdMemAddr)
 			setupText += tab.repeat(tabs)+"RS1_USE                  -> True,\n";
 		else 
 			setupText += tab.repeat(tabs)+"RS1_USE                  -> False,\n";
@@ -418,6 +418,11 @@ public class VexRiscv extends CoreBackend{
 			} 
 		}
 		
+		// RdStall for mem stage (needed for new stalling concept where rdstall is only stall of core)
+		int memStage =  this.vex_core.GetNodes().get(BNode.RdMem).GetLatest();
+		if(this.ContainsOpInStage(BNode.RdStall, memStage)) {
+			toFile.UpdateContent(filePlugin,"val stallMem = Bool();\nio."+ this.language.CreateNodeName(BNode.RdStall, memStage, "") +" := execute.arbitration.isStuckByOthers || stallMem;\n");
+		}
 		
 		// WrPC valid clause
 		if(ContainsOpInStage(BNode.WrPC,stage))  {
@@ -578,6 +583,12 @@ public class VexRiscv extends CoreBackend{
 				
 			 }
 			 
+			 String wrStall = "";
+			 if (this.ContainsOpInStage(BNode.WrStall, memStage))
+				 wrStall += " && !io."+ language.CreateNodeName(BNode.WrStall, memStage, "");
+			 String stallMem = ""; 
+			 if(this.ContainsOpInStage(BNode.RdStall, memStage))
+				 stallMem =  "            stallMem := False";
 			 // Entire FSM logic puzzled together
 			 String logicText = "            val State = new SpinalEnum{\n"
 			 		+ "                val IDLE, CMD "+response+" = newElement()\n"
@@ -593,6 +604,7 @@ public class VexRiscv extends CoreBackend{
 			 		+ "            dBusAccess.cmd.address.assignDontCare() \n"
 			 		+ "            dBusAccess.cmd.data.assignDontCare() \n"
 			 		+ "            dBusAccess.cmd.writeMask.assignDontCare()\n"
+			 		+ stallMem
 			 		+ defaultSigs
 			 		+ "            \n"
 			 		+ "            val ldst_in_decode = Bool()		    \n"
@@ -612,7 +624,7 @@ public class VexRiscv extends CoreBackend{
 			 		+ "                    when(~("+invalidTransfer+")) {\n"
 					+ "                            state := State.IDLE\n"
 					+ "                    }.otherwise {\n"
-			 		+ "                     when(execute.arbitration.isValid "+spawnvalid+") {\n"
+			 		+ "                     when(execute.arbitration.isValid "+spawnvalid+" && !execute.arbitration.isStuckByOthers "+wrStall+") {\n"
 			 		+ "                        dBusAccess.cmd.valid   := True \n"
 			 		+ transferSize+"\n"
 			 		+ writedata+"\n"
@@ -625,6 +637,7 @@ public class VexRiscv extends CoreBackend{
 			 		+ nextstateWr +"\n"
 			 		+ nextstateRd +"\n"
 			 		+ "                        }.otherwise {\n"
+			 		+ "                            stallMem := True"
 			 		+ "                            execute.arbitration.haltItself := True\n"
 			 		+ "                        }\n"
 			 		+ "                     }\n"
@@ -858,7 +871,8 @@ public class VexRiscv extends CoreBackend{
 	 		//assign rdInstr = stages.get(stage)+".input(INSTRUCTION)";
 	 		this.PutNode( "Bits", stages.get(stage)+".input(INSTRUCTION)", stages.get(stage), BNode.RdInstr,stage);
 	 		this.PutNode( "UInt", stages.get(stage)+".input(PC)", stages.get(stage),BNode.RdPC,stage);
-	 		this.PutNode( "Bool", stages.get(stage)+".arbitration.isStuckByOthers", stages.get(stage), BNode.RdStall,stage);
+	 		if(!(stage ==  this.vex_core.GetNodes().get(BNode.RdMem).GetLatest()))
+	 			this.PutNode( "Bool", stages.get(stage)+".arbitration.isStuckByOthers", stages.get(stage), BNode.RdStall,stage);
 	 		this.PutNode( "Bool", stages.get(stage)+".arbitration.isFlushed || (!"+stages.get(stage)+".arbitration.isValid)", stages.get(stage), BNode.RdFlush,stage); //|| (!"+stages.get(stage)+".arbitration.isValid)"
 	 		this.PutNode(  "Bool", stages.get(stage)+".arbitration.haltItself", stages.get(stage), BNode.WrStall,stage);
 	 		if(stage>0)
