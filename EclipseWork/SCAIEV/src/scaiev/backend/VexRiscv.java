@@ -873,6 +873,8 @@ public class VexRiscv extends CoreBackend{
 	 		this.PutNode( "UInt", stages.get(stage)+".input(PC)", stages.get(stage),BNode.RdPC,stage);
 	 		if(!(stage ==  this.vex_core.GetNodes().get(BNode.RdMem).GetLatest()))
 	 			this.PutNode( "Bool", stages.get(stage)+".arbitration.isStuckByOthers", stages.get(stage), BNode.RdStall,stage);
+	 		else 
+	 			this.PutNode( "Bool", "", stages.get(stage), BNode.RdStall,stage);
 	 		this.PutNode( "Bool", stages.get(stage)+".arbitration.isFlushed || (!"+stages.get(stage)+".arbitration.isValid)", stages.get(stage), BNode.RdFlush,stage); //|| (!"+stages.get(stage)+".arbitration.isValid)"
 	 		this.PutNode(  "Bool", stages.get(stage)+".arbitration.haltItself", stages.get(stage), BNode.WrStall,stage);
 	 		if(stage>0)
