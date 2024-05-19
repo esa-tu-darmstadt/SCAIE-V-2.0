@@ -407,11 +407,11 @@ public class VexRiscv extends CoreBackend{
 	 public void IntegrateISAX_BuildBody(int stage) {
 		String thisStagebuild = "";
 		String clause = "";
-		
+		int memStage =  this.vex_core.GetNodes().get(BNode.RdMem).GetLatest();
 	    
 		// Simple assigns
 		for(SCAIEVNode operation : op_stage_instr.keySet()) {
-			if( (stage >0) && op_stage_instr.get(operation).containsKey(stage) && (!operation.equals(BNode.WrRD) && !operation.equals(BNode.WrMem) && !operation.equals(BNode.RdMem)) ) { // it cannot be spawn, as stage does not go to max_stage + 1
+			if( (stage >0) && op_stage_instr.get(operation).containsKey(stage) && (!operation.equals(BNode.WrRD) && !operation.equals(BNode.WrMem)  && !operation.equals(BNode.RdMem) && (!operation.equals(BNode.RdStall) || stage !=memStage) ) ) { // it cannot be spawn, as stage does not go to max_stage + 1
 				if(!FNode.HasSCAIEVNode(operation.name) || stage>=this.vex_core.GetNodes().get(operation).GetEarliest()) {
 					thisStagebuild += language.CreateAssignToISAX(operation,stage,"",(operation.equals(BNode.WrStall) || operation.equals(BNode.WrFlush)) );
 				}
@@ -419,12 +419,12 @@ public class VexRiscv extends CoreBackend{
 		}
 		
 		// RdStall for mem stage (needed for new stalling concept where rdstall is only stall of core)
-		int memStage =  this.vex_core.GetNodes().get(BNode.RdMem).GetLatest();
-		if(this.ContainsOpInStage(BNode.RdStall, memStage)) {
+		if(this.ContainsOpInStage(BNode.RdStall, memStage) && stage == memStage) {
 			toFile.UpdateContent(filePlugin,"val stallMem = Bool();\nio."+ this.language.CreateNodeName(BNode.RdStall, memStage, "") +" := execute.arbitration.isStuckByOthers || stallMem;\n");
 		}
 		
 		// WrPC valid clause
+	 
 		if(ContainsOpInStage(BNode.WrPC,stage))  {
 			thisStagebuild += "jumpInterface_"+stage+".valid := io."+language.CreateNodeName(BNode.WrPC_valid, stage, "")+" && !arbitration.isStuckByOthers\n";
 			thisStagebuild += "arbitration.flushNext setWhen (jumpInterface_"+stage+".valid);";
@@ -637,7 +637,7 @@ public class VexRiscv extends CoreBackend{
 			 		+ nextstateWr +"\n"
 			 		+ nextstateRd +"\n"
 			 		+ "                        }.otherwise {\n"
-			 		+ "                            stallMem := True"
+			 		+ "                            stallMem := True\n"
 			 		+ "                            execute.arbitration.haltItself := True\n"
 			 		+ "                        }\n"
 			 		+ "                     }\n"
