@@ -588,7 +588,7 @@ public class VexRiscv extends CoreBackend{
 				 wrStall += " && !io."+ language.CreateNodeName(BNode.WrStall, memStage, "");
 			 String stallMem = ""; 
 			 if(this.ContainsOpInStage(BNode.RdStall, memStage))
-				 stallMem =  "            stallMem := False";
+				 stallMem =  "            stallMem := False\n";
 			 // Entire FSM logic puzzled together
 			 String logicText = "            val State = new SpinalEnum{\n"
 			 		+ "                val IDLE, CMD "+response+" = newElement()\n"
