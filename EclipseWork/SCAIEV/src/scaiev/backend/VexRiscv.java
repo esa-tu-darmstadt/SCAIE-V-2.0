@@ -420,7 +420,7 @@ public class VexRiscv extends CoreBackend{
 		
 		// RdStall for mem stage (needed for new stalling concept where rdstall is only stall of core)
 		if(this.ContainsOpInStage(BNode.RdStall, memStage) && stage == memStage) {
-			toFile.UpdateContent(filePlugin,"val stallMem = Bool();\nio."+ this.language.CreateNodeName(BNode.RdStall, memStage, "") +" := execute.arbitration.isStuckByOthers || stallMem;\n");
+			toFile.UpdateContent(filePlugin,"val stallMem = Bool();\nstallMem := False;\nio."+ this.language.CreateNodeName(BNode.RdStall, memStage, "") +" := execute.arbitration.isStuckByOthers || stallMem;\n");
 		}
 		
 		// WrPC valid clause
@@ -506,7 +506,7 @@ public class VexRiscv extends CoreBackend{
 			 }
 			 
 			 if(op_stage_instr.containsKey(BNode.WrMem_spawn) || op_stage_instr.containsKey(BNode.RdMem_spawn)) 
-				 spawnvalid += " || io."+language.CreateNodeName(BNode.RdMem_spawn_validReq,spawnStage, ""); 
+				 spawnvalid += "io."+language.CreateNodeName(BNode.RdMem_spawn_validReq,spawnStage, "")+" || "; 
 			 
 			 // Compute write data depending on transfer type 
 			 String writedata = "";
@@ -588,7 +588,7 @@ public class VexRiscv extends CoreBackend{
 				 wrStall += " && !io."+ language.CreateNodeName(BNode.WrStall, memStage, "");
 			 String stallMem = ""; 
 			 if(this.ContainsOpInStage(BNode.RdStall, memStage))
-				 stallMem =  "            stallMem := False\n";
+				 stallMem =  "            stallMem := True\n";
 			 // Entire FSM logic puzzled together
 			 String logicText = "            val State = new SpinalEnum{\n"
 			 		+ "                val IDLE, CMD "+response+" = newElement()\n"
@@ -604,7 +604,6 @@ public class VexRiscv extends CoreBackend{
 			 		+ "            dBusAccess.cmd.address.assignDontCare() \n"
 			 		+ "            dBusAccess.cmd.data.assignDontCare() \n"
 			 		+ "            dBusAccess.cmd.writeMask.assignDontCare()\n"
-			 		+ stallMem
 			 		+ defaultSigs
 			 		+ "            \n"
 			 		+ "            val ldst_in_decode = Bool()		    \n"
@@ -616,7 +615,7 @@ public class VexRiscv extends CoreBackend{
 			 		+ "            ldst_in_decode := (("+valid_1+") && decode.input(IS_ISAX))\n"
 			 		+ "            switch(state){\n"
 			 		+ "                is(State.IDLE){\n"
-			 		+ "                    when(ldst_in_decode && decode.arbitration.isFiring "+spawnvalid+") { \n"
+			 		+ "                    when("+spawnvalid+"ldst_in_decode && decode.arbitration.isFiring) { \n"
 			 		+ "                        state := State.CMD\n"
 			 		+ "                    }\n"
 			 		+ "                }\n"
@@ -624,7 +623,7 @@ public class VexRiscv extends CoreBackend{
 			 		+ "                    when(~("+invalidTransfer+")) {\n"
 					+ "                            state := State.IDLE\n"
 					+ "                    }.otherwise {\n"
-			 		+ "                     when(execute.arbitration.isValid "+spawnvalid+" && !execute.arbitration.isStuckByOthers "+wrStall+") {\n"
+			 		+ "                     when("+spawnvalid+"execute.arbitration.isValid && !execute.arbitration.isStuckByOthers "+wrStall+") {\n"
 			 		+ "                        dBusAccess.cmd.valid   := True \n"
 			 		+ transferSize+"\n"
 			 		+ writedata+"\n"
@@ -637,7 +636,7 @@ public class VexRiscv extends CoreBackend{
 			 		+ nextstateWr +"\n"
 			 		+ nextstateRd +"\n"
 			 		+ "                        }.otherwise {\n"
-			 		+ "                            stallMem := True\n"
+			 		+ stallMem
 			 		+ "                            execute.arbitration.haltItself := True\n"
 			 		+ "                        }\n"
 			 		+ "                     }\n"
