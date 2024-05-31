@@ -805,7 +805,7 @@ public class SCAL implements SCALBackendAPI {
 		    			 System.out.println("SCAL. WARNING. User selected no shift reg for a decoupled instr. Thus user must implement fence & kill instr within ISAX");
 		    			 logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+" = "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+";\n"; 		
 		    		 } else // this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled() 
-		    			 logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+" = |"+myLanguage.CreateNodeName(addrNode,  spawnStage, ISAX)+";\n";
+		    			 logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+" = |"+myLanguage.CreateFamNodeName(addrNode,  spawnStage, ISAX,false)+";\n";
 	    		 }
 	    		 
 	    		 // Add Stall mechanism if multicycle 
@@ -943,10 +943,11 @@ public class SCAL implements SCALBackendAPI {
 	    	if (this.ContainsOpInStage(BNode.RdStall,  stage)) {
 	    	 	String rdstall_val = myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage, "");
 	    	 	String IStall = "";
-	    	 	if(!stallStages[stage].isEmpty() || this.op_stage_instr.containsKey(BNode.WrStall)) {
-	    	 		for (SCAIEVNode node : this.spawn_instr_stage.keySet())
-	    	 			rdstall_val += " || (" + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, "") +donStallISAX +" ) "; 
-	    	 	}
+    	 		if(!this.spawn_instr_stage.isEmpty() && (stage == this.core.GetStartSpawnStage()))
+    	 			rdstall_val += " || (" + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, "") +donStallISAX +" ) "; 
+    	 		else if(!stallStages[stage].isEmpty() || this.ContainsOpInStage(BNode.WrStall, stage))
+    	 			rdstall_val += " || (" + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, "") +  " ) " ;
+	    	 	
 				logic += "assign "+myLanguage.CreateNodeName(BNode.RdStall, stage, "")+" = "+rdstall_val+";\n";
 	    		
 	    	}

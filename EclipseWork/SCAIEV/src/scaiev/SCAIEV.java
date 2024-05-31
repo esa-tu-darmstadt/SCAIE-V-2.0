@@ -227,12 +227,12 @@ public class SCAIEV {
 			if(node.isSpawn())
 				barrierNeeded = true;
 		if(barrierNeeded && barrierInstrRequired) {
-			AddIn_op_stage_instr(BNode.RdRS1,rdrsStage,"disaxkill");
-			AddIn_op_stage_instr(BNode.RdRS1,rdrsStage,"disaxfence");
+			AddIn_op_stage_instr(BNode.RdIValid,rdrsStage,"disaxkill");
+			AddIn_op_stage_instr(BNode.RdIValid,rdrsStage,"disaxfence");
 			SCAIEVInstr kill  = SCAL.PredefInstr.kill.instr;
 			SCAIEVInstr fence = SCAL.PredefInstr.fence.instr;
-			kill.PutSchedNode(FNode.RdRS1,rdrsStage);  
-			fence.PutSchedNode(FNode.RdRS1, rdrsStage);  
+			kill.PutSchedNode(FNode.RdIValid,rdrsStage);  
+			fence.PutSchedNode(FNode.RdIValid, rdrsStage);  
 			instrSet.put("disaxkill", kill);
 			instrSet.put("disaxfence", fence);
 		}
