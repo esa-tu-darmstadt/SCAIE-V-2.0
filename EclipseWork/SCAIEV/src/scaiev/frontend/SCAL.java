@@ -890,7 +890,7 @@ public class SCAL implements SCALBackendAPI {
     			 + "    .cancel_from_user_valid_i("+myLanguage.CreateNodeName(BNode.cancel_from_user_valid+"_"+node, spawnStage, "",false)+"),\n"
     			 + "    .cancel_from_user_addr_i("+myLanguage.CreateNodeName(BNode.cancel_from_user+"_"+node, spawnStage, "",false)+"),\n"
     			 + "	.stall_RDRS_o(to_CORE_stall_RS_"+node+"_s),  \n"
-    			 + "	.stall_RDRS_i("+stallFrCore+"),  \n"
+    			 + "	.stall_RDRS_i("+stallFrCore+")  \n"
     			 + "    );\n";
     			 
     			 // Stall stages because of DH 
@@ -2003,7 +2003,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ " parameter RD_W_P = "+sizeAddr+",\n"
 				+ " parameter INSTR_W_P = 32, \n"
 				+ " parameter START_STAGE = "+this.core.GetStartSpawnStage()+", \n"
-				+ " parameter WB_STAGE = "+this.core.maxStage+",\n"
+				+ " parameter WB_STAGE = "+this.core.maxStage+"\n"
 				+ "                                                                      \n"
 				+ ")(                                                                    \n"
 				+ "   input clk_i,                                                           \n"
@@ -2020,7 +2020,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "    input  cancel_from_user_valid_i,// user validReq bit was zero, but we need to clear its scoreboard dirty bit \n"
 				+ "    input "+sizeZero+"cancel_from_user_addr_i,\n"
 				+ "    output stall_RDRS_o, //  stall from ISAX,  OR spawn DH   \n"
-				+ "    input  [WB_STAGE-START_STAGE:0] stall_RDRS_i, // input from core. core stalled. Includes user stall, as these sigs are combined within core  \n"
+				+ "    input  [WB_STAGE-START_STAGE:0] stall_RDRS_i // input from core. core stalled. Includes user stall, as these sigs are combined within core  \n"
 				+ ");                                                                     \n"
 				+ "  \n"
 				+ "                                                                      \n"
