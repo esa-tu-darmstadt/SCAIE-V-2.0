@@ -762,7 +762,7 @@ public class SCAL implements SCALBackendAPI {
 	    		 		+ myLanguage.tab+myLanguage.reset+",\n"
 	    		 		+ myLanguage.tab+ myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+",\n"
 	    		 		+ myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage, ISAX)
-	    		 		  +" && ! "+myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), this.core.GetStartSpawnStage(), "")+",\n // no need for wrStall, it.s included in RdStall\n" // write fifo
+	    		 		  +" && ! "+myLanguage.CreateNodeName(BNode.RdStall, this.core.GetStartSpawnStage(), "")+",\n " // write fifo
 	    		 		+ myLanguage.tab+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+",\n"            // read fifo
 	    		 		+ myLanguage.tab+addrReadSig // write data
 	    		 		+ "dummy"+ISAX+","
