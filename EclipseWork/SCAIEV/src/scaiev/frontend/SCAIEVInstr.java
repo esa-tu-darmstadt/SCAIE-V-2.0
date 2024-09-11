@@ -1,23 +1,35 @@
-// NEW Version
 package scaiev.frontend;
 
 import java.util.ArrayList;
+
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.function.BiConsumer;
-import java.util.function.Consumer;
+import java.util.Optional;
+import java.util.Set;
 import java.util.function.Predicate;
+import java.util.stream.Stream;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import scaiev.backend.BNode;
 import scaiev.coreconstr.Core;
-import scaiev.drc.DRC;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
+import scaiev.pipeline.PipelineFront;
+import scaiev.pipeline.PipelineStage;
+import scaiev.pipeline.PipelineStage.StageKind;
 import scaiev.util.Lang;
 
+
+
 public class SCAIEVInstr {
+	// logging
+	protected static final Logger logger = LogManager.getLogger();
+
 	private String encodingOp;
 	private String encodingF3;
 	private String encodingF7;
@@ -25,12 +37,31 @@ public class SCAIEVInstr {
 	private String instr_name;
 	private String instr_type;
 	private boolean decoupled = false;
-	private boolean dynamic_decoupled = false;
+	private boolean dynamic = false;
+	private Set<InstrTag> tags = EnumSet.noneOf(InstrTag.class);
 	private HashMap<SCAIEVNode, List<Scheduled>> node_scheduled = new HashMap<SCAIEVNode, List<Scheduled>>();
+	private HashMap<Integer, Integer> regs = new HashMap<>(); //0->read, 1->write, 2-> read and write
+	private int zolLoopDepth = 0;
 
 	public boolean ignoreEncoding = false; 
 	
 	public static final String noEncodingInstr = "DUMMYInstr";
+
+	public enum InstrTag {
+		/** The ISAX interface has the ISAX name in its RdStall, RdFlush pins */
+		PerISAXRdStallFlush("RdStallFlush-Is-Per-ISAX"),
+		/** The ISAX interface has the ISAX name all read node pins (RdRS1/2, RdRD, RdMem, RdInstr, RdCustomReg, etc.) */
+		PerISAXReadResults("ReadResults-Are-Per-ISAX");
+		
+		public final String serialName;
+		
+		private InstrTag(String serialName) {
+			this.serialName = serialName;
+		}
+		public static Optional<InstrTag> fromSerialName(String serialName) {
+			return Stream.of(InstrTag.values()).filter(tagVal -> tagVal.serialName.equals(serialName)).findAny();
+		}
+	}
 	
 	// Constructors
 	public SCAIEVInstr(String instr_name, String encodingF7, String encodingF3,String encodingOp, String instrType) {
@@ -42,7 +73,6 @@ public class SCAIEVInstr {
 		this.constRd = "";
 		if(instr_name.contains(noEncodingInstr))
 			ignoreEncoding = true;
-		DRC.CheckEncoding(this);
 	}	
 	public SCAIEVInstr(String instr_name, String encodingF7, String encodingF3,String encodingOp, String instrType, String constRD) {
 		this.instr_name = instr_name;
@@ -53,7 +83,6 @@ public class SCAIEVInstr {
 		this.constRd = constRD;
 		if(instr_name.contains(noEncodingInstr))
 			ignoreEncoding = true;
-		DRC.CheckEncoding(this);
 	}
 	public SCAIEVInstr(String instr_name) {
 		this.instr_name = instr_name;
@@ -86,38 +115,79 @@ public class SCAIEVInstr {
 		for (SCAIEVNode node : userBNode.GetAllFrontendNodes()) {
 			CheckThrowNodeUniquePerCycle(node);
 		}
+		List<PipelineStage> startSpawnStagesList = core.GetStartSpawnStages().asList();
+		assert(startSpawnStagesList.size() >= 1);
+		if (startSpawnStagesList.size() > 1)
+			logger.warn("ConvertToBackend - only considering first of several 'start spawn stages'");
+		PipelineStage startSpawnStage = startSpawnStagesList.get(0);
+		int postStartSpawnStagePos = startSpawnStage.getStagePos() + 1;
+		
+		List<PipelineStage> postStartSpawnStagesList = new PipelineFront(startSpawnStage.getNext().stream().filter(nextStage -> nextStage.getKind() == StageKind.Core)).asList();
+		if (postStartSpawnStagesList.size() > 0) {
+			postStartSpawnStagePos = postStartSpawnStagesList.get(0).getStagePos();
+			int postStartSpawnStagePos_ = postStartSpawnStagePos;
+			if (postStartSpawnStagesList.stream().anyMatch(postStartSpawnStage -> postStartSpawnStage.getStagePos() != postStartSpawnStagePos_)) {
+				logger.warn("ConvertToBackend - assumption about consistent stagePos for post-startSpawnStage broken");
+			}
+		}
 		
 		for (SCAIEVNode node : userBNode.GetAllBackNodes()) {
 			SCAIEVNode parentNode = userBNode.GetSCAIEVNode(node.nameParentNode);
-			int spawnStage = parentNode.commitStage+1; // node's commit stage = it's WB stage (for internal states may be diff than WB core's stage)
-			boolean isSpawn = HasSchedWith(parentNode, snode -> snode.GetStartCycle()>=spawnStage);
+			if (parentNode.name.isEmpty() || !node.isSpawn() || node.isAdj())
+				continue;
+			
+			//Get commit and spawn stage positions.
+			PipelineFront commitFront = core.TranslateStageScheduleNumber(parentNode.commitStage);
+			if (commitFront.asList().isEmpty()) {
+				logger.error("The commitStage list for node {} is empty; skipping spawn scheduling.", parentNode.name);
+				continue;
+			}
+			// node's commit stage = its WB stage (for internal states may be diff than WB core's stage)
+			PipelineFront spawnFront = new PipelineFront(commitFront
+				.streamNext_bfs(succ -> commitFront.contains(succ)) //Do not iterate beyond commitStage's direct successors
+				.filter(curStage -> !commitFront.contains(curStage))); //Do not include commitStage itself
+			if (spawnFront.asList().isEmpty()) {
+				logger.error("The commitStage successor list for node {} is empty; skipping spawn scheduling.", parentNode.name);
+				continue;
+			}
+			int commitFrontPos = commitFront.asList().get(0).getStagePos();
+			if (commitFront.asList().stream().anyMatch(otherCommitStage -> otherCommitStage.getStagePos() != commitFrontPos)) {
+				logger.error("The commitStage list position for node {} is inconsistent; skipping spawn scheduling.", parentNode.name);
+				continue;
+			}
+			int spawnFrontPos = spawnFront.asList().get(0).getStagePos();
+			if (spawnFront.asList().stream().anyMatch(otherSpawnStage -> otherSpawnStage.getStagePos() != spawnFrontPos)) {
+				logger.error("The commitStage successor list position for node {} is inconsistent; skipping spawn scheduling.", parentNode.name);
+				continue;
+			}
+			
+			boolean isSpawn = HasSchedWith(parentNode, snode -> snode.GetStartCycle() >= spawnFrontPos);
 			if(node.isSpawn() && !node.isAdj() && isSpawn) { // If we look at a main spawn node & the user wants this spawn operation (>=spawnStage)
 				Scheduled oldSched = new Scheduled();
-				oldSched = GetCheckUniqueSchedWith(parentNode, snode -> snode.GetStartCycle()>=spawnStage);
-				// This is no spawn in traditional (scaiev trad) sense, it's an instruction that writes right away based on its valid bit. Not really started by an opcode. Always block
+				oldSched = GetCheckUniqueSchedWith(parentNode, snode -> spawnFront.asList().stream().allMatch(spawnStage -> snode.GetStartCycle() >= spawnStage.getStagePos()));
+				// This is no spawn in traditional (scaiev trad) sense, it's an instruction that writes right away based on its valid bit. Not really started by an opcode
 				if(this.HasNoOp()) {
-					oldSched.UpdateStartCycle(parentNode.commitStage); // for write nodes, take the WB stage of that node // for read nodes, take the "read regfile" stage
-				} else if(node.isInput | (node==BNode.RdMem_spawn) ){ // spawn for reading state not supported for the moment. Just for write nodes. Or spawn as instr without decoding,which is actually mapped on read stage
-					// Memory spawn write sig should have interf to core by default. It won't have to ISAX, as it's defined like this within BNode prop
-					for(SCAIEVNode adjNode : userBNode.GetAdjSCAIEVNodes(node))
-						if(adjNode.mustToCore && adjNode.noInterfToISAX) { // we need noInterf, otherwise addr signal added on ISAX interf even when not re by user
-							oldSched.AddAdjSig(adjNode.getAdj());
-						    System.out.println("INFO SCAIEVInstr. Adj Signal "+adjNode+ " added for node "+node);
-						}
+					oldSched.UpdateStartCycle(commitFrontPos); // for write nodes, take the WB stage of that node // for read nodes, take the "read regfile" stage
+				} else if(node.isInput || (node==userBNode.RdMem_spawn) ){ // spawn for reading state not supported for the moment. Just for write nodes. Or spawn as instr without decoding,which is actually mapped on read stage
+					// Memory spawn should have interf to core by default. It won't have to ISAX, as it's defined like this within BNode prop
+//					for(SCAIEVNode adjNode : userBNode.GetAdjSCAIEVNodes(node))
+//						if(adjNode.mustToCore) {
+//							oldSched.AddAdjSig(adjNode.getAdj());
+//						    logger.info("INFO SCAIEVInstr. Adj Signal "+adjNode+ " added for node "+node);
+//						}
 					// We must distinguish : a) SCAL must implement spawn as decoupled b) SCAL must implement spawn with stall
 					if(!decoupled) {
-						if(node.name.contains("Mem")) System.out.println("CRITICAL WARNING Stall not yet supported for memory. please select is_decoupled parameter");
-						oldSched.UpdateStartCycle(core.GetStartSpawnStage()+1); // in stall strategy, result returned in start spawn stage + 1 
-					} else {
-						node_scheduled.remove(parentNode); // Remove parent node which was not spawn
-						PutSchedNode(node, oldSched); // Add spawn, leave user options for portability	
+						//if(node.name.contains("Mem")) logger.error("Stall not yet supported for memory. please select is_decoupled parameter");
+						//oldSched.UpdateStartCycle(postStartSpawnStagePos); // in stall strategy, result returned in start spawn stage + 1 
 					}
+					node_scheduled.remove(parentNode); // Remove parent node which was not spawn
+					PutSchedNode(node, oldSched); // Add spawn, leave user options for portability
 				
 				}
 			}
 		}
 		
-		// Make sure sched contains the same BNode feature as updated by SCAIEV Class 
+		// Make sure sched contains the same BNode feature as updated by SCAIEVLogic Class 
 		for(SCAIEVNode node: userBNode.GetAllFrontendNodes()) {
 			if(this.node_scheduled.containsKey(node)) {
 				List<Scheduled> oldSched = node_scheduled.get(node); 
@@ -149,6 +219,7 @@ public class SCAIEVInstr {
 		Scheduled new_scheduled = new Scheduled(startCycle, new HashSet<AdjacentNode>(),new HashMap<AdjacentNode,Integer>());
 		PutSchedNode(node, new_scheduled);
 	}
+	
 	
 	public void PutSchedNode ( SCAIEVNode node, int startCycle, AdjacentNode adjSignal) {
 		HashSet<AdjacentNode> adjSignals = new HashSet<AdjacentNode>();
@@ -205,18 +276,15 @@ public class SCAIEVInstr {
 	public void SetAsDecoupled (boolean decoupled) {
 		this.decoupled = decoupled;
 	}
-	public void SetAsDynamicDecoupled (boolean dynamic_decoupled) {
-		this.dynamic_decoupled = dynamic_decoupled;
-		if(dynamic_decoupled)
-			this.decoupled = true;
+	public void SetAsDynamic (boolean dynamic) {
+		this.dynamic = dynamic;
 	}
 	public void SetEncoding(String encodingF7, String encodingF3,String encodingOp, String instrType) {		 
 		 this.encodingOp = encodingOp;
 		 this.encodingF3 = encodingF3;
 		 this.encodingF7 = encodingF7;
 		 this.instr_type  = instrType;
-		 DRC.CheckEncoding(this);
-		 System.out.println("INTEGRATE. Encoding updated. Op Codes F7|F3|Op: " +this.encodingF7+"|"+this.encodingF3+"|"+this.encodingOp+" and instruction type now is: "+this.instr_type);
+		 logger.debug("Encoding updated. Op Codes F7|F3|Op: " +this.encodingF7+"|"+this.encodingF3+"|"+this.encodingOp+" and instruction type now is: "+this.instr_type);
 	 }
 	
 	public void RemoveNodeWith(SCAIEVNode node, Predicate<Scheduled> cond){
@@ -280,16 +348,20 @@ public class SCAIEVInstr {
 			return null;
 	}
 	
+	public void addTag(InstrTag tag) { tags.add(tag); }
+	public boolean hasTag(InstrTag tag) { return tags.contains(tag); }
+	public Set<InstrTag> getTags() { return Collections.unmodifiableSet(tags); } 
+	
 	public String GetInstrType() {
 		return instr_type;
 	}
 	
-
-	public String GetEncodingString() {
-		if(encodingOp.isEmpty())
-			return "";
-		else 
-			return "key  = M\""+encodingF7+"----------"+encodingF3+"-----"+encodingOp+"\",";	// Return encoding
+	public HashMap<Integer,Integer> getRegs(){
+		return regs;
+	}
+	
+	public int getLoopDepth() {
+		return zolLoopDepth;
 	}
 	
 	public String GetEncodingBasic() {
@@ -300,7 +372,7 @@ public class SCAIEVInstr {
 		if(language == Lang.VHDL)
 			return "\""+encodingOp+"\"";	
 		else if(language == Lang.Verilog  || language == Lang.Bluespec) {
-			String returnEnc = encodingF7.replace("-","?");
+			String returnEnc = encodingOp.replace("-","?");
 			return "7'b"+returnEnc;
 		} else 
 			return encodingOp;
@@ -308,7 +380,7 @@ public class SCAIEVInstr {
 	
 	
 	public boolean HasNoOp() {
-		return encodingOp.equals("-------") ||  encodingOp.isEmpty();
+		return encodingOp.equals("-------") || encodingOp.isEmpty();
 	}
 	
 	
@@ -344,13 +416,19 @@ public class SCAIEVInstr {
 			return encodingF3;
 	}
 	
-	
+	/** True if the ISAX has a decoupled portion (static or dynamic) */
 	public boolean GetRunsAsDecoupled () {
 		return decoupled;
 	}
-	
+
+	/** True if the ISAX has a dynamic decoupled portion */
 	public boolean GetRunsAsDynamicDecoupled () {
-		return dynamic_decoupled;
+		return dynamic && decoupled;
+	}
+
+	/** True if the ISAX has a dynamic portion (decoupled or semi-coupled) */
+	public boolean GetRunsAsDynamic () {
+		return dynamic;
 	}
 	
 	public HashMap<SCAIEVNode, List<Scheduled>> GetSchedNodes(){

@@ -14,16 +14,17 @@
 - operation: RdRS1
   earliest: 0
   latency: 0
-  latest: 2
+  latest: 0
   costly: 1
 - operation: RdRS2
   earliest: 0
   latency: 0
-  latest: 2
+  latest: 0
   costly: 1
 - operation: WrRD
   earliest: 1
   latency: 1
+  latest: 2
   costly: 2
 - operation: RdPC
   earliest: 0
@@ -37,20 +38,22 @@
 - operation: RdMem
   earliest: 0
   latency: 1
+  latest: 0
   costly: 1
 - operation: WrMem
   earliest: 0
   latency: 1
+  latest: 0
   costly: 1
 - operation: RdIValid
   earliest: 0
   latency: 0
-  latest: 2
+  latest: 1
   costly: 2
 - operation: RdInstr
   earliest: 0
   latency: 0
-  latest: 2
+  latest: 1
   costly: 2
 - operation: RdStall
   earliest: 0

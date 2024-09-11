@@ -2,14 +2,18 @@ package scaiev;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
+import java.util.stream.Stream;
 
 import org.yaml.snakeyaml.Yaml;
-
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import scaiev.backend.BNode;
 import scaiev.backend.CoreBackend;
 import scaiev.backend.Orca;
@@ -23,33 +27,42 @@ import scaiev.drc.DRC;
 import scaiev.frontend.FNode;
 import scaiev.frontend.FrontendNodeException;
 import scaiev.frontend.SCAIEVInstr;
+import scaiev.frontend.SCAIEVInstr.InstrTag;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAL;
 import scaiev.frontend.Scheduled;
+import scaiev.pipeline.PipelineFront;
+import scaiev.pipeline.PipelineStage;
+import scaiev.pipeline.PipelineStage.StageKind;
+import scaiev.pipeline.PipelineStage.StageTag;
+import scaiev.pipeline.ScheduleFront;
+import scaiev.scal.NodeInstanceDesc;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
+import scaiev.frontend.SCAIEVNode.NodeTypeTag;
 
 
 public class SCAIEV {	
 
 	private CoreDatab coreDatab;   									// database with supported cores 
 	private HashMap <String,SCAIEVInstr>  instrSet = new HashMap <String,SCAIEVInstr> ();	// database of requested Instructions
-	private HashMap<SCAIEVNode, HashMap<Integer,HashSet<String>>> op_stage_instr = new HashMap<SCAIEVNode, HashMap<Integer,HashSet<String>>>();
+	private HashMap<SCAIEVNode, HashMap<PipelineStage,HashSet<String>>> op_stage_instr = new HashMap<SCAIEVNode, HashMap<PipelineStage,HashSet<String>>>();
     private String extensionName = "DEMO";
-    private HashMap<SCAIEVNode, HashMap<String, Integer>> spawn_instr_stage = new  HashMap<SCAIEVNode, HashMap<String, Integer>>();
+    private HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage = new  HashMap<>();
     private HashMap<String, Integer> earliest_useroperation = new HashMap<String, Integer>();
     
 	public BNode BNodes = new BNode(); 
-	public FNode FNodes = new FNode(); 
+	public FNode FNodes = BNodes; 
 	
     // SCAIE-V Adaptive Layer
     private SCAL scalLayer = new SCAL();
+
+	// logging
+	protected static final Logger logger = LogManager.getLogger();
 	
-    // DRC 
-    boolean errLevelHigh = true;
-    
+	private boolean errLevelHigh = true;
+	
 	public SCAIEV() {
-		// Print currently supported nodes 
-		System.out.println("SHIM. Instantiated shim layer. Supported nodes are: "+FNodes.toString());
+		logger.debug("SHIM. Instantiated shim layer. Supported nodes are: "+FNodes.toString());
 		this.coreDatab = new CoreDatab();
 		coreDatab.ReadAvailCores("./Cores");
 	}
@@ -62,6 +75,16 @@ public class SCAIEV {
 		instrSet.put(name,newISAX);
 		return newISAX;		
 	}
+	public Iterable<SCAIEVInstr> getInstructions() {
+		return new ArrayList<>(instrSet.values());
+	}
+	
+	/*public void addZOL(String encodingF3,String encodingOp, int loopDepth) {
+		SCAIEVInstr newISAX = new SCAIEVInstr("ZOL","-------", encodingF3,encodingOp,"B", loopDepth);
+		newISAX.PutSchedNode(FNodes.RdIValid, 2);
+		zol = newISAX;
+	}*/
+	
 	public SCAIEVInstr addInstr(String name) {
 		SCAIEVInstr newISAX = new SCAIEVInstr(name);
 		instrSet.put(name,newISAX);
@@ -72,62 +95,139 @@ public class SCAIEV {
 		scalLayer.SetSCAL(nonDecWithDH,decWithValid ,decWithAddr , decWithInpFIFO);
 	}
 	
+	void FixUserNodeSchedule() {
+		//Make sure the (Rd|Wr)<reg>_addr node is present and correct for all custom registers.
+		for (SCAIEVNode fnode : FNodes.GetAllFrontendNodes()) {
+			if (!FNodes.IsUserFNode(fnode))
+				continue;
+			assert(!fnode.isAdj()); //FNodes shouldn't have adjacent nodes.
+
+			var fnode_addr_opt = BNodes.GetAdjSCAIEVNode(fnode, AdjacentNode.addr);
+			if (fnode_addr_opt.isEmpty()) {
+				logger.error("Internal error: Custom register node {} has no addr adjacent node", fnode.name);
+				continue;
+			}
+			if (!fnode.name.startsWith("Rd"))
+				continue;
+			
+			SCAIEVNode fnodeRd = fnode;
+			SCAIEVNode fnodeRd_addr = fnode_addr_opt.get();
+			SCAIEVNode fnodeWr = BNodes.GetSCAIEVNode(BNodes.GetNameWrNode(fnode));
+			SCAIEVNode fnodeWr_addr = BNodes.GetAdjSCAIEVNode(fnodeWr, AdjacentNode.addr).orElseThrow();
+			
+			//Get the minimum of all connected earliest_operation entries as the 'issue' stage number.
+			var earliestStream = Stream.ofNullable(earliest_useroperation.get(fnodeRd.name));
+			earliestStream = Stream.concat(earliestStream, Stream.ofNullable(earliest_useroperation.get(fnodeRd_addr.name)));
+			earliestStream = Stream.concat(earliestStream, Stream.ofNullable(earliest_useroperation.get(fnodeWr.name)));
+			earliestStream = Stream.concat(earliestStream, Stream.ofNullable(earliest_useroperation.get(fnodeWr_addr.name)));
+			var earliestRdwr_opt = earliestStream.min(Integer::compare);
+			if (earliestRdwr_opt.isEmpty())
+				continue; //Nobody uses this register
+			int earliestRdwr = earliestRdwr_opt.get();
+			
+			//Correct earliest_operation for RdReg, RdReg_addr, WrReg, WrReg_addr.
+			earliest_useroperation.put(fnodeRd.name, earliestRdwr);
+			earliest_useroperation.put(fnodeWr.name, earliestRdwr);
+			earliest_useroperation.put(fnodeRd_addr.name, earliestRdwr);
+			earliest_useroperation.put(fnodeWr_addr.name, earliestRdwr);
+			
+			//For each instruction, add missing _addr nodes or update the start cycle to match the global 'earliest'.
+			for (SCAIEVInstr instr : getInstructions()) {
+				if (instr.HasNode(fnodeRd)) {
+					if (!instr.HasNode(fnodeRd_addr))
+						instr.PutSchedNode(fnodeRd_addr, earliestRdwr, new HashSet<>());
+					else
+						instr.GetSchedWithIterator(fnodeRd_addr, sched->true).forEachRemaining(sched -> sched.UpdateStartCycle(earliestRdwr));
+				}
+				if (instr.HasNode(fnodeWr)) {
+					if (!instr.HasNode(fnodeWr_addr))
+						instr.PutSchedNode(fnodeWr_addr, earliestRdwr, new HashSet<>());
+					else
+						instr.GetSchedWithIterator(fnodeWr_addr, sched->true).forEachRemaining(sched -> sched.UpdateStartCycle(earliestRdwr));
+				}
+			}
+		}
+	}
+	
 	public boolean Generate(String coreName, String outPath) throws FrontendNodeException {
 		boolean success = true; 
 		
 		
 		// Select Core
 		Core core = coreDatab.GetCore(coreName);
+		if (core == null) {
+			logger.error("Cannot find the core description. If the file is present, check for CoreDatab errors in the log.");
+			return false;
+		}
+		
+		//For all user nodes, make sure the _addr adjacent nodes are all present and earliest_useroperation is consistent across Read,Write and adjacents.
+		FixUserNodeSchedule();
 		
 		AddCommitStagesToNodes(core); // update FNodes based on core datasheet (their commit stages, only for relevant nodes)
 
 		// Create HashMap with <operations, <stages,instructions>>. 
-		CreateOpStageInstr(core);		
+		CreateOpStageInstr(core);
 		
 		// Print generated hashMap as Info for user
 		OpStageInstrToString(); 
 		
 		AddUserNodesToCore(core);
-		scalLayer.BNode = BNodes; scalLayer.FNode = FNodes;	
 		
+		
+		scalLayer.BNode = BNodes;
 		// Check errors
 		DRC drc = new DRC(instrSet, op_stage_instr, core, BNodes);
 		drc.SetErrLevel(errLevelHigh);
-		drc.CheckSchedErr(core,op_stage_instr);
-		drc.CheckEncPresent(instrSet);
+		for (SCAIEVInstr instr : instrSet.values())
+			drc.CheckEncoding(instr);
+		drc.CheckSchedErr();
+		drc.CheckEncPresent();
+		drc.CheckEncodingOverlap();
+		if (drc.HasFatalError()) {
+			logger.fatal("Exiting due to DRC failure.");
+			return false;
+		}
 		
 		// Get metadata from core required by SCAL
 		Optional<CoreBackend> coreInstanceOpt = Optional.empty();
 			
-		if(coreName.contains("VexRiscv")) {
+
+		if(coreName.startsWith("VexRiscv")) {
 			coreInstanceOpt = Optional.of(new VexRiscv(core));
-			scalLayer.PrepareEarliest(coreInstanceOpt.get().PrepareEarliest());
 		}
-		else if(coreName.contains("Piccolo")) {
+		else if(coreName.equals("Piccolo")) {
 			coreInstanceOpt = Optional.of(new Piccolo());
-			scalLayer.PrepareEarliest(coreInstanceOpt.get().PrepareEarliest());
 		}
-		else if(coreName.contains("ORCA")) {
+		else if(coreName.equals("ORCA")) {
 			coreInstanceOpt = Optional.of(new Orca());
-			scalLayer.PrepareEarliest(coreInstanceOpt.get().PrepareEarliest());
 		}
-		else if(coreName.contains("PicoRV32")) {
+		else if(coreName.equals("PicoRV32")) {
 			coreInstanceOpt = Optional.of(new PicoRV32());
-			scalLayer.PrepareEarliest(coreInstanceOpt.get().PrepareEarliest());
 		}
+		
 		// Generate Interface
 		// First generate common logic
-		System.out.println("INFO: spawn operations with actual stage numbers: "+spawn_instr_stage);
-		System.out.println("INFO: all operations (spawn stage = "+(core.maxStage+1)+"): "+op_stage_instr);
+		logger.debug("INFO: spawn operations with actual stage numbers: "
+				+ spawn_instr_stage.entrySet().stream().map(entrySpInSt -> {
+					return Map.entry(entrySpInSt.getKey(), entrySpInSt.getValue().entrySet().stream().map(entryInSt -> 
+						Map.entry(entryInSt.getKey(), entryInSt.getValue().getName())
+					).toList());
+				}).toList());
+		logger.debug("INFO: all operations (spawn stages: "+(core.GetSpawnStages().asList().stream().map(stage->stage.getName())).toList()+"): "
+				+ op_stage_instr.entrySet().stream().map(entryOpStIn -> {
+					return Map.entry(entryOpStIn.getKey(), entryOpStIn.getValue().entrySet().stream().map(entryStIn ->
+						Map.entry(entryStIn.getKey().getName(), entryStIn.getValue())
+					).toList());
+				}).toList());
 
 		
 		String inPath = coreInstanceOpt.map(coreInstance -> coreInstance.getCorePathIn()).orElse("CoresSrc");
 		
 		scalLayer.Prepare(instrSet, op_stage_instr, spawn_instr_stage, core);
 
-		coreInstanceOpt.ifPresent(coreInstance -> coreInstance.Prepare(instrSet, op_stage_instr, core, scalLayer));
-	 		
-		scalLayer.Generate(inPath, outPath);
+		coreInstanceOpt.ifPresent(coreInstance -> coreInstance.Prepare(instrSet, op_stage_instr, core, scalLayer, BNodes));
+
+		scalLayer.Generate(inPath, outPath, coreInstanceOpt);
 		
 		// Remove user nodes before calling backend classes. Cores do not have to implement them, they were already handled in SCAL 
 		RemoveUserNodes();
@@ -135,7 +235,6 @@ public class SCAIEV {
 		success = coreInstanceOpt.map(coreInstance ->
 			coreInstance.Generate(instrSet, op_stage_instr, this.extensionName, core, outPath)
 		).orElse(false);
-		
 		
 		Yaml netlistYaml = new Yaml();
 		String netlistPath = "scaiev_netlist.yaml";
@@ -155,10 +254,47 @@ public class SCAIEV {
 	}
 	
 	private void CreateOpStageInstr(Core core) throws FrontendNodeException {
-		int spawnStage = core.maxStage+1; 
-		int rdrsStage = core.GetNodes().get(BNode.RdRS1).GetEarliest();
-		int memstage = core.GetNodes().get(BNode.RdMem).GetEarliest();
+		List<PipelineStage> spawnStages = core.GetSpawnStages().asList();
+		assert(spawnStages.size() > 0);
+		if (spawnStages.size() > 1)
+			logger.warn("CreateOpStageInstr - only considering first of several 'spawn stages'");
+		PipelineStage spawnStage = spawnStages.get(0);
+		//Use execute stages as semi-coupled spawn targets.
+		List<PipelineStage> rdrsStages = core.TranslateStageScheduleNumber(core.GetNodes().get(BNodes.RdRS1).GetEarliest()).asList();
+		assert(rdrsStages.size() > 0);
+		if (rdrsStages.isEmpty()) {
+			logger.error("Cannot find a stage that allows RdRS1");
+			return;
+		}
+		List<PipelineStage> execStages = core.GetRootStage().streamNext_bfs().filter(stage -> stage.getTags().contains(StageTag.Execute)).toList();
+		if (execStages.isEmpty()) {
+			PipelineFront rdRS1Expensive = core.TranslateStageScheduleNumber(core.GetNodes().get(BNodes.RdRS1).GetExpensive());
+			//For stall pseudo-decoupled mode, choose the first stage after rdrsStage if possible. 
+			execStages = rdrsStages.stream().filter(rdrsStage -> rdRS1Expensive.isAfter(rdrsStage, false))
+				.flatMap(rdrsStage -> rdrsStage.streamNext_bfs(nextStage -> nextStage == rdrsStage)
+						.filter(rdrsNextStage -> rdrsNextStage != rdrsStage && rdrsNextStage.getKind() == StageKind.Core))
+				.distinct()
+				.toList();
+		}
+		if (execStages.isEmpty()) {
+			logger.error("Cannot find a viable execute stage for semi-coupled spawn");
+		}
+		if (execStages.size() > 1)
+			logger.warn("CreateOpStageInstr - only considering first of several execute stages");
+		PipelineStage execStage = execStages.isEmpty() ? null : execStages.get(0);
+		if (rdrsStages.size() > 1)
+			logger.warn("CreateOpStageInstr - only considering first of several RdRS1 stages");
+		PipelineStage rdrsStage = rdrsStages.get(0);
+
+		List<PipelineStage> memStages = core.TranslateStageScheduleNumber(core.GetNodes().get(BNodes.RdMem).GetEarliest()).asList();
+		assert(memStages.size() > 0);
+		if (memStages.size() > 1)
+			logger.warn("CreateOpStageInstr - only considering first of several RdMem stages");
+		PipelineStage memStage = memStages.get(0);
 		boolean barrierInstrRequired = false;
+
+		HashMap<SCAIEVNode, HashMap<String, Integer>> spawn_instr_stagePos = new HashMap<>();
+		HashMap<NodeInstanceDesc.Key, NodeInstanceDesc.Key> renamedISAXInterfacePins = new HashMap<>();
 		
 		for(String instructionName : instrSet.keySet()) {
 			SCAIEVInstr instruction = instrSet.get(instructionName);
@@ -166,26 +302,27 @@ public class SCAIEV {
 			// STEP 1: store actual spawn stages , to be used later in SCAL for fire logic & Scoreboard
 			// HEADSUP. Make sure code bellow does NOT add always blocks, otherwise SCAL will generate fire logic
 			HashMap<SCAIEVNode, List<Scheduled>> originalSchedNodes = instruction.GetSchedNodes();
-			if(!instruction.HasNoOp())
+			if(!instruction.HasNoOp()) {
 				for(SCAIEVNode operation : originalSchedNodes.keySet()) {
 					for (Scheduled sched : originalSchedNodes.get(operation)) {
-						SCAIEVNode spawnOperation = this.BNodes.GetMySpawnNode(operation);
-						if(spawnOperation != null) { // if this is a node that has a spawn feature
-							int actualSpawnStage = spawnStage; 
-							if(spawnOperation.equals(BNode.RdMem_spawn)  || spawnOperation.equals(BNode.WrMem_spawn))
-								actualSpawnStage = memstage+1;		// Mem stage has spawn from 1+ earliest memory stage
+						var spawnOperation_opt = this.BNodes.GetMySpawnNode(operation);
+						if(spawnOperation_opt.isPresent()) { // if this is a node that has a spawn feature
+							SCAIEVNode spawnOperation = spawnOperation_opt.get();
+							int minSpawnStagePos = spawnStage.getStagePos();
+							if(spawnOperation.equals(BNodes.RdMem_spawn) || spawnOperation.equals(BNodes.WrMem_spawn)) {
+								minSpawnStagePos = memStage.getStagePos() + 1; // Mem stage has spawn from 1+ earliest memory stage
+							}
 							
 							int stage = sched.GetStartCycle();
-							if(stage>=actualSpawnStage) {
-								if(!spawn_instr_stage.containsKey(spawnOperation)) 
-									spawn_instr_stage.put(spawnOperation, new HashMap<String,Integer>()); 
-								if(!spawn_instr_stage.get(spawnOperation).containsKey(instructionName))
-									spawn_instr_stage.get(spawnOperation).put(instructionName, stage);
+							if(stage>=minSpawnStagePos) {
+								spawn_instr_stagePos
+									.computeIfAbsent(spawnOperation, _op -> new HashMap<>())
+									.putIfAbsent(instructionName, stage);
 							}
 						}
-						
 					}
-				} 
+				}
+			}
 			
 			// STEP 2: Update Instruction metadata for backend
 			// Now, after storing actual spawn stages in case of spawn IF using stall method, let's update ISAX schedule 
@@ -193,46 +330,239 @@ public class SCAIEV {
 			
 			// STEP 3: Add nodes to op_stage_instr
 			HashMap<SCAIEVNode, List<Scheduled>> schedNodes = instruction.GetSchedNodes();
-			for(SCAIEVNode operation : schedNodes.keySet()) {
+			
+			// 3.1 Add spawn nodes to op_stage_instr
+			int numSchedStages = instruction.GetSchedNodes().values().stream().flatMap(schedSet -> schedSet.stream()).map(sched->sched.GetStartCycle()+1).max(Integer::compare).orElse(0);
+			PipelineStage[] moveToSpawnPipeline = new PipelineStage[numSchedStages];
+			
+			boolean insertedWrCommit = false;
+			if (instruction.GetSchedNodes().keySet().stream().anyMatch(operation -> operation.isSpawn()) /* has any spawn operation */
+					&& !instruction.HasNode(BNodes.WrCommit_spawn) /* but no WrCommit_spawn */) {
+				if (instruction.GetRunsAsDynamic()) {
+					logger.error("ISAX {} is dynamic but does not have WrCommit_spawn. SCAL will not be able to detect the end of execution.", instructionName);
+				}
+				//Add WrCommit_spawn to the schedule.
+				int maxStartCycle = instruction.GetSchedNodes().values().stream().flatMap(list -> list.stream())
+					.map(sched -> sched.GetStartCycle())
+					.max(Integer::compare).orElseThrow();
+				instruction.PutSchedNode(BNodes.WrCommit_spawn, new Scheduled(maxStartCycle, new HashSet<>(List.of(AdjacentNode.validReq)), new HashMap<>()));
+				spawn_instr_stagePos.computeIfAbsent(BNodes.WrCommit_spawn, _op -> new HashMap<>()).put(instructionName, maxStartCycle);
+				insertedWrCommit = true;
+			}
+			var isaxReadResultOps = instruction.GetSchedNodes().keySet().stream()
+				.filter(node -> node.oneInterfToISAX
+						&& (node.tags.contains(NodeTypeTag.staticReadResult) || node.tags.contains(NodeTypeTag.nonStaticReadResult)))
+				.toList();
+			if (!instruction.hasTag(InstrTag.PerISAXReadResults) && !isaxReadResultOps.isEmpty()) {
+				String nodeReport = isaxReadResultOps.stream().map(op->op.name).distinct().sorted().reduce((a,b)->a+","+b).orElse("");
+				logger.warn("Deprecated: ISAX {} uses global port names for [{}]."
+						+ " This can cause naming mismatches if no global value can be provided due to ISAX scheduling or other reasons."
+						+ " Tag the ISAX with {} to mark support for the per-ISAX interface.",
+					instructionName,
+					nodeReport,
+					InstrTag.PerISAXReadResults.serialName);
+			}
+			if (instruction.GetSchedNodes().keySet().contains(BNodes.RdStall)
+					&& !instruction.hasTag(InstrTag.PerISAXRdStallFlush)) {
+				logger.warn("Deprecated: ISAX {} uses the legacy global RdStall input. "
+						+ "This can cause logic issues with WrStall of a different ISAX. "
+						+ "Tag the ISAX with {} to mark support for the per-ISAX interface.", 
+						instructionName, 
+						InstrTag.PerISAXRdStallFlush.serialName);
+				if (instruction.GetSchedNodes().keySet().stream().anyMatch(operation -> operation.isSpawn()) && !instruction.GetRunsAsDecoupled())
+					logger.error("Legacy global RdStall does not work with semi-coupled spawn (ISAX {}).", instruction.GetName());
 				
+				instruction.GetSchedNodes().computeIfAbsent(BNodes.RdStallLegacy, _x -> new ArrayList<>()).addAll(
+					instruction.GetSchedNodes().get(BNodes.RdStall).stream()
+						.map(sched -> new Scheduled(sched.GetStartCycle(), new HashSet<>(), new HashMap<>()))
+						.toList()
+				);
+				instruction.GetSchedNodes().remove(BNodes.RdStall);
+				if (!core.GetNodes().containsKey(BNodes.RdStallLegacy)) {
+					var regularCoreNode = core.GetNodes().get(BNodes.RdStall);
+					core.PutNode(BNodes.RdStallLegacy, new CoreNode(
+						regularCoreNode.GetEarliest(), regularCoreNode.GetLatency(), regularCoreNode.GetLatest(), regularCoreNode.GetExpensive(), BNodes.RdStallLegacy.name
+					));
+				}
+			}
+			if (instruction.GetSchedNodes().keySet().contains(BNodes.RdFlush) && !instruction.hasTag(InstrTag.PerISAXRdStallFlush)) {
+				logger.error("Obsolete: ISAX {} uses the legacy global RdFlush input. Tag the ISAX with {} to mark support for the per-ISAX interface.", instructionName, InstrTag.PerISAXRdStallFlush.serialName);
+			}
+			
+			for(SCAIEVNode operation : schedNodes.keySet()) if (operation.isSpawn()) {
 				for (Scheduled sched : schedNodes.get(operation)) {
 					SCAIEVNode addOperation = operation; 
-					int actualSpawnStage = spawnStage; 
-					if(operation.equals(BNode.RdMem_spawn)  || operation.equals(BNode.WrMem_spawn))
-						actualSpawnStage = memstage+1;		// Mem stage has spawn from 1+ earliest memory stage
+					int actualSpawnStagePos = spawnStage.getStagePos();
+					if(operation.equals(BNodes.RdMem_spawn)  || operation.equals(BNodes.WrMem_spawn))
+						actualSpawnStagePos = memStage.getStagePos() + 1; // Mem stage has spawn from 1+ earliest memory stage
 					
-					int stage = sched.GetStartCycle();
-					if(stage>=actualSpawnStage) {
-						if(!instruction.GetRunsAsDecoupled()) { // If it is a spawn but we have Stall strategy, make it common WrRD so that core handles DH 
-							addOperation = this.BNodes.GetSCAIEVNode(operation.nameParentNode);
-							stage = rdrsStage+1;
-						} else {
-							stage = spawnStage;
+					PipelineStage stage;
+					if(!instruction.GetRunsAsDecoupled()) {
+						//// If it is a spawn but we have Stall strategy, make it common WrRD so that core handles DH 
+						//addOperation = this.BNodes.GetSCAIEVNode(operation.nameParentNode);
+						if (execStage == null) {
+							logger.error("Cannot schedule {} as semi-coupled/stall, no execute stage found", operation.name);
+							continue;
+						}
+						stage = execStage;//rdrsStage+1;
+					} else {
+						stage = spawnStage;
+					}
+					if(sched.GetStartCycle()>=actualSpawnStagePos) {
+						if (instruction.GetRunsAsDecoupled())
 							barrierInstrRequired = true;
+						assert(spawn_instr_stagePos.containsKey(operation) && spawn_instr_stagePos.get(operation).containsKey(instructionName));
+
+						//Actual time step where the operation is scheduled by the ISAX
+						int isaxOpStagePos = spawn_instr_stagePos.get(operation).get(instructionName);
+						//Time step within the stage to run the operation in.
+						int subStagePos = isaxOpStagePos - stage.getStagePos();
+
+						//TODO: Right now, non-dynamic&decoupled ISAXes have no way of waiting for read results. This also affects semi-coupled spawn.
+						// -> Here: Use the same sub-pipeline for all spawn operations of an ISAX.
+						// -> In SCAL generation: Stall sub-pipeline stages until the result is available.
+						
+						//Add a sub-stage with depth matching the stage position.
+						String subStageNameBase = stage.getName() + "_sub" + stage.getChildren().size() + "_pos";
+						PipelineStage childTail = new PipelineStage(StageKind.Sub, EnumSet.noneOf(StageTag.class),
+							subStageNameBase + "0",
+							Optional.empty(), true
+						);
+						// Set moveToSpawnPipeline to the sub-stages, without overwriting existing any longer sub-pipeline 'strips' in it.
+						boolean applyMove = Stream.of(moveToSpawnPipeline).skip(stage.getStagePos()).limit(subStagePos+1).anyMatch(moveToStage -> moveToStage == null);
+						if (applyMove)
+							moveToSpawnPipeline[stage.getStagePos()] = childTail;
+						stage.addChild(childTail);
+						while (childTail.getStagePos() < subStagePos) {
+							childTail = childTail.addNext(new PipelineStage(StageKind.Sub, EnumSet.noneOf(StageTag.class),
+								subStageNameBase + (childTail.getStagePos() + 1),
+								Optional.empty(), true
+							));
+							if (applyMove)
+								moveToSpawnPipeline[stage.getStagePos() + childTail.getStagePos()] = childTail;
+						}
+						PipelineStage isaxStage = childTail;
+						
+						if (null != spawn_instr_stage.computeIfAbsent(operation, _op -> new HashMap<>())
+								.putIfAbsent(instructionName, isaxStage)) {
+							logger.error("ISAX {} contains multiple scheduled {} nodes, which is currently not allowed.", instructionName, operation.name);
+						}
+						if (operation.equals(BNodes.WrCommit_spawn) && insertedWrCommit) {
+							//Prevent generation of the interface by adding a rename to an empty node (detected by SCAL#GenerateAllInterfToISAX).
+							renamedISAXInterfacePins.put(
+								new NodeInstanceDesc.Key(operation, stage, instructionName),
+								new NodeInstanceDesc.Key(new SCAIEVNode(""), stage, instructionName)
+							);
+						}
+						//Put our spawn operation in op_stage_instr at the parent of the sub-pipeline.
+						op_stage_instr
+							.computeIfAbsent(addOperation, _op -> new HashMap<>())
+							.computeIfAbsent(stage, _stage -> new HashSet<>())
+							.add(instructionName);
+					}
+				}
+			}
+			// 3.2 Add non-spawn operations to op_stage_instr
+			// -> TODO: Certain non-spawn operations (Rd/WrMem, WrCustomReg) will need additional conversion,
+			//    since the ISAX has non-spawn interfaces but the behavior will be like spawn.
+			//    This edge case will occur for non-decoupled spawn instructions
+			//    where one of these non-spawn operations already is in stallExecStage.
+			for(SCAIEVNode operation : schedNodes.keySet()) if (!operation.isSpawn()) {
+				for (Scheduled sched : schedNodes.get(operation)) {
+					SCAIEVNode operationRenameTo = operation;
+					PipelineStage stageRenameTo = null;
+					String instructionRenameTo = instructionName;
+					boolean doRename = false;
+					if (operation.equals(BNodes.RdStallLegacy)) {
+						operationRenameTo = BNodes.RdStall;
+						instructionRenameTo = "";
+					}
+					else if (instruction.hasTag(InstrTag.PerISAXReadResults)
+							&& operation.oneInterfToISAX
+							&& (operation.tags.contains(NodeTypeTag.staticReadResult) || operation.tags.contains(NodeTypeTag.nonStaticReadResult))) {
+						doRename = true;
+					}
+					if (BNodes.IsUserBNode(operation) && operation.getAdj() == AdjacentNode.addr && BNodes.GetSCAIEVNode(operation.nameParentNode).elements <= 1) {
+						//Custom registers: Omit the address interface if there only is a single element.
+						//Still keep track of it in op_stage_instr as a marker for the custom register issue stage. 
+						operationRenameTo = new SCAIEVNode("");
+					}
+					
+					//For all non-spawn operations, apply any scheduling overrides from semi-coupled spawn.
+					//For instance, a semi-coupled spawn could run over N cycles within stage 4
+					// -> those N cycles from the ISAX schedule will be mapped to some part of stage 4 (stage 4 itself or a sub-pipeline),
+					//    the following cycles will be shifted to match the natural core mapping.
+					PipelineStage stage; 
+					int schedNumOffset = 0;
+					if (moveToSpawnPipeline[sched.GetStartCycle()] != null) {
+						stage = moveToSpawnPipeline[sched.GetStartCycle()];
+					}
+					else {
+						//Shift depending on the stage mappings of prior cycles.
+						for (int iIntermStagePos = sched.GetStartCycle() - 1;
+								iIntermStagePos >= 0;
+								--iIntermStagePos) {
+							if (moveToSpawnPipeline[iIntermStagePos] != null) {
+								//Get the difference from the 'move to' base stage number and the highest ISAX cycle number that uses it in a sub-pipeline.
+								schedNumOffset = core.GetStageNumber(moveToSpawnPipeline[iIntermStagePos].getParent().orElseThrow()).orElseThrow()
+										- iIntermStagePos;
+								break;
+							}
+						}
+						var stages = core.TranslateStageScheduleNumber(sched.GetStartCycle() + schedNumOffset);
+						if (stages.asList().isEmpty()) {
+							logger.error("Cannot schedule a node of ISAX {} to the core pipeline: {}; it must be succeeded by or simultaneous to a spawn node.", instructionName, sched.toString());
+							continue;
+						}
+						stage = stages.asList().get(0);
+						PipelineFront earliestStages = core.GetNodes().containsKey(operation)
+								? core.TranslateStageScheduleNumber(core.GetNodes().get(operation).GetEarliest())
+								: null;
+						if (instruction.HasNoOp() /*shift scheduled 'always'-mode operation to the earliest stage*/
+								&& earliestStages != null
+								&& !earliestStages.isAroundOrBefore(stage, false) && !earliestStages.isAfter(stage, false)) {
+							stage = earliestStages.asList().get(0);
 						}
 					}
-						
-					if(!op_stage_instr.containsKey(addOperation)) 
-						op_stage_instr.put(addOperation, new HashMap<Integer,HashSet<String>>()); 
-					if(!op_stage_instr.get(addOperation).containsKey(stage))
-						op_stage_instr.get(addOperation).put(stage, new HashSet<String>()); 
-					op_stage_instr.get(addOperation).get(stage).add(instructionName);
-					
+					stageRenameTo = stage;
+					var originalStages = core.TranslateStageScheduleNumber(sched.GetStartCycle()).asList();
+					if (originalStages.isEmpty() || originalStages.get(0) != stage) {
+						PipelineStage originalStage = (originalStages.isEmpty()
+							? new PipelineStage(StageKind.CoreInternal, EnumSet.of(StageTag.InOrder), "pseudo"+sched.GetStartCycle(), Optional.of(sched.GetStartCycle()), true)
+							: originalStages.get(0));
+						//Rename the ISAX pin (towards the ISAX module) as if it were scheduled in the default stage.
+						stageRenameTo = originalStage;
+					}
+					if (doRename || operationRenameTo != operation || stageRenameTo != stage || instructionRenameTo != instructionName) {
+						//Apply rename.
+						renamedISAXInterfacePins.put(
+							new NodeInstanceDesc.Key(operation, stage, instructionName),
+							new NodeInstanceDesc.Key(operationRenameTo, stageRenameTo, instructionRenameTo)
+						);
+					}
+					op_stage_instr
+						.computeIfAbsent(operation, _op -> new HashMap<>())
+						.computeIfAbsent(stage, _stage -> new HashSet<>())
+						.add(instructionName);
 				}
 			}
 		}
+		this.scalLayer.AddISAXInterfacePinRenames(renamedISAXInterfacePins.entrySet());
+
 		// Check if any spawn and if yes, add the barrier instr (WrRD spawn & Internal state spawn) 
 		boolean barrierNeeded = false;
 		for(SCAIEVNode node : op_stage_instr.keySet() )
 			if(node.isSpawn())
 				barrierNeeded = true;
 		if(barrierNeeded && barrierInstrRequired) {
-			AddIn_op_stage_instr(BNode.RdRS1,rdrsStage,"disaxkill");
-			AddIn_op_stage_instr(BNode.RdRS1,rdrsStage,"disaxfence");
+			AddIn_op_stage_instr(BNodes.RdRS1,rdrsStage,"disaxkill");
+			AddIn_op_stage_instr(BNodes.RdRS1,rdrsStage,"disaxfence");
 			SCAIEVInstr kill  = SCAL.PredefInstr.kill.instr;
 			SCAIEVInstr fence = SCAL.PredefInstr.fence.instr;
-			kill.PutSchedNode(FNode.RdRS1,rdrsStage);  
-			fence.PutSchedNode(FNode.RdRS1, rdrsStage);  
+			//SCAIEVInstr kill = addInstr("disaxkill","-------", "110", "0001011", "S");
+			//SCAIEVInstr fence = addInstr("disaxfence","-------", "111", "0001011", "S");
+			kill.PutSchedNode(FNodes.RdRS1,rdrsStage.getStagePos());
+			fence.PutSchedNode(FNodes.RdRS1, rdrsStage.getStagePos());
 			instrSet.put("disaxkill", kill);
 			instrSet.put("disaxfence", fence);
 		}
@@ -240,9 +570,9 @@ public class SCAIEV {
 	}
 	
 	
-	private boolean AddIn_op_stage_instr(SCAIEVNode operation,int stage, String instruction) {
+	private boolean AddIn_op_stage_instr(SCAIEVNode operation,PipelineStage stage, String instruction) {
 		if(!op_stage_instr.containsKey(operation)) 
-			op_stage_instr.put(operation, new HashMap<Integer,HashSet<String>>()); 
+			op_stage_instr.put(operation, new HashMap<>()); 
 		else if(op_stage_instr.get(operation).containsKey(stage) && op_stage_instr.get(operation).get(stage).contains(instruction))
 			return false;
 		if(!op_stage_instr.get(operation).containsKey(stage))
@@ -253,8 +583,9 @@ public class SCAIEV {
 	
 	private void OpStageInstrToString() {
 		for(SCAIEVNode operation : op_stage_instr.keySet())
-			for(Integer stage : op_stage_instr.get(operation).keySet())
-				System.out.println("INFO. SCAIEV. Operation = "+ operation+ "in stage = "+stage+ " for instruction/s: "+op_stage_instr.get(operation).get(stage).toString());
+			for(PipelineStage stage : op_stage_instr.get(operation).keySet()) {
+				logger.debug("INFO. SCAIEV. Operation = "+ operation+ "in stage = "+stage.getName()+ " for instruction/s: "+op_stage_instr.get(operation).get(stage).toString());
+			}
 		
 	}
 	
@@ -270,17 +601,18 @@ public class SCAIEV {
 	private void AddCommitStagesToNodes (Core core){
 		
 		// Add commit stage of core 
-		BNodes.RdMem.commitStage = core.GetNodes().get(BNode.RdMem).GetEarliest();
-		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(BNode.RdMem))
-			nodeAdj.commitStage = core.maxStage;
-		BNodes.WrMem.commitStage = core.GetNodes().get(BNode.WrMem).GetEarliest();
-		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(BNode.WrMem))
-			nodeAdj.commitStage = core.maxStage;
-		BNodes.WrRD.commitStage = core.maxStage;
-		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(BNode.WrRD))
-			nodeAdj.commitStage = core.maxStage;
-		BNodes.WrPC.commitStage = core.GetNodes().get(BNode.WrPC).GetEarliest(); // risky: was core.maxStage; Updated it so that always wrpc would be mapped to 0 when nodeStage=100 in automatic demo class	
-		BNodes.WrPC_valid.commitStage =  core.GetNodes().get(BNode.WrPC).GetEarliest();
+		BNodes.RdMem.commitStage = core.GetNodes().get(BNodes.RdMem).GetEarliest();
+		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(BNodes.RdMem))
+			nodeAdj.commitStage = new ScheduleFront(core.maxStage);
+		BNodes.WrMem.commitStage = core.GetNodes().get(BNodes.WrMem).GetEarliest();
+		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(BNodes.WrMem))
+			nodeAdj.commitStage = new ScheduleFront(core.maxStage);
+		BNodes.WrRD.commitStage = new ScheduleFront(core.maxStage);
+		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(BNodes.WrRD))
+			nodeAdj.commitStage = new ScheduleFront(core.maxStage);
+		BNodes.WrPC.commitStage = new ScheduleFront(core.maxStage);
+		BNodes.WrPC_valid.commitStage = new ScheduleFront(core.maxStage);
+		BNodes.WrCommit.commitStage = new ScheduleFront(0);
 		
 		// Add commit stage info of WrUser node. First write nodes, than read nodes 
 		for(SCAIEVNode node : this.BNodes.GetAllBackNodes()) {
@@ -296,10 +628,10 @@ public class SCAIEV {
 						}	
 					}				
 				}
-				node.commitStage = latest;
+				node.commitStage = new ScheduleFront(latest);
 				for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(node)) {
-					nodeAdj.commitStage = latest;
-					}        		 
+					nodeAdj.commitStage = new ScheduleFront(latest);
+				}
 			}
 		}		
 		 
@@ -307,17 +639,18 @@ public class SCAIEV {
 		for(SCAIEVNode node : this.BNodes.GetAllBackNodes()) {
 			if(BNodes.IsUserBNode(node) && !node.isInput && !node.isAdj()) {
 				// Get Latest/Earliest stage
-				int earliest = core.maxStage+1;
+				int earliest_num = core.maxStage+1;
 				for(String instr: this.instrSet.keySet()) { // for each instruction 
 					if(instrSet.get(instr).HasNode(node)) { // get node
 						List<Scheduled> scheds = instrSet.get(instr).GetNodes(node); //check out latest sched stage
 						for(Scheduled sched : scheds) {
-							if(sched.GetStartCycle()<earliest && !this.instrSet.get(instr).HasNoOp())
-								earliest = sched.GetStartCycle();
+							if(sched.GetStartCycle()<earliest_num && !this.instrSet.get(instr).HasNoOp())
+								earliest_num = sched.GetStartCycle();
 						}	
 					}				
 				}
-				if(earliest == core.maxStage+1) {
+				ScheduleFront earliest = new ScheduleFront(earliest_num);
+				if(earliest_num == core.maxStage+1) {
 					SCAIEVNode WrNode = BNodes.GetSCAIEVNode(BNodes.GetNameWrNode(node));
 					earliest = WrNode.commitStage;
 				}
@@ -335,36 +668,14 @@ public class SCAIEV {
 		boolean added = false;
 		for(SCAIEVNode operation: this.op_stage_instr.keySet()) {
 			if(this.BNodes.IsUserBNode(operation) && !operation.isSpawn()) {
-				// Get Latest stage
-				int latest =  core.maxStage; 
-				Integer earliest = 0;
-				boolean noDHWr = true;
-				boolean noDHRd = true;
-				// Check if it needs DH (data hazard) 
-				SCAIEVNode otheroperation;
-				if(operation.isInput) 
-					otheroperation = BNodes.GetSCAIEVNode(BNodes.GetNameRdNode(operation));
-				else 
-					otheroperation = BNodes.GetSCAIEVNode(BNodes.GetNameWrNode(operation));
-				for(String instr: this.instrSet.keySet()) { // for each instruction 
-					if(instrSet.get(instr).HasNode(operation)) { // get node
-						if(!instrSet.get(instr).HasNoOp())
-							noDHWr = false;
-					}	
-					if(instrSet.get(instr).HasNode(otheroperation)) { // get node
-						if(!instrSet.get(instr).HasNoOp())
-							noDHRd = false;
-					}	
-				}
-				if(noDHWr | noDHRd) { // No write/read with opcode => both rd & wr nodes have no DH
-					operation.DH = false; 
-					otheroperation.DH = false;
-				} else {
-					operation.DH = true;
-					otheroperation.DH = true;
-				}
+				//(Rd|Wr)CustomReg, (Rd|Wr)CustomReg_addr
 				
-				if(operation.isInput) {
+				// Get Latest stage
+				int latest = core.maxStage;
+
+				SCAIEVNode baseOperation = BNodes.GetNonAdjNode(operation);
+				
+				if(operation.isInput) { //WrCustomReg, (Rd|Wr)CustomReg_addr
 					latest = 0;
 					for(String instr: this.instrSet.keySet()) { // for each instruction 
 						if(instrSet.get(instr).HasNode(operation)) { // get node
@@ -377,30 +688,25 @@ public class SCAIEV {
 					}
 				}
 				 
-				added = true; 
-
-				if(!operation.isInput) {
-					if(noDHRd) // if no instruction wants to read, than ReadStage = WB Stage and SCAL DH logic should not cover earlier stages
-						earliest = earliest_useroperation.get(operation);
-					else 
-						earliest = earliest_useroperation.get(FNodes.GetNameWrNode(operation));
-				}
-				if(operation.isInput)
-					earliest = earliest_useroperation.get(operation);
+				added = true;
 				
-				// TODO latest for WrNode should be infinite
-				if(operation.isInput) {
-					CoreNode corenode = new CoreNode(earliest, 0,latest, latest+1, operation.name); // default values, it is anyways supposed user defined node well
+				int earliest = earliest_useroperation.get(operation.name);
+				
+				// latest for WrNode is effectively infinite
+				if(baseOperation.isInput) { //WrCustomReg
+					CoreNode corenode = new CoreNode(earliest, 0, latest, latest+1, operation.name); // default values, it is anyways supposed user defined node well
 					core.PutNode(operation, corenode);
-				} else {
-					CoreNode corenode = new CoreNode(earliest, 0,latest, earliest+1, operation.name); // default values, it is anyways supposed user defined node well
+				} else { //RdCustomReg, (Rd|Wr)CustomReg_addr
+					CoreNode corenode = new CoreNode(earliest, 0, earliest, earliest+1, operation.name); // default values, it is anyways supposed user defined node well
 					core.PutNode(operation, corenode);
 				}
 			}
 			
 			// Update node if there are multiple spawn instructions. Default was 1
 			if(this.BNodes.IsUserBNode(operation) && operation.isSpawn()) {
-				if(op_stage_instr.get(operation).get(core.maxStage+1).size()>1) {
+				if(op_stage_instr.get(operation).entrySet().stream()
+						//.filter(stage_instr_entry -> stage_instr_entry.getKey().getKind() == StageKind.Decoupled)
+						.flatMap(stage_instr_entry -> stage_instr_entry.getValue().stream()).count()>1) {
 					operation.allowMultipleSpawn = true;
 					operation.oneInterfToISAX = false;
 				}
@@ -408,7 +714,7 @@ public class SCAIEV {
 		}
 		
 		if(added)
-			System.out.println("INFO. After adding user-mode nodes, the core is: "+core);
+			logger.debug("INFO. After adding user-mode nodes, the core is: "+core);
 		
 	}
 	

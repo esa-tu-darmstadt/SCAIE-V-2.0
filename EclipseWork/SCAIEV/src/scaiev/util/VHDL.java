@@ -3,16 +3,24 @@ package scaiev.util;
 import java.util.HashMap;
 import java.util.HashSet;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import scaiev.backend.BNode;
 import scaiev.backend.CoreBackend;
 import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVNode;
+import scaiev.pipeline.PipelineStage;
 
 public class VHDL extends GenerateText {
+	// logging
+	protected static final Logger logger = LogManager.getLogger();
+
 	FileWriter toFile;
 	public String tab = "    ";
 	
-	public VHDL(FileWriter toFile, CoreBackend core) {
+	public VHDL(BNode user_BNode, FileWriter toFile, CoreBackend core) {
+		super(user_BNode);
 		// initialize dictionary 
 		dictionary.put(DictWords.module,"architecture");
 		dictionary.put(DictWords.endmodule,"end architecture");
@@ -43,9 +51,9 @@ public class VHDL extends GenerateText {
 	public Lang getLang () {
 		return Lang.VHDL;		
 	}
-	public void  UpdateInterface(String top_module,SCAIEVNode operation, String instr, int stage, boolean top_interface, boolean special_case) {
+	public void  UpdateInterface(String top_module,SCAIEVNode operation, String instr, PipelineStage stage, boolean top_interface, boolean special_case) {
 		// Update interf bottom file
-		System.out.println("INTEGRATE. DEBUG. stage = "+stage+" operation = "+operation);
+		logger.debug("Update interface stage = "+stage.getName()+" operation = "+operation);
 		HashMap<String, HashMap<String,ToWrite>> update_orca = new HashMap<String, HashMap<String,ToWrite>>();
 		
 		// Update interf bottom file
@@ -55,6 +63,10 @@ public class VHDL extends GenerateText {
 
 		String sig_name = this.CreateNodeName(operation, stage, instr);
 		String bottom_module = coreBackend.NodeAssignM(operation, stage);
+		if (bottom_module == null) {
+			logger.error("Cannot find a node declaration for " + operation.name + " in stage " + stage.getName());
+			return;
+		}
 		if(top_module.contentEquals(bottom_module) && !top_interface)
 			sig_name = this.CreateLocalNodeName(operation, stage, instr);
 		String current_module = bottom_module;
@@ -62,7 +74,7 @@ public class VHDL extends GenerateText {
 		while(!prev_module.contentEquals(top_module)) {
 			HashMap<String,ToWrite> insert = new HashMap<String,ToWrite>();
 			if(!current_module.contentEquals(top_module) || top_interface) {  // top file should just instantiate signal in module instantiation and not generate top interface
-				System.out.println("INTEGRATE. DEBUG. Inserting in components.vhd with prereq "+ current_module);
+				logger.debug("INTEGRATE. DEBUG. Inserting in components.vhd with prereq "+ current_module);
 				this.toFile.UpdateContent(coreBackend.ModInterfFile(current_module),"port (", new ToWrite(CreateTextInterface(operation,stage,instr,special_case),true,false," "+current_module+" "));
 				this.toFile.UpdateContent(coreBackend.ModFile(current_module),"port (", new ToWrite(CreateTextInterface(operation,stage,instr,special_case),true,false," "+current_module+" "));		
 			} else if(current_module.contentEquals(top_module)) {
@@ -100,7 +112,7 @@ public class VHDL extends GenerateText {
 	 * Generates text like : signal signalName_s  :  std_logic_vector(1 downto 0);
 	 * signalName created from <operation,  stage,  instr>
 	 */
-	public String CreateDeclSig(SCAIEVNode operation, int stage, String instr) {
+	public String CreateDeclSig(SCAIEVNode operation, PipelineStage stage, String instr) {
 		String decl = "";
 		String size = "";
 		if(coreBackend.NodeSize(operation,stage) != 1 ) 
@@ -114,13 +126,13 @@ public class VHDL extends GenerateText {
 	 * Generates text like : signal signalName_reg  :  std_logic_vector(1 downto 0);
 	 * signalName created from <operation,  stage,  instr>
 	 */
-	public String CreateDeclReg(SCAIEVNode operation, int stage, String instr) {
+	public String CreateDeclReg(SCAIEVNode operation, PipelineStage stage, String instr) {
 		String decl = "";
 		String size = "";
 		if(coreBackend.NodeSize(operation,stage) > 1  ) 
 			size += "("+operation.size+" -1 downto 0)";
 		String regName = CreateNodeName(operation,stage,instr);
-		if(coreBackend.NodeIn(operation, stage))
+		if(coreBackend.NodeIsInput(operation, stage))
 			regName = regName.replace("_i", "_reg");
 		else 
 			regName = regName.replace("_o", "_reg");
@@ -132,12 +144,12 @@ public class VHDL extends GenerateText {
 
 
 	
-	public String CreateTextInterface(SCAIEVNode operation, int stage, String instr, boolean special_case) {
+	public String CreateTextInterface(SCAIEVNode operation, PipelineStage stage, String instr, boolean special_case) {
 		String interf_lineToBeInserted = "";
 		String sig_name = this.CreateNodeName(operation, stage, instr);
 		String sig_in = this.dictionary.get(DictWords.out);
 		String sig_type = coreBackend.NodeDataT(operation, stage);   
-		if(coreBackend.NodeIn(operation, stage))
+		if(coreBackend.NodeIsInput(operation, stage))
 			sig_in = this.dictionary.get(DictWords.in);
 		String size = "";
 		if(operation.size>1 ) 
@@ -194,7 +206,7 @@ public class VHDL extends GenerateText {
 			i++;
 			endclockEdge = tab+"end if;\n";
 		}
-		String body ="process("+sensitivity+") begin -- ISAX Logic\n "+clockEdge+AllignText(tab.repeat(i),text)+"\n"+endclockEdge+"end process;\n" ;
+		String body ="process("+sensitivity+") begin -- ISAX Logic\n "+clockEdge+AlignText(tab.repeat(i),text)+"\n"+endclockEdge+"end process;\n" ;
 		return body;		
 	}
 	

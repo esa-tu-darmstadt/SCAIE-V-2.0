@@ -14,12 +14,12 @@
 - operation: RdRS1
   earliest: 3
   latency: 0
-  latest: 4
+  latest: 3
   costly: 4
 - operation: RdRS2
   earliest: 3
   latency: 0
-  latest: 4
+  latest: 3
   costly: 4
 - operation: WrRD
   earliest: 4
@@ -48,7 +48,7 @@
 - operation: RdInstr
   earliest: 1
   latency: 0
-  latest: 4
+  latest: 3
   costly: 4
 - operation: RdStall
   earliest: 0

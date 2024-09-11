@@ -6,26 +6,32 @@ import java.util.HashSet;
 import java.util.TreeMap;
 import java.util.function.BiConsumer;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import scaiev.backend.BNode;
 import scaiev.backend.CoreBackend;
 import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
+import scaiev.pipeline.PipelineStage;
 import scaiev.util.GenerateText.DictWords;
 
 public class Verilog extends GenerateText {
+	// logging
+	protected static final Logger logger = LogManager.getLogger();
 
 	FileWriter toFile;
 	public String tab = "    ";
 	public String clk = "clk_i";
 	public String reset = "rst_i";
-	public BNode BNode = new BNode();
 	/**
 	 * Class constructor
 	 * @param toFile
 	 * @param core
 	 */
-	public Verilog(FileWriter toFile, CoreBackend core) {
+	public Verilog(BNode user_BNode, FileWriter toFile, CoreBackend core) {
+		super(user_BNode);
 		// initialize dictionary 
 		DictionaryDefinition();
 		this.toFile = toFile;
@@ -36,10 +42,10 @@ public class Verilog extends GenerateText {
 	/**
 	 * Use this constructor if you simply want to use the Verilog functions which do not use toFile or coreBackend. However, be aware it won't work to use functions which require coreBackend & toFile!!
 	 */
-	public Verilog(BNode BNode) {
+	public Verilog(BNode user_BNode) {
+		super(user_BNode);
 		// initialize dictionary 
 		DictionaryDefinition();
-		this.BNode = BNode;
 	}
 	
 	
@@ -78,7 +84,7 @@ public class Verilog extends GenerateText {
 	 * Generates text like : signal signalName_s  :  std_logic_vector(1 : 0);
 	 * signalName created from <operation,  stage,  instr>
 	 */
-	public String CreateDeclSig(SCAIEVNode operation, int stage, String instr,boolean reg) {
+	public String CreateDeclSig(SCAIEVNode operation, PipelineStage stage, String instr,boolean reg) {
 		String decl = "";
 		String size = "";
 		if(coreBackend.NodeSize(operation,stage) != 1 ) 
@@ -90,7 +96,7 @@ public class Verilog extends GenerateText {
 		return decl;	
 	}
 	
-	public String CreateDeclSig(SCAIEVNode operation, int stage, String instr,boolean reg, String specificName) {
+	public String CreateDeclSig(SCAIEVNode operation, PipelineStage stage, String instr,boolean reg, String specificName) {
 		String decl = "";
 		String size = "";
 		if(coreBackend.NodeSize(operation,stage) != 1 ) 
@@ -106,13 +112,13 @@ public class Verilog extends GenerateText {
 	 * Generates text like : signal signalName_reg  :  std_logic_vector(1 : 0);
 	 * signalName created from <operation,  stage,  instr>
 	 */
-	public String CreateDeclReg(SCAIEVNode operation, int stage, String instr) {
+	public String CreateDeclReg(SCAIEVNode operation, PipelineStage stage, String instr) {
 		String decl = "";
 		String size = "";
 		if(coreBackend.NodeSize(operation,stage) != 1 ) 
 			size += dictionary.get(DictWords.bitsselectLeft)+" "+operation.size+" -1 : 0 "+dictionary.get(DictWords.bitsselectRight);
 		String regName = "";
-		if(coreBackend.NodeIn(operation, stage))
+		if(coreBackend.NodeIsInput(operation, stage))
 			regName = CreateRegNodeName(operation,stage,instr);
 		else 
 			regName = CreateRegNodeName(operation,stage,instr);
@@ -132,7 +138,7 @@ public class Verilog extends GenerateText {
 	 * @param instr
 	 * @return
 	 */
-	public String CreateTextInterface(SCAIEVNode operation, int stage, String instr) {
+	public String CreateTextInterface(SCAIEVNode operation, PipelineStage stage, String instr) {
 		String interf_lineToBeInserted = "";
 		String sig_name = this.CreateNodeName(operation, stage, instr);
 		String sig_in = this.dictionary.get(DictWords.out);
@@ -158,7 +164,7 @@ public class Verilog extends GenerateText {
 	 * @param signalSize
 	 * @return
 	 */
-	public String CreateTextInterface(String operation, int stage, String instr, boolean input, int signalSize) {
+	public String CreateTextInterface(String operation, PipelineStage stage, String instr, boolean input, int signalSize) {
 		String interf_lineToBeInserted = "";
 		SCAIEVNode node = new SCAIEVNode(operation, signalSize,input);
 		String sig_name = this.CreateNodeName(node, stage, instr);
@@ -174,7 +180,7 @@ public class Verilog extends GenerateText {
 	}
 	
 
-	public String CreateTextInterface(String operation, int stage, String instr, boolean input, int signalSize, String dataT) {
+	public String CreateTextInterface(String operation, PipelineStage stage, String instr, boolean input, int signalSize, String dataT) {
 		String interf_lineToBeInserted = "";
 		SCAIEVNode node = new SCAIEVNode(operation, signalSize,input);
 		String sig_name = this.CreateNodeName(node, stage, instr);
@@ -189,173 +195,11 @@ public class Verilog extends GenerateText {
 		return interf_lineToBeInserted;
 	}
 	
-	public String  CreateValidEncodingIValid(HashSet<String> lookAtISAX, HashMap <String,SCAIEVInstr>  allISAXes, int stage, SCAIEVNode operation, SCAIEVNode checkAdj, int defaultValue) {
-		String body = "always @(*) begin \n"
-				+this.tab.repeat(1)+ "case(1'b1)\n";
-		String assignLogic = "";
-		String empty_assignLogic = "";
-		int nrElem = 0;
-		SCAIEVNode assignNode = operation;
-		if(!checkAdj.getAdj().equals(AdjacentNode.none))
-			assignNode = checkAdj;
-		SCAIEVNode correctcheckAdj;
-		if(!checkAdj.attachedNode.isEmpty()) // for exp in case of wrmem_addr_valid, we need to check if ISAX contains addr Adj
-			correctcheckAdj = BNode.GetSCAIEVNode(checkAdj.attachedNode);
-		else 
-			correctcheckAdj = checkAdj;
-		int expectedElem = lookAtISAX.size();
-		
-		// Order ISAXes so that the ones without opcode have priority (they are like spawn)
-		TreeMap<Integer,String> lookAtISAXOrdered =  OrderISAXOpCode( lookAtISAX, allISAXes);
-	
-		for (Integer priority  :  lookAtISAXOrdered.descendingKeySet()) {
-			String ISAX = lookAtISAXOrdered.get(priority);
-			
-			// Create RdIValid = user valid for instr without encoding, else decode instr and create IValid
-			String RdIValid = this.CreateLocalNodeName(BNode.RdIValid, stage, ISAX); 
-			if(allISAXes.get(ISAX).HasNoOp()) {
-				SCAIEVNode userValid = BNode.GetAdjSCAIEVNode(operation, AdjacentNode.validReq);
-				if(operation.getAdj()== AdjacentNode.validReq)
-					RdIValid = this.CreateNodeName(operation, stage, ISAX);
-				else if(!operation.isInput && !operation.DH) // if output (read node) and has no DH ==> no valid bit required, constant read
-					RdIValid = "1'b0";
-				else 
-					RdIValid = this.CreateNodeName(userValid, stage, ISAX);
-			}
-			
-			// Create body
-			boolean requiredByNode = allISAXes.get(ISAX).HasSchedWith(operation, snode -> snode.HasAdjSig(correctcheckAdj.getAdj())) && !assignNode.noInterfToISAX; // not required if it does not have interf to ISAX
-			if((requiredByNode || !checkAdj.isAdj())) { // should not go on this path if it has no opcode (= encoding don.t care)
-				nrElem++;
-				String assignSignal =  this.CreateNodeName(assignNode, stage, ISAX);
-				if(!checkAdj.attachedNode.isEmpty()) // for wrmem_addr_valid. It is simply 1 in case of an instr using addr bits
-					assignSignal = ""+defaultValue+"";
-				if(expectedElem == nrElem && !checkAdj.DefaultMandatoryAdjSig())
-					body += this.tab.repeat(2) +"default : "+this.CreateNodeName(assignNode.NodeNegInput(), stage, "") +" = " + assignSignal+ ";\n"; //avoid latch
-				else
-					body += this.tab.repeat(2) +RdIValid+" : "+this.CreateNodeName(assignNode.NodeNegInput(), stage, "") +" = " + assignSignal+ ";\n";				
-				assignLogic = "always @(*)  "+this.CreateNodeName(assignNode.NodeNegInput(), stage, "") +" = " + assignSignal+ ";\n";			
-			} else if(checkAdj.DefaultMandatoryAdjSig() && checkAdj.attachedNode.isEmpty())  { // for exp in case of addrValid, it should not go on this path
-				body += this.tab.repeat(2) +RdIValid+" : "+this.CreateNodeName(assignNode.NodeNegInput(), stage, "") +" = "+defaultValue+ ";\n";
-			} else if(checkAdj.DefaultMandatoryAdjSig()) // here should go addrValid if no instructions require it
-			    empty_assignLogic =  "always @(*)  "+this.CreateNodeName(assignNode.NodeNegInput(), stage, "") +" = ~" + defaultValue+ ";\n";
-		}
-		if(checkAdj.DefaultMandatoryAdjSig())
-			body += this.tab.repeat(2)+"default : "+this.CreateNodeName(assignNode.NodeNegInput(), stage, "")+" = ~"+defaultValue+";\n";
-		body += this.tab.repeat(1)+"endcase\nend\n";
-		if((nrElem==0) && !checkAdj.DefaultMandatoryAdjSig())
-			return "";
-		if(nrElem==1 && !checkAdj.DefaultMandatoryAdjSig())
-			return assignLogic;
-		if((nrElem==0) && checkAdj.getAdj() ==AdjacentNode.addrReq)
-			return empty_assignLogic; 
-		return body  ;		
-	}
-	
-	/** 
-	 * This function creates the text for Node_ValidReq based on instruction decoding. If instr in this stage & user wants valid bit, this is used, otherwise not. NOT generated for ISAXes without opcode
-	 * @param stage_lookAtISAX
-	 * @param allISAXes
-	 * @param stage
-	 * @param operation
-	 * @return
-	 */
-	public String  CreateValidReqEncodingEarlierStages(HashMap<Integer,HashSet<String>> stage_lookAtISAX,  HashMap <String,SCAIEVInstr>  allISAXes, int stage, SCAIEVNode operation, int earliestStage) {
-		String body = "always @(*) begin \n" 
-					+this.tab.repeat(1)+ "case(1'b1)\n";
-		SCAIEVNode checkAdj = BNode.GetAdjSCAIEVNode(operation, AdjacentNode.validReq);
-		boolean returnEmpty = true;
-		for (int stageISAX :  stage_lookAtISAX.keySet()) {
-			
-			// Order ISAXes so that the ones without opcode have priority (they are like spawn)
-			TreeMap<Integer,String> lookAtISAXOrdered = OrderISAXOpCode( stage_lookAtISAX.get(stageISAX), allISAXes);
-			for(int priority : lookAtISAXOrdered.descendingKeySet())  {
-				String ISAX = lookAtISAXOrdered.get(priority);
-				// Check if no opcode ISAX (which does not have rdivalid).  
-				if(allISAXes.get(ISAX).HasNoOp() && (stage != operation.commitStage))
-					continue; 
-				else 
-					returnEmpty = false;
-				
-				// Create RdIValid = user valid for instr without encoding, else decode instr and create IValid
-				String RdIValid = this.CreateLocalNodeName(BNode.RdIValid, stage, ISAX); 
-				if(allISAXes.get(ISAX).HasNoOp()) {
-					SCAIEVNode userValid = BNode.GetAdjSCAIEVNode(operation, AdjacentNode.validReq);
-					if(operation.getAdj()== AdjacentNode.validReq)
-						RdIValid = this.CreateNodeName(operation, stage, ISAX);
-					else if(!operation.isInput && !operation.DH) // if output (read node) and has no DH ==> no valid bit required, constant read
-						RdIValid = "1'b0";
-					else 
-						RdIValid = this.CreateNodeName(userValid, stage, ISAX);
-				}
-				// For ISAXes with opcode, generate case-logic
-				if(stage == stageISAX && allISAXes.get(ISAX).GetFirstNode(operation).HasAdjSig( AdjacentNode.validReq)) {			
-					body += this.tab.repeat(2) +RdIValid+ " : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = "+this.CreateNodeName(checkAdj, stage,ISAX)+";\n";
-				} else if(stageISAX>=stage)
-					body += this.tab.repeat(2) +RdIValid+" : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b1;\n";			
-			}
-		}
-		if(stage == earliestStage)
-			body += this.tab.repeat(2)+"default : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "")+" = 1'b0;\n";
-		else 
-			body += this.tab.repeat(2)+"default : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "")+" = "+this.CreateRegNodeName(checkAdj.NodeNegInput(), stage, "")+" && ! "+this.CreateNodeName(BNode.RdFlush.NodeNegInput(), stage, "")+";\n";
-		
-		body += this.tab.repeat(1)+"endcase\nend\n";
-		// Generates the reg for next stage. If not needed, it will be optimized away 
-		body +=   "reg "+ this.CreateRegNodeName(checkAdj.NodeNegInput(), stage+1, "") +"; // Info: if not really needed, will be optimized away by synth tool \n"
-				+ "always @(posedge "+this.clk+") begin \n"
-				+ tab+"if("+this.reset+")\n"
-				+ tab+tab+this.CreateRegNodeName(checkAdj.NodeNegInput(), stage+1, "")+" <= 1'b0;\n"
-				+ tab+"else if(!"+this.CreateNodeName(BNode.RdStall.NodeNegInput(), stage, "")+")\n"
-				+ tab+tab+this.CreateRegNodeName(checkAdj.NodeNegInput(), stage+1, "") +" <= "+ this.CreateNodeName(checkAdj.NodeNegInput(), stage, "")+";\n"
-				+ "end\n"; 
-		if(returnEmpty)
-			return "assign "+ this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b1; // CRITICAL WARNING, NO ISAX detected with opcode, RTL probably not functional\n";
-		else
-			return body  ;		
-	}
-	
-	/** 
-	 * This function creates the text for Node_ValidReq based on instruction decoding. If instr in this stage & user wants valid bit, this is used, otherwise not. NOT generated for ISAXes without opcode
-	 * @param stage_lookAtISAX
-	 * @param allISAXes
-	 * @param stage
-	 * @param operation
-	 * @return
-	 */
-	public String  CreateValidDataEncodingEarlierStages(HashMap<Integer,HashSet<String>> stage_lookAtISAX,  HashMap <String,SCAIEVInstr>  allISAXes, int stage, SCAIEVNode operation) {
-		String body = "always @(*) begin \n"
-				+this.tab.repeat(1)+ "case(1'b1)\n";
-		SCAIEVNode checkAdj = BNode.GetAdjSCAIEVNode(operation, AdjacentNode.validData);
-		boolean returnEmpty = true;
-		
-		for (int stageISAX :  stage_lookAtISAX.keySet()) 
-			for (String ISAX  :  stage_lookAtISAX.get(stageISAX)) {
-				// Check if no opcode ISAX (which does not have rdivalid).  
-				if(allISAXes.get(ISAX).HasNoOp())
-					continue; 
-				else 
-					returnEmpty = false;
-				// For ISAXes with opcode, generate case-logic
-				if(stageISAX>stage)
-					body += this.tab.repeat(2) +this.CreateLocalNodeName(BNode.RdIValid, stage, ISAX)+" : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b0;\n";
-				else 
-					body += this.tab.repeat(2) +this.CreateLocalNodeName(BNode.RdIValid, stage, ISAX)+" : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b1;\n";
-			
-			}
-		body += this.tab.repeat(2)+"default : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "")+" = 1'b0;\n";
-		body += this.tab.repeat(1)+"endcase\nend\n";
-		if(returnEmpty)
-			return "assign "+ this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b1; // CRITICAL WARNING, NO ISAX detected with opcode, RTL probably not functional\n";
-		else
-			return body  ;
-	}
-	
-	private TreeMap<Integer,String> OrderISAXOpCode (HashSet<String> lookAtISAX,HashMap<String, SCAIEVInstr> allISAXes  ) {
+	public TreeMap<Integer,String> OrderISAXOpCode (HashSet<String> lookAtISAX,HashMap<String, SCAIEVInstr> allISAXes  ) {
 		TreeMap<Integer,String> lookAtISAXOrdered = new TreeMap<Integer,String>();
 		int withOp =-1; 
 		int noop =0; 
-		for(String ISAX  :  lookAtISAX) {
+		for(String ISAX : lookAtISAX) if (allISAXes.containsKey(ISAX)) {
 			if(allISAXes.get(ISAX).HasNoOp()) 
 				lookAtISAXOrdered.put(noop++, ISAX);
 			else 
@@ -364,9 +208,9 @@ public class Verilog extends GenerateText {
 		return lookAtISAXOrdered;
 	}
 	
-	public void  UpdateInterface(String top_module,SCAIEVNode operation, String instr, int stage, boolean top_interface, boolean instReg) {
+	public void  UpdateInterface(String top_module,SCAIEVNode operation, String instr, PipelineStage stage, boolean top_interface, boolean instReg) {
 		// Update interf bottom file
-		System.out.println("INTEGRATE. DEBUG. stage = "+stage+" operation = "+operation);
+		logger.debug("Update interface stage = "+stage.getName()+" operation = "+operation);
 		
 		// Update interf bottom file
 		String assign_lineToBeInserted = "";
@@ -375,12 +219,15 @@ public class Verilog extends GenerateText {
 
 		String sig_name = this.CreateNodeName(operation, stage, instr);
 		String bottom_module = coreBackend.NodeAssignM(operation, stage);
+		if (bottom_module == null) {
+			logger.error("Cannot find a node declaration for " + operation.name + " in stage " + stage.getName());
+			return;
+		}
 		if(top_module.contentEquals(bottom_module) && !top_interface)
 			sig_name = this.CreateLocalNodeName(operation, stage, instr);
 		String current_module = bottom_module;
 		String prev_module = "";
 		while(!prev_module.contentEquals(top_module)) {
-			HashMap<String,ToWrite> insert = new HashMap<String,ToWrite>();
 			if(!current_module.contentEquals(top_module) || top_interface) {  // top file should just instantiate signal in module instantiation and not generate top interface
 				this.toFile.UpdateContent(coreBackend.ModFile(current_module),");",new ToWrite(CreateTextInterface(operation,stage,instr),false,true,"module "+current_module+" ",true,current_module));								
 			} else if(current_module.contentEquals(top_module)) {
@@ -448,7 +295,7 @@ public class Verilog extends GenerateText {
 					ToWrite last_update = updates.get(updates.size() - 1);
 					int comma_index = last_update.text.lastIndexOf(',');
 					if (comma_index == -1 || comma_index == 0) {
-						System.out.println("WARN: Port update \"" + last_update.text + "\" has no comma at the end");
+						logger.warn("Port update \"" + last_update.text + "\" has no comma at the end");
 						continue;
 					}
 					//Remove comma from last update.
@@ -506,13 +353,12 @@ public class Verilog extends GenerateText {
 	}
 	
 	public String CreateInAlways( boolean with_clk ,String text) {
-		int i = 1;
+		if (text.isEmpty())
+			return "";
 		String sensitivity = "*";
-		if(with_clk) {
+		if(with_clk)
 			sensitivity = "posedge "+clk;
-			i++;
-		}
-		String body ="always@("+sensitivity+") begin // ISAX Logic\n "+AllignText(tab.repeat(i),text)+"\n"+"end\n" ;
+		String body ="always@("+sensitivity+") begin // ISAX Logic\n"+AlignText(tab,text)+(text.endsWith("\n")?"":"\n")+"end\n" ;
 		return body;		
 	}
 	

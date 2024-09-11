@@ -1,28 +1,45 @@
 package scaiev.util;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.nio.file.Paths;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.function.BiConsumer;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 
 /*
  * Class for writing files. 
  */
 public class FileWriter {
-	private HashMap<String, LinkedHashMap<ToWrite,String>> update_core = new HashMap<String, LinkedHashMap<ToWrite,String>>(); // HashMap<FileName, LinkedHashMap<Grep,ToWrite>>, order is important so that declarations of new signals will be before theser are used in assigns
+	// logging
+	protected static final Logger logger = LogManager.getLogger();
+
+	private static class FileUpdateInfo {
+		/** LinkedHashMap<Grep,ToWrite>>, order is important so that declarations of new signals will be before these are used in assigns */
+		public LinkedHashMap<ToWrite,String> updates = new LinkedHashMap<ToWrite,String>();
+		/** If set, treat the input file as empty, regardless of whether an actual input file exists */
+		public boolean clear = false;
+	}
+	/** key: file relative path */
+	private HashMap<String, FileUpdateInfo> update_core = new HashMap<String, FileUpdateInfo>();
 	public String tab = "    ";
 	public int nrTabs = 0;
 	private String base_path = "";
@@ -36,8 +53,8 @@ public class FileWriter {
 	 * @param consumer consumer function to be called with each update's ToWrite object and grep string. 
 	 */
 	public void ConsumeUpdates(BiConsumer<ToWrite,String> consumer) {
-		for(LinkedHashMap<ToWrite,String> insert : update_core.values()) {
-			for(Entry<ToWrite,String> entry : insert.entrySet()) {
+		for(FileUpdateInfo updateInfo : update_core.values()) {
+			for(Entry<ToWrite,String> entry : updateInfo.updates.entrySet()) {
 				consumer.accept(entry.getKey(), entry.getValue());
 			}
 		}
@@ -91,17 +108,21 @@ public class FileWriter {
 		add_text.AllignText(tab.repeat(nrTabs));
 		UpdateCorePut(file, grep,add_text);
 	}
+	
+	/**
+	 * Adds a file name to the internal tracking set.
+	 * If no update is registered for that file, the original file will be copied to the destination directory (if not in-place). 
+	 * 
+	 * @param file The relative path to the file to update. Any update targeting the same file should have an equal path string.
+	 * @param clear If set, treat the input file as empty, regardless of whether an actual input file exists
+	 */
+	public void AddFile(String file, boolean clear) {
+		update_core.computeIfAbsent(file, file_ -> new FileUpdateInfo()).clear = clear;
+	}
 
 	private void UpdateCorePut (String file, String grep, ToWrite add_text) {
-		if(update_core.containsKey(file))
-			update_core.get(file).put(add_text,grep);
-		else {
-			LinkedHashMap<ToWrite,String> add = new LinkedHashMap<ToWrite,String>();
-			add.put(add_text,grep);
-			update_core.put(file,add);
-			
-		}
-		
+		update_core.computeIfAbsent(file, file_ -> new FileUpdateInfo())
+			.updates.put(add_text,grep);
 	}
 	
 	/**
@@ -117,34 +138,30 @@ public class FileWriter {
 		}
 	}
 
-	private void WriteFile(LinkedHashMap<ToWrite,String> insert, String file, String langModule, String langEndmodule, String out_path) {
-		 System.out.println("INFO. FILEWRITER. Updating "+file);
-		 File inFile = new File(base_path, file);
-		 boolean use_temp_file = (out_path == null || out_path.equals(base_path));
-		 File outFile = use_temp_file ? new File(base_path, "tempConfig.tmp") : new File(out_path, file);
+	private void WriteFile(FileUpdateInfo updateInfo, String file, String langModule, String langEndmodule, String out_path) {
+		// create output path if necessary
+		(new File(Paths.get(out_path, file).getParent().toString())).mkdirs();
 		 
-		 // If file does not exist, create it and add an empty character to be found by grep
-	     if(!inFile.exists()) {
-	    	 try {
-				FileOutputStream fos_in = new FileOutputStream(inFile);
-				PrintWriter write_to_in = new PrintWriter(fos_in);
-				write_to_in.println(" ");
-				write_to_in.flush();
-				write_to_in.close();
-	    	 } catch (IOException e) {
-	 			System.out.println("ERROR. Error writing to the new file");
-				e.printStackTrace();
-			}
-	     }
-	    	 
+		logger.info("Updating " + file);
+		File inFile = new File(base_path, file);
+		boolean inplace = (out_path == null || out_path.equals(base_path));
+		File outFile = inplace ? new File(base_path, "tempConfig.tmp") : new File(out_path, file);
+
+		boolean empty_inFile = !inFile.exists() || updateInfo.clear;
+	    
+	    BufferedReader in = null;
+	    PrintWriter out = null;
 		// input
-		FileInputStream fis;
 		try {
-			fis = new FileInputStream(inFile);
-			BufferedReader in = new BufferedReader(new InputStreamReader(fis));
+			// If input file does not exist or should be ignored, use a stream with a whitespace line to be found by grep
+			InputStream fis = empty_inFile
+				? new ByteArrayInputStream((" "+System.lineSeparator()).getBytes())
+				: new FileInputStream(inFile);
+			in = new BufferedReader(new InputStreamReader(fis));
+			
 			 // output         
 			FileOutputStream fos = new FileOutputStream(outFile);
-			PrintWriter out = new PrintWriter(fos);
+			out = new PrintWriter(fos);
 			String currentLine;
 					
 			while ((currentLine = in.readLine()) != null) {
@@ -152,7 +169,7 @@ public class FileWriter {
 				ArrayList<String> before = new ArrayList<String>();
 				ArrayList<String> after = new ArrayList<String>();
 				// future optimization: make a map with strings to be inserted. Each time a string was inserted, make valid (take care if strings must be inserted multiple times. Stop searching if all strings inserted. 
-				for(ToWrite key_text : insert.keySet()) {
+				for(ToWrite key_text : updateInfo.updates.keySet()) {
 					if(currentLine.contains(langModule) && !currentLine.contains(langEndmodule)  && !key_text.in_module.contentEquals("")) {
 						if(currentLine.contains(" "+key_text.in_module) || currentLine.contains(key_text.in_module+"(") || currentLine.contains(" "+key_text.in_module+"\n")|| currentLine.contains(" "+key_text.in_module+";") ) {// space to avoid grep stuff like searching for pico and finding picorv32_axi
 							key_text.found_module = true;
@@ -167,7 +184,7 @@ public class FileWriter {
 						}
 
 					
-					final String grep = insert.get(key_text);
+					final String grep = updateInfo.updates.get(key_text);
 					if(key_text.text!="" && currentLine.contains(grep) && key_text.prereq_val  && (key_text.found_module)) {
 
 						key_text.prereq_val = false; // that's why no ""|| !key_text.prereq)"" in line above
@@ -215,17 +232,17 @@ public class FileWriter {
 			out.close();
 			in.close();
 		    
-			if (use_temp_file) {
+			if (inplace) {
 			    inFile.delete();
 			    outFile.renameTo(inFile);
 			}
 		} catch (FileNotFoundException e) {
-			System.out.println("ERROR. File not found exception");
-			e.printStackTrace();
+			logger.fatal("File " + file + " could not be found");
+			System.exit(-1);
 		} catch (IOException e) {
-			System.out.println("ERROR. Error reading the file");
-			e.printStackTrace();
-		}	
+			logger.fatal("Error reading file " + file);
+			System.exit(-1);
+		}
 	}
 	
 

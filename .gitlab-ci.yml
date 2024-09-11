@@ -1,0 +1,13 @@
+image: maven
+
+build:
+  script:
+  - |
+    pushd EclipseWork/SCAIEV
+    mvn package
+    popd
+  artifacts:
+    paths:
+      - EclipseWork/SCAIEV/target/*.jar
+    when: always
+

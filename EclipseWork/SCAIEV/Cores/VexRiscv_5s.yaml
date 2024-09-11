@@ -1,16 +1,17 @@
 # VexRiscv_5s
+
 - operation: RdCustReg
   earliest: 1
   latency: 0
   latest: 4 
 - operation: WrCustReg.addr
-  earliest: RdCustReg.earliest
+  earliest: 1
   latency: 0
-  latest: RdCustReg.earliest
+  latest: 1
 - operation: WrCustReg.data
-  earliest: RdCustReg.earliest
+  earliest: 1
   latency: 1
-  costly: RdCustReg.earliest+1
+  costly: 2
 - operation: RdRS1
   earliest: 2
   latency: 0

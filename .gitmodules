@@ -5,8 +5,8 @@
 	path = EclipseWork/SCAIEV/CoresSrc/VexRiscv
 	url = https://github.com/SpinalHDL/VexRiscv.git
 [submodule "EclipseWork/SCAIEV/CoresSrc/picorv32"]
-	path = EclipseWork/SCAIEV/CoresSrc/picorv32
+	path = EclipseWork/SCAIEV/CoresSrc/PicoRV32
 	url = https://github.com/YosysHQ/picorv32.git
 [submodule "EclipseWork/SCAIEV/CoresSrc/orca"]
-	path = EclipseWork/SCAIEV/CoresSrc/orca
+	path = EclipseWork/SCAIEV/CoresSrc/ORCA
 	url = https://github.com/cahz/orca.git

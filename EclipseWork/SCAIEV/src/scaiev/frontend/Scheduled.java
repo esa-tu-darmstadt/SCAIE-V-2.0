@@ -6,7 +6,7 @@ import java.util.HashSet;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
 
 public class Scheduled {
-	private int     startCycle; 
+	private int startCycle; 
 	private HashSet<AdjacentNode> adjSignals =  new HashSet<AdjacentNode>() ;
 	private HashMap<AdjacentNode, Integer > constAdj = new HashMap<AdjacentNode, Integer >();
 	

@@ -2,18 +2,26 @@ package scaiev.util;
 
 import java.util.HashMap;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import scaiev.backend.BNode;
 import scaiev.backend.CoreBackend;
 import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.Scheduled;
+import scaiev.pipeline.PipelineStage;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
 
 public class SpinalHDL extends GenerateText{
+	// logging
+	protected static final Logger logger = LogManager.getLogger();
+	
 	FileWriter toFile;
 	public String tab = "    ";
 	
-	public SpinalHDL(FileWriter toFile, CoreBackend core) {
+	public SpinalHDL(BNode user_BNode, FileWriter toFile, CoreBackend core) {
+		super(user_BNode);
 		// initialize dictionary 
 		dictionary.put(DictWords.module,"class");
 		dictionary.put(DictWords.endmodule,"}");
@@ -40,15 +48,20 @@ public class SpinalHDL extends GenerateText{
 	}
 	
 
-	public String CreateInterface(SCAIEVNode operation, int stage, String instr) {
+	public String CreateInterface(SCAIEVNode operation, PipelineStage stage, String instr) {
 		String in = dictionary.get(DictWords.out);
 		if(operation.isInput)
 			in =dictionary.get(DictWords.in);
 		String nodeName = CreateNodeName(operation, stage,instr);
-		String size = ""; 
-		if(operation.size>0 && !coreBackend.NodeDataT(operation, stage).contains("Bool")) // better use coreBackend for size, maybe some cores have wider interf
+		String size = "";
+		String nodeDataT = coreBackend.NodeDataT(operation, stage);
+		if (nodeDataT == null) {
+			logger.error("CreateInterface on unknown node " + operation.name + "_" + stage.getName());
+			nodeDataT = "Bits";
+		}
+		if(operation.size>0 && !nodeDataT.contains("Bool")) // better use coreBackend for size, maybe some cores have wider interf
 			size = operation.size+" bits";
-		String interfaceText = "val "+nodeName+" = "+in+" "+coreBackend.NodeDataT(operation, stage)+"("+size+")\n"
+		String interfaceText = "val "+nodeName+" = "+in+" "+nodeDataT+"("+size+")\n"
 				+ nodeName+".setName(\""+nodeName+"\")\n";
 		return interfaceText;
 	}
@@ -61,7 +74,7 @@ public class SpinalHDL extends GenerateText{
 	 * @param conditional -  is it a "when(Signal) {assignSignal = True}" scenario?
 	 * @return
 	 */
-	public String CreateAssignToISAX(SCAIEVNode operation, int stage, String instr, boolean conditional) { 
+	public String CreateAssignToISAX(SCAIEVNode operation, PipelineStage stage, String instr, boolean conditional) { 
 		String assignText = "";
 		String nodeName = CreateNodeName(operation, stage,instr);
 		if(!operation.isInput)
@@ -70,17 +83,17 @@ public class SpinalHDL extends GenerateText{
 			assignText = coreBackend.NodeAssign(operation, stage)+ " := "+ "io."+ nodeName +";\n";
 		if(!instr.isEmpty() && operation.equals(BNode.RdIValid))
 			assignText = "io."+ nodeName + " := "+coreBackend.NodeAssign(operation, stage).replaceAll("IS_ISAX","IS_"+instr)+"\n";
-		if(conditional && coreBackend.NodeIn(operation, stage))
+		if(conditional && coreBackend.NodeIsInput(operation, stage))
 			assignText = "when(io."+nodeName+") {\n"+this.tab+coreBackend.NodeAssign(operation, stage)+ " := "+ "True;\n}\n";
 		return assignText;
 	}
 	
 	
-	public String CreateClauseValid(HashMap<String,SCAIEVInstr> ISAXes, SCAIEVNode operation, int stage, String pluginStage) {
+	public String CreateClauseValid(HashMap<String,SCAIEVInstr> ISAXes, SCAIEVNode operation, PipelineStage stage, String pluginStage) {
 		String clause = "";
 		 boolean first = true;
 		 for(String instructionName : ISAXes.keySet()) {
-			 Scheduled op_sched = ISAXes.get(instructionName).GetSchedWith(operation, snode -> snode.GetStartCycle() == stage);
+			 Scheduled op_sched = ISAXes.get(instructionName).GetSchedWith(operation, snode -> stage.getStagePos() == snode.GetStartCycle());
 			 if(op_sched != null) { 
 				 if(!first)
 					 clause += " "+dictionary.get(DictWords.logical_or)+" ";
@@ -96,11 +109,11 @@ public class SpinalHDL extends GenerateText{
 		 return clause;
 	}
 	
-	public String CreateClause(HashMap<String,SCAIEVInstr> ISAXes, SCAIEVNode operation, int stage, String pluginStage) {
+	public String CreateClause(HashMap<String,SCAIEVInstr> ISAXes, SCAIEVNode operation, PipelineStage stage, String pluginStage) {
 		String clause = "";
 		 boolean first = true;
 		 for(String instructionName : ISAXes.keySet()) {
-			 Scheduled op_sched = ISAXes.get(instructionName).GetSchedWith(operation, snode -> snode.GetStartCycle() == stage);
+			 Scheduled op_sched = ISAXes.get(instructionName).GetSchedWith(operation, snode -> stage.getStagePos() == snode.GetStartCycle());
 			 if(op_sched != null) { 
 				 if(!first)
 					 clause += " "+dictionary.get(DictWords.logical_or)+" ";
@@ -113,11 +126,11 @@ public class SpinalHDL extends GenerateText{
 		 return clause;
 	}
 	
-	public String CreateClauseAddr(HashMap<String,SCAIEVInstr> ISAXes, SCAIEVNode operation, int stage, String pluginStage) {
+	public String CreateClauseAddr(HashMap<String,SCAIEVInstr> ISAXes, SCAIEVNode operation, PipelineStage stage, String pluginStage) {
 		String clause = "";
 		 boolean first = true;
 		 for(String instructionName : ISAXes.keySet()) {
-			 Scheduled op_sched = ISAXes.get(instructionName).GetSchedWith(operation, snode -> snode.GetStartCycle() == stage);
+			 Scheduled op_sched = ISAXes.get(instructionName).GetSchedWith(operation, snode -> stage.getStagePos() == snode.GetStartCycle());
 			 if(op_sched != null && op_sched.HasAdjSig(AdjacentNode.addr)) {  
 				 if(!first)
 					 clause += " "+dictionary.get(DictWords.logical_or)+" ";
@@ -131,12 +144,12 @@ public class SpinalHDL extends GenerateText{
 	}
 	
 
-	public String CreateDeclReg(SCAIEVNode operation, int stage, String instr) {
+	public String CreateDeclReg(SCAIEVNode operation, PipelineStage stage, String instr) {
 		String decl = "";
 		String size = "";
 		String init = "0";
 		String input = "_o";
-		if(coreBackend.NodeIn(operation, stage))
+		if(coreBackend.NodeIsInput(operation, stage))
 			input = "_i";
 		if(operation.size>1)
 			size = coreBackend.NodeDataT(operation, stage) + "("+operation.size+" bits)"; 
@@ -148,7 +161,7 @@ public class SpinalHDL extends GenerateText{
 		return decl;
 	}
 	
-	public String CreateDeclSig(SCAIEVNode operation, int stage, String instr) {
+	public String CreateDeclSig(SCAIEVNode operation, PipelineStage stage, String instr) {
 		String decl = "";
 		String size = "";
 		if(operation.size>1)
@@ -159,7 +172,7 @@ public class SpinalHDL extends GenerateText{
 		return decl;		
 	}
 	
-	public String CreateSpawnLogicWrRD(int stage) {
+	public String CreateSpawnLogicWrRD(PipelineStage stage) {
 		String body = "";
 		body += "when("+this.CreateNodeName(BNode.WrRD_spawn_valid, stage, "")+") {\n"
 			 +	tab+ "writeStage.arbitration.isRegFSpawn := True\n"
@@ -172,7 +185,7 @@ public class SpinalHDL extends GenerateText{
 	
 	
 	
-	public String CreateSpawnCMDMem(SCAIEVNode operation,int stage, int tabNr) {
+	public String CreateSpawnCMDMem(SCAIEVNode operation,PipelineStage stage, int tabNr) {
 		String body = "";
 		String write = "True";
 		if(operation.equals(BNode.RdMem_spawn))
@@ -180,17 +193,17 @@ public class SpinalHDL extends GenerateText{
 		String wrMemData = "";
 		if(operation.equals(BNode.WrMem_spawn))
 			wrMemData= tab.repeat(tabNr+1)+"dBusAccess.cmd.data  := "+CreateNodeName(BNode.WrMem_spawn,stage,"")+"\n";
-		body = 	  tab.repeat(tabNr)  +"when("+ CreateNodeName(BNode.GetAdjSCAIEVNode(operation, AdjacentNode.validReq),stage,"")+"){\n"
+		body = 	  tab.repeat(tabNr)  +"when("+ CreateNodeName(BNode.GetAdjSCAIEVNode(operation, AdjacentNode.validReq).get(),stage,"")+"){\n"
 				+ tab.repeat(tabNr+1)+"dBusAccess.cmd.valid := True \n"
 				+ tab.repeat(tabNr+1)+"dBusAccess.cmd.size := 2\n"
 		 		+ tab.repeat(tabNr+1)+"dBusAccess.cmd.write := "+write+"\n"
 		 		+ wrMemData
-		 		+ tab.repeat(tabNr+1)+"dBusAccess.cmd.address :="+CreateNodeName(BNode.GetAdjSCAIEVNode(operation, AdjacentNode.addr),stage,"")+"\n"
+		 		+ tab.repeat(tabNr+1)+"dBusAccess.cmd.address :="+CreateNodeName(BNode.GetAdjSCAIEVNode(operation, AdjacentNode.addr).get(),stage,"")+"\n"
 		 		+ tab.repeat(tabNr)  +"}\n";
 		 return body;
 	}
 	
-	public String CreateSpawnCMDRDYMem(SCAIEVNode operation,int stage, int tabNr) {
+	public String CreateSpawnCMDRDYMem(SCAIEVNode operation,PipelineStage stage, int tabNr) {
 		String body = "";
 		if(operation.equals(BNode.WrMem_spawn))
 			body =    tab.repeat(tabNr)  +"when(io."+ CreateNodeName(BNode.WrMem_spawn_write,stage,"")+") {\n"
@@ -203,13 +216,19 @@ public class SpinalHDL extends GenerateText{
 					+ tab.repeat(tabNr)  +"}\n";
 		 return body;
 	}
-	public String CreateSpawnRSPRDYMem(int stage, int tabNr) {
+	public String CreateSpawnRSPRDYMem(PipelineStage stage, int tabNr) {
 		String body = "";
 		body = tab.repeat(tabNr)+"when("+this.CreateNodeName(BNode.RdMem_spawn_validReq, stage, "")+") {\n"
 				    + tab.repeat(tabNr+1)+"io."+CreateNodeName(BNode.RdMem_spawn, stage, "") +":= dBusAccess.rsp.data\n"
 				    + tab.repeat(tabNr+1)+"io."+CreateNodeName(BNode.RdMem_spawn_validResp, stage, "") +" := True\n"
 					+ tab.repeat(tabNr)+"}\n";
 		 return body;
+	}
+
+
+	@Override
+	public Lang getLang() {
+		return Lang.SpinalHDL;
 	}
 	
 

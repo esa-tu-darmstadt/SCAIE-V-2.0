@@ -10,7 +10,8 @@ SCAIE-V is a:
 interface for custom instructions for RISC-V processors. 
 
 ## Why 2.0?
-The original SCAIE-V repo was updated to support more features, and now it becomes SCAIE-V 2.0. 
+The original SCAIE-V repo was updated to support more features, and now it becomes SCAIE-V 2.0.
+On top of the original 2.0 release, logic generation has seen a rework (SCAL 2.0) in preparation for application-class cores and, further down the line, multi-issue and out-of-order execution cores.
 
 ## Which cores do you support?
 We currently support
@@ -20,35 +21,64 @@ We currently support
 - PicoRV32 (https://github.com/YosysHQ/picorv32)
 
 These cores provide different configurations. While testing & evaluating our tool we used the following setup: 
-| Core     | Nr. of pipeline stages | Interface |
-|----------|------------------------|-----------|
-| ORCA     | 5                      | AXI       |
-| VexRiscv | 5                      | AHB       |
-| Piccolo  | 3                      | AXI       |
-| PicoRV32 | non-pipelined          | Native    |
+| Core        | Nr. of pipeline stages | Interface |
+|-------------|------------------------|-----------|
+| ORCA        | 5                      | AXI       |
+| VexRiscv_4s | 4                      | AHB       |
+| VexRiscv_5s | 5                      | AHB       |
+| Piccolo     | 3                      | AXI       |
+| PicoRV32    | non-pipelined          | Native    |
 
 ## What is the design structure?
 Let us consider that user wants to develop a new instruction  ISAX1, which must be integrated in the VexRiscv core. The design will have the following hierarchy: 
 
 ISAX1 <--> CommonLogicModule (SCAL) <--> Top module of SCAIE-V extended Core
 
-Currently SCAIE-V generates the  CommonLogicModule (SCAL)  and updates the design files of the core. User must implement the wrapper to connect these submodules. ISAX1 will only be connected to the interface of the CommonLogicModule (SCAL) .
+Currently SCAIE-V generates the  CommonLogicModule (SCAL)  and updates the design files of the core. The `maketop` python scripts, when run from the `utils/maketop` directory, generate a wrapper module with all modules according to the netlist description from SCAIE-V. ISAX1 will only be connected to the interface of the CommonLogicModule (SCAL).
 
 
 ## Which operations are supported in SCAIE-V? 
 | Operation     | Meaning | Bitwidth |
 |----------|------------------------|-----------|
 | RdRS1/2     | Reads operands | 32       |
-| RdPC | Reads program counter *                      | 32       |
+| RdPC | Reads program counter                      | 32       |
 | RdInstr  | Reads Instruction                      | 32       |
 | RdIValid | Status bit informing the custom logic that a certain pipeline stage currently contains an instruction of type X          | 1    |
 | WrRD     | Write register file * | 32       |
 | Wr/RdMem     | Load/Store operations * | 32       |
+| WrPC | Writes program counter * | 32 |
 
 \* optionally, the user may request addr. and valid bit for this interface. For WrPC, and WrRD the user can not request an addr. signal.
 
 
 ## How can I use the SCAIE-V tool for my custom instructions?
+You can build the SCAIE-V software using Maven (`cd EclipseWork/SCAIEV; ./run.sh`) or Eclipse on fairly modern versions of Java (e.g., Java 17). `SCAIEVCmd` contains the application entry point. Run `git submodule update --init` to download the supported core sources.
+
+By default, SCAIE-V writes the patched files and other outputs to the `results/<core>` subdirectory. This can be overridden by `-o`. If initialized with a copy of the core repository (copied from `EclipseWork/SCAIEV/CoresSrc`), the output directory will contain a complete, patched processor.
+
+The user can instead provide an individual yaml ISAX description using `-i`. Otherwise, the `isaxes` subdirectory of the output dir will also be scanned for `ISAX_*.yaml` description files.
+
+```
+usage: scaievcmd - generate SCAIE-V SCAL layer and integrate SCAIE-V
+                 interface for core
+ -c,--core <processor name>   RISC-V core to patch. Must be one of:
+                              [VexRiscv_5s, ORCA, PicoRV32, Piccolo,
+                              VexRiscv_4s]
+ -h,--help                    Print this message
+ -i,--isax <ISAX.yaml>        Single YAML-file describing the ISAX
+                              interface (optional)
+ -o,--outdir <directory>      Directory to generate output files, default
+                              value "target". A <core> subdirectory will
+                              be created by default; trail the path with /
+                              to not create the subdirectory.
+ -q,--quiet                   Turn off all messages
+ -v,--verbose                 Verbose printing
+ -vv,--vverbose               Print debug information and enable -v
+```
+
+### Example
+TODO: Rework example for SCAIEVCmd.
+
 Let us consider the following example. The user wants to implement a module which conducts load/stores using custom addresses. He wishes to have a base value for the custom address and then increment/decrement it after/before each load/store. Therefore, he will use an internal register for storing the custom address: `custom_addr`. In order to load the base address into the internal register, he wants to implement a SETADDR custom instruction. For this instruction, he needs to know in which clock cycle he may read the operands from the register file.  He also needs to know when there is a SETADDR instruction in the pipeline, to update the `custom_addr` register. 
 
 ### Step 1: 
@@ -93,6 +123,7 @@ shim.Generate("VexRiscv_5s"); // generates all the code
 The files of the 5 stage VexRiscv core will be modified so that it supports the new interface. (to set the core, use: "VexRiscv_5s", "VexRiscv_4s", "PicoRV32", "ORCA")
 
 ## How can I try it out fast? 
+### TODO: Rework
 
 There is a DEMO that you can run. It contains an ISAX module which requires multiple SCAIE-V interfaces and simply generates some patterns. These patterns are then checked within a simple testbench. In our evaluation flow we used multiple real ISAXes and evaluated them using cocotb. In this DEMO the ISAX module is just there to show how to use the SCAIE-V tool. For this: 
 - run the DemoTest_VexRiscv5.java class. This will update the VexRiscv source files and generate CommonLogicModule (SCAL) 
@@ -123,10 +154,10 @@ The specification bellow defines the interface between the user-designed ISAX Mo
 
 ## Which "decoupled execution" modes are supported? 
 
-We currently support three different modes to achieve decoupled execution: 
+We currently support three different execution modes decoupled from the pipeline: 
   - Continuous: ISAX may read/write a state at any point in time, independent of the current instruction in the pipeline. 
   - Decoupled: ISAX may update the state at a later point in time, while the core processes in parallel new instructions. To use this variant, set the instruction's parameter "decoupled" to true (or in .yaml format write "is decoupled: 1").
-  - Decoupled with stall: ISAX may update the state at a later point in time, while the core is stalled.  This is the default version, so you may leave the default settings as they are. Currently this is supported only for Register File Writes, not for memory. 
+  - Semi-coupled:  ISAX may update the state at a later point in time, while the core is stalled.  This is the default version, so you may leave the default settings as they are. 
 
 ## From which stage is an interface considered decoupled? 
 This subsection does NOT describe the "Continuous" mode. If you are interested for that strategy, go to the next subsection. 
@@ -184,7 +215,6 @@ In the instruction using this state, mention the scheduling of RdMyreg and WrMyr
       stage: 1
 ```
 The WrMyreg interface must provide the address in the earliest stage in which a read is allowed. Yet, the result may be returned also in later stages. Hence, data and address could be in different stages and their schedule is presented separately. Based on the above specification, the earliest stage in which a read is allowed is stage 1, the MY_INSTRUCTION reads the state in stage 2 and returns a result in stage 3. Address signal is mandatory for arrays. 
-
 
 
 ## What do I have to consider when extending SCAIE-V for new cores? 
