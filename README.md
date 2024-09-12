@@ -52,7 +52,9 @@ Currently SCAIE-V generates the  CommonLogicModule (SCAL)  and updates the desig
 
 
 ## How can I use the SCAIE-V tool for my custom instructions?
-You can build the SCAIE-V software using Maven (`cd EclipseWork/SCAIEV; ./run.sh`) or Eclipse on fairly modern versions of Java (e.g., Java 17). `SCAIEVCmd` contains the application entry point. Run `git submodule update --init` to download the supported core sources.
+You can build the SCAIE-V software using Maven (`cd EclipseWork/SCAIEV; ./run.sh`) or Eclipse on fairly modern versions of Java (e.g., Java 17). `SCAIEVCmd` contains the application entry point.
+
+Run `git submodule update --init` to download the supported core sources. Note: SCAIE-V currently targets an older version of VexRiscv; there is a patch file in CoresSrc to fix build support on more recent Java versions.
 
 By default, SCAIE-V writes the patched files and other outputs to the `results/<core>` subdirectory. This can be overridden by `-o`. If initialized with a copy of the core repository (copied from `EclipseWork/SCAIEV/CoresSrc`), the output directory will contain a complete, patched processor.
 
