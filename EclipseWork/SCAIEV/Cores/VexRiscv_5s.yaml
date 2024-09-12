@@ -1,5 +1,20 @@
 # VexRiscv_5s
-
+!SerialCoreDescription
+pipeline:
+  name: root
+  kind: root
+  tags: []
+  externalID: -1
+  continuous: false
+  nextStages: []
+  children:
+  - {name: fetch,     kind: core,      externalID: 0,  continuous: true, tags: [inorder], nextStages: [decode], children: []}
+  - {name: decode,    kind: core,      externalID: 1,  continuous: true, tags: [inorder], nextStages: [execute], children: []}
+  - {name: execute,   kind: core,      externalID: 2,  continuous: true, tags: [inorder], nextStages: [memory], children: []}
+  - {name: memory,    kind: core,      externalID: 3,  continuous: true, tags: [inorder], nextStages: [writeback], children: []}
+  - {name: writeback, kind: core,      externalID: 4,  continuous: true, tags: [inorder, commit], nextStages: [decoupled], children: []}
+  - {name: decoupled, kind: decoupled, externalID: 5,  continuous: true, tags: [inorder], nextStages: [], children: []}
+operations:
 - operation: RdCustReg
   earliest: 1
   latency: 0

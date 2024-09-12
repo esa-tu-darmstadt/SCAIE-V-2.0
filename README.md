@@ -56,7 +56,7 @@ You can build the SCAIE-V software using Maven (`cd EclipseWork/SCAIEV; ./run.sh
 
 By default, SCAIE-V writes the patched files and other outputs to the `results/<core>` subdirectory. This can be overridden by `-o`. If initialized with a copy of the core repository (copied from `EclipseWork/SCAIEV/CoresSrc`), the output directory will contain a complete, patched processor.
 
-The user can instead provide an individual yaml ISAX description using `-i`. Otherwise, the `isaxes` subdirectory of the output dir will also be scanned for `ISAX_*.yaml` description files.
+The user can provide an individual ISAX description (yaml file) using `-i`. Otherwise, the `isaxes` subdirectory of the output dir's core subdirectory will be scanned for `ISAX_*.yaml` description files.
 
 ```
 usage: scaievcmd - generate SCAIE-V SCAL layer and integrate SCAIE-V
@@ -76,54 +76,97 @@ usage: scaievcmd - generate SCAIE-V SCAL layer and integrate SCAIE-V
  -vv,--vverbose               Print debug information and enable -v
 ```
 
-### Example
-TODO: Rework example for SCAIEVCmd.
+For Eclipse, you may have to exclude the `SCAIEV/test/module-info.java` file from the build. One way is to set set the `Excluded` property of the `SCAIEV/test` source folder to `module-info.java`. The maven build, however, requires the test module-info.java file to be present.
 
-Let us consider the following example. The user wants to implement a module which conducts load/stores using custom addresses. He wishes to have a base value for the custom address and then increment/decrement it after/before each load/store. Therefore, he will use an internal register for storing the custom address: `custom_addr`. In order to load the base address into the internal register, he wants to implement a SETADDR custom instruction. For this instruction, he needs to know in which clock cycle he may read the operands from the register file.  He also needs to know when there is a SETADDR instruction in the pipeline, to update the `custom_addr` register. 
+### Example - Step 1
+As an example, a user wants to create a custom instruction to bit-lshift the input register and subtract one from the result.
+The basic operations required are `RdInstr` to read the shift amount, `RdRS1` for the input argument and `WrRD` to write the result.
+In addition, to learn how pipelining works within an ISAX, `RdStall` and `RdIValid` are required for the pipeline condition, and `WrRD` is requested in the next stage.
+ For reference, for a purely combinational computation with no pipelining, a simple `WrRD = result` would suffice.
+ 
+Refer to the core's datasheet file (see `EclipseWork/SCAIEV/Cores`) to create a schedule.
 
-### Step 1: 
-First, the user has to read the metadata of the core (=when is it allowed to read/update the core's state). He may either read this info in the *Cores* folder, or run the following lines (java): 
+The following schedule would be reasonable for VexRiscv_5s:
+- RdInstr, RdRS1, RdStall, RdIValid in stage 2
+- WrRD in stage 3
+
+### Example - Step 2
+Create an ISAX description file based on the required operations and their stages.
+Additionally, an encoding (opcode, funct3, funct7) must be provided. Here, it is recommended to use a custom opcode.
+
+```yaml
+- instruction: sllidec
+  mask: "0000110----------000-----0101011"
+  tags: ["RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX"]
+  schedule:
+    - interface: RdInstr
+      stage: 2
+    - interface: RdRS1
+      stage: 2
+    - interface: RdStall
+      stage: 2
+    - interface: RdIValid
+      stage: 2
+    - interface: WrRD
+      stage: 3
 ```
-SCAIEV shim = new SCAIEV();
-shim.PrintCoreNames(); // prints the names of the supported cores
-shim.PrintCoreInfo("VexRiscv_5s"); // prints metadata for a specific core (using the name from previous command)
-```
-From the metadata output of one node, only two values are relevant:
-- the first value = the earliest clock cycle in which the user may read/update this data
-- the third value = the latest clock cycle in which the user may read/update this data
 
-The rest of the values are currently used in internal research projects. 
+For details on the ISAX description format, see [docs/ISAX description format.md](docs/ISAX description format.md).
 
-### Step 2: 
-Using the metadata in Step 1, the user decides in which clock cycles to read/update core's state. The custom ISAX module has to be designed based on this information. In our simple example, it would be something like: 
+If the user needs to optimize more for clock frequency or area, a higher-latency implementation of the ISAX may become necessary.
+In case the processor pipeline does not have enough stages for an ISAX, the semi-coupled or decoupled execution modes are an easy way to accomodate larger ISAX pipelines.
+See [Which "decoupled execution" modes are supported?](#which-decoupled-execution-modes-are-supported) for more information.
+
+### Example - Step 3
+Implement the design according to the schedule.
 ```verilog
-module SETADDR (
-    input        clk_i,
-    input        rdIValid_SETADDR_2_i, 
-    input [31:0] rdRS1_2_i, 
-   //..value of custom regs as outputs used by other ISAXes. Inputs from other ISAXes to update custom_addr after/before a load/store
-   ); 
-    reg [31:0] custom_addr; 
-    always @(posedge clk_i) begin 
-        if(rdIValid_SETADDR_2_i)
-            custom_addr <= rdRS1_2_i ;
-       // rest of the logic for updating custom_addr in case of load/store ISAXes
-    end 
-endmodule 
+module ISAX_sllidec(
+  input         clk_i,
+                rst_i,
+  input  [31:0] RdInstr_sllidec_2_i,
+  input  [31:0] RdRS1_sllidec_2_i,
+  input         RdStall_sllidec_2_i,
+  input         RdIValid_sllidec_2_i,
+  output [31:0] WrRD_sllidec_3_o
+);
+  //For illustration only, the variable shift may be slow.
+  wire [4:0] shamt;
+  reg [31:0] result;
+  
+  //Extract shamt from the instruction encoding.
+  assign shamt = RdInstr_sllidec_2_i[24:20];
+  
+  always @(posedge clk_i) begin
+    //Pipeline condition: The current stage contains the ISAX, and its pipeline condition is fulfilled.
+    //Note: RdIValid is required for cores that can issue to multiple execution units. The ISAX will only ever be in one execution unit.
+    if (RdIValid_sllidec_2_i && !RdStall_sllidec_2_i)
+  	  result <= (RdRS1_sllidec_2_i << shamt) - 1;
+  end
+  
+  assign WrRD_sllidec_3_o = result;
+endmodule
 ```
-### Step 3: 
-The third step implies generating the custom instructions interface using the SCAIE-V tool. Let us consider that the user decided to read operands in the third cycle (numbering starts at 0). He/She does not have to modify anything in the core, but just let SCAIE-V do the work: 
+
+### Example - Step 4
+Call SCAIE-V to implement the ISAX into the core:
+```bash
+cd EclipseWork/SCAIEV
+./run.sh -c VexRiscv_5s -i <ISAX yaml dir>/ISAX_sllidec.yaml
 ```
-SCAIEV shim = new SCAIEV();
-SCAIEVInstr setaddr  = shim.addInstr("SETADDRGEN","-------", "000", "0001011", "I");  
-setaddr.PutSchedNode(FNode.RdRS1, 2);  
-setaddr.PutSchedNode(FNode.RdIValid, 2); // valid bit for updating the custom_addr register
-shim.Generate("VexRiscv_5s"); // generates all the code
+
+If all went well, the modified core files will be written to `results/VexRiscv_5s`.
+To create the wrapper module, run the maketop script for the chosen core:
+```bash
+cd util/maketop
+pip install -r requirements.txt
+#Note: The maketop script looks through all ISAX_*.yaml files in the given directory and in direct subdirectories (unless they start with "skip_").
+# The ISAX module name is expected to be ISAX_sllidec according to the yaml file name.
+python Vex_maketop.py ../../EclipseWork/SCAIEV/results/VexRiscv_5s <ISAX yaml dir>
 ```
-The files of the 5 stage VexRiscv core will be modified so that it supports the new interface. (to set the core, use: "VexRiscv_5s", "VexRiscv_4s", "PicoRV32", "ORCA")
+Now, there should be a `Vex_top.sv` file next to the modified core files, instantiating and connecting the core, SCAIE-V's SCAL module and the sllidec ISAX.
 
 ## How can I try it out fast? 
-### TODO: Rework
+*TODO: Readd the demo files*
 
 There is a DEMO that you can run. It contains an ISAX module which requires multiple SCAIE-V interfaces and simply generates some patterns. These patterns are then checked within a simple testbench. In our evaluation flow we used multiple real ISAXes and evaluated them using cocotb. In this DEMO the ISAX module is just there to show how to use the SCAIE-V tool. For this: 
 - run the DemoTest_VexRiscv5.java class. This will update the VexRiscv source files and generate CommonLogicModule (SCAL) 
@@ -152,7 +195,7 @@ The specification bellow defines the interface between the user-designed ISAX Mo
 | WrRD (decoupled) |Valid, Addr, Valid Response |  32b Data,1b Valid, 5b Addr, 1b Valid Response,1b Commited done, 5b Commited Address | One interface per ISAX with decoupled execution. Addr comes from instruction field. When ISAX commits, it must return a valid signal (like a trigger), address signal and payload. Valid and addr can be generated within SCAL. On the SCAIE-V interface there is also a valid response Signal which may be used if needed by ISAX. If the user does not want the SCAIE-V datahazard mechanism (scoreboard), 2 additional signals on the interface can be used (commited..). These inform if a result was commited and if yes, to which address (as there might be multiple results in the que). Other signals on the ISAX interface related to this functionality are deprecated and will be removed in next releases. |
 | Mem (decoupled) |Valid, Addr, Valid Response  | 32b Data,1b Valid, 32b Addr, 1b Valid Response | One interface per ISAX with decoupled execution. When ISAX commits, it must return a valid signal (like a trigger), address signal and payload. Currently valid and addr can NOT be generated within SCAL. On the SCAIE-V interface there is also a valid response Signal which may be used if needed by ISAX. For the moment, the priority of multiple concurrent accesses is decided by SCAL randomly (when RTL is generated)|
 
-## Which "decoupled execution" modes are supported? 
+## Which "decoupled execution" modes are supported?
 
 We currently support three different execution modes decoupled from the pipeline: 
   - Continuous: ISAX may read/write a state at any point in time, independent of the current instruction in the pipeline. 

@@ -4,6 +4,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -695,6 +696,8 @@ public class SCAL implements SCALBackendAPI {
 			File dotFile = new File(outPath, "CommonLogicModule_log.dot");
 			System.out.println("[SCAL] writing composition log to CommonLogicModule_log.dot");
 			try {
+				// create output path if necessary
+				(new File(dotFile.getParent().toString())).mkdirs();
 				FileOutputStream fos = new FileOutputStream(dotFile, false);
 				PrintWriter out = new PrintWriter(fos);
 				composer.writeLogAsDot(out);
