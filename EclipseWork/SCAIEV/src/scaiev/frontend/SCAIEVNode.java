@@ -25,6 +25,7 @@ public class SCAIEVNode {
 	// Node properties
 	public int size; 
 	public int commitStage = -1;
+	public int spawnStage = -1;
 	public boolean isInput; 
 	public String name = "";
 	public int uniqueID = 0;

@@ -88,19 +88,22 @@ public class SCAIEVInstr {
 		}
 		
 		for (SCAIEVNode node : userBNode.GetAllBackNodes()) {
-			SCAIEVNode parentNode = userBNode.GetSCAIEVNode(node.nameParentNode);
-			int spawnStage = parentNode.commitStage+1; // node's commit stage = it's WB stage (for internal states may be diff than WB core's stage)
+			SCAIEVNode parentNode = node; 
+			if(node.isSpawn())
+				parentNode = userBNode.GetSCAIEVNode(node.nameParentNode);
+			
+			int spawnStage = parentNode.spawnStage;
+			boolean isRequired = HasSchedWith(node, snode -> snode.GetStartCycle()>=0);
 			boolean isSpawn = HasSchedWith(parentNode, snode -> snode.GetStartCycle()>=spawnStage);
-			if(node.isSpawn() && !node.isAdj() && isSpawn) { // If we look at a main spawn node & the user wants this spawn operation (>=spawnStage)
-				Scheduled oldSched = new Scheduled();
-				oldSched = GetCheckUniqueSchedWith(parentNode, snode -> snode.GetStartCycle()>=spawnStage);
-				// This is no spawn in traditional (scaiev trad) sense, it's an instruction that writes right away based on its valid bit. Not really started by an opcode. Always block
-				if(this.HasNoOp()) {
+			Scheduled oldSched =this.GetFirstNode(parentNode);
+			if(this.HasNoOp()  && !node.isAdj() && isRequired) { // if no op = always, no matter which stage
 					oldSched.UpdateStartCycle(parentNode.commitStage); // for write nodes, take the WB stage of that node // for read nodes, take the "read regfile" stage
-				} else if(node.isInput | (node==BNode.RdMem_spawn) ){ // spawn for reading state not supported for the moment. Just for write nodes. Or spawn as instr without decoding,which is actually mapped on read stage
+			} else if(node.isSpawn() && !node.isAdj() && isSpawn) { // If we look at a main spawn node & the user wants this spawn operation (>=spawnStage)
+				// This is no spawn in traditional (scaiev trad) sense, it's an instruction that writes right away based on its valid bit. Not really started by an opcode. Always block
+				if(node.isInput | (node==BNode.RdMem_spawn) ){ // spawn for reading state not supported for the moment. Just for write nodes. Or spawn as instr without decoding,which is actually mapped on read stage
 					// Memory spawn write sig should have interf to core by default. It won't have to ISAX, as it's defined like this within BNode prop
 					for(SCAIEVNode adjNode : userBNode.GetAdjSCAIEVNodes(node))
-						if(adjNode.mustToCore && adjNode.noInterfToISAX) { // we need noInterf, otherwise addr signal added on ISAX interf even when not re by user
+						if(adjNode.mustToCore && adjNode.noInterfToISAX) { // we need noInterf, otherwise addr signal added on ISAX interf even when not required by user
 							oldSched.AddAdjSig(adjNode.getAdj());
 						    System.out.println("INFO SCAIEVInstr. Adj Signal "+adjNode+ " added for node "+node);
 						}
