@@ -312,7 +312,7 @@ public class SCAL implements SCALBackendAPI {
     	 for(int stage = 0 ; stage <= core.maxStage; stage++) {
 			RdIValidStageDesc iValidStageDesc = stage_containsRdIValid.get(stage);
 			if (iValidStageDesc == null) iValidStageDesc = new RdIValidStageDesc();
-			String condStageValid = iValidStageDesc.validCond_isax.getOrDefault("", "") + " && !"+this.myLanguage.CreateNodeName(BNode.RdFlush.NodeNegInput(),stage, "");
+			String condStageValid = iValidStageDesc.validCond_isax.getOrDefault("", "") + " && !"+this.myLanguage.CreateLocalNodeName(BNode.RdFlush,stage, "");
 			if(!iValidStageDesc.instructions.isEmpty())
 				for(String instrName : iValidStageDesc.instructions) {
 					if(!ISAXes.get(instrName).HasNoOp()) { // If it's an instruction without opcode, we can not generate a RdIValid signal ( we can not decode). That logic is by default always enabled
@@ -347,7 +347,7 @@ public class SCAL implements SCALBackendAPI {
 			    	 declarations += this.myLanguage.CreateDeclReg(rdNode,stage,"");
 			    	 if(!addRdNodeReg.get(rdNode).contains(stage-1))
 			    		 signalAssign = this.myLanguage.CreateNodeName(rdNode.NodeNegInput(), stage-1, "");
-			    	 logic += this.myLanguage.CreateTextRegReset(signalName, "("+this.myLanguage.CreateNodeName(BNode.RdFlush.NodeNegInput(), stage-1, "")+") ? 0 : "+signalAssign, this.myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage-1, ""));
+			    	 logic += this.myLanguage.CreateTextRegReset(signalName, "("+this.myLanguage.CreateLocalNodeName(BNode.RdFlush, stage-1, "")+") ? 0 : "+signalAssign, this.myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage-1, ""));
 			     
 		    	 }
 		     }
@@ -446,16 +446,20 @@ public class SCAL implements SCALBackendAPI {
 					wrFlush = GenerateText.OpIfNEmpty(wrFlush, this.myLanguage.GetDict(DictWords.logical_or))+this.myLanguage.CreateNodeName(BNode.WrPC_valid.NodeNegInput(), stage+1, "");
 			if(!wrFlush.isEmpty()) 
 				logic += this.myLanguage.CreateAssign(myLanguage.CreateNodeName(FNode.WrFlush.NodeNegInput(), stage, "") , wrFlush); // assign flush signal which goes to core
-			// New spawn flush concept: rdflush comes only from core
-			//if(this.ContainsOpInStage(FNode.RdFlush, stage)) // TODO how does this work with spwn?
-			//	logic += this.myLanguage.CreateAssign(myLanguage.CreateNodeName(FNode.RdFlush, stage, "") , GenerateText.OpIfNEmpty(wrFlush, this.myLanguage.GetDict(DictWords.logical_or) ) +  myLanguage.CreateNodeName(FNode.RdFlush.NodeNegInput(), stage, "") );
-		
+			// New spawn flush concept: rdflush from core only says if core flushed 
+			if(this.ContainsOpInStage(FNode.RdFlush, stage)  | (this.addToCoreInterf.containsKey(FNode.RdFlush) && this.addToCoreInterf.get(FNode.RdFlush).contains(stage)) )  {
+				logic += this.myLanguage.CreateAssign(myLanguage.CreateNodeName(FNode.RdFlush, stage, "") , myLanguage.CreateLocalNodeName(FNode.RdFlush, stage, ""));
+				declarations += this.myLanguage.CreateDeclSig(FNode.RdFlush,stage,"",false); // declare rdflus_s to be used within scal and forwarded to user isax
+				logic += this.myLanguage.CreateAssign(myLanguage.CreateLocalNodeName(FNode.RdFlush, stage, "") , GenerateText.OpIfNEmpty(wrFlush, this.myLanguage.GetDict(DictWords.logical_or) ) +  myLanguage.CreateNodeName(FNode.RdFlush.NodeNegInput(), stage, "") );		
+				
+			}
 		}
 	    
 		
 	    ////////////////////// LOGIC FOR WR STALL //////////////////////
 	    // Has to be handled separately because spawn operations need to update it. 
 	    String [] stallStagesPrefix = new String[ this.core.maxStage+1];
+	    String donStallISAX = ""; // used by multicycle instructions, which should stall only the core but not the ISASX.
 	    String [] stallStages = new String[ this.core.maxStage+1];
 	    for(int stage= this.core.maxStage; stage >=0;stage--) {
 	    	stallStages[stage] ="";
@@ -678,11 +682,7 @@ public class SCAL implements SCALBackendAPI {
 					 if(flStage> startSpawnStage+1)
 						 flush = ","+flush;
 					 if(flStage <= core.GetNodes().get(BNode.RdFlush).GetLatest())
-					 {
-						 flush = myLanguage.CreateNodeName(BNode.RdFlush.NodeNegInput(),  flStage, "")+flush;
-						 if(ContainsOpInStage(BNode.WrFlush,flStage))
-							 flush = myLanguage.CreateLocalNodeName(BNode.WrFlush, flStage, "")+ " || "+flush;
-					 }
+						 flush = myLanguage.CreateLocalNodeName(BNode.RdFlush,  flStage, "")+flush;
 					 else
 						 flush = "1'b0" + flush;
 					 if(ContainsOpInStage(BNode.WrStall,flStage))
@@ -718,7 +718,7 @@ public class SCAL implements SCALBackendAPI {
 				    	 declarations += this.myLanguage.CreateDeclReg(BNode.RdInstr,stage,"");
 				    	 if(!addRdNodeReg.containsKey(BNode.RdInstr) || !addRdNodeReg.get(BNode.RdInstr).contains(stage-1))
 				    		 signalAssign = this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), stage-1, "");
-				    	 logic += this.myLanguage.CreateTextRegReset(signalName, "("+this.myLanguage.CreateNodeName(BNode.RdFlush.NodeNegInput(), stage-1, "")+") ? 0 : "+signalAssign, this.myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage-1, ""));
+				    	 logic += this.myLanguage.CreateTextRegReset(signalName, "("+this.myLanguage.CreateLocalNodeName(BNode.RdFlush, stage-1, "")+") ? 0 : "+signalAssign, this.myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage-1, ""));
 				     
 	    		     }
 	    		 }
@@ -762,7 +762,7 @@ public class SCAL implements SCALBackendAPI {
 	    		 		+ myLanguage.tab+myLanguage.reset+",\n"
 	    		 		+ myLanguage.tab+ myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+",\n"
 	    		 		+ myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage, ISAX)
-	    		 		  +" && ! "+myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), this.core.GetStartSpawnStage(), "")+",\n // no need for wrStall, it.s included in RdStall\n" // write fifo
+	    		 		  +" && ! "+myLanguage.CreateNodeName(BNode.RdStall, this.core.GetStartSpawnStage(), "")+",\n " // write fifo
 	    		 		+ myLanguage.tab+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+",\n"            // read fifo
 	    		 		+ myLanguage.tab+addrReadSig // write data
 	    		 		+ "dummy"+ISAX+","
@@ -805,7 +805,7 @@ public class SCAL implements SCALBackendAPI {
 		    			 System.out.println("SCAL. WARNING. User selected no shift reg for a decoupled instr. Thus user must implement fence & kill instr within ISAX");
 		    			 logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+" = "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+";\n"; 		
 		    		 } else // this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled() 
-		    			 logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+" = |"+myLanguage.CreateNodeName(addrNode,  spawnStage, ISAX)+";\n";
+		    			 logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+" = |"+myLanguage.CreateFamNodeName(addrNode,  spawnStage, ISAX,false)+";\n";
 	    		 }
 	    		 
 	    		 // Add Stall mechanism if multicycle 
@@ -813,7 +813,7 @@ public class SCAL implements SCALBackendAPI {
 	    			 SCAIEVNode nonSpawnNode = BNode.GetSCAIEVNode(node.nameParentNode);
 	    			 declarations += "wire "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s;\n";
 	    			 logic +=  this.CountermoduleName+"  #(\n"
-					+ ( spawn_instr_stage.get(node).get(ISAX) - this.core.GetStartSpawnStage()) + "\n"
+					+ ( spawn_instr_stage.get(node).get(ISAX) - this.core.GetStartSpawnStage() + 1) + "\n"
 					+ ") counter_"+ISAX+"_inst (\n"
 					+ myLanguage.tab+myLanguage.clk+", \n"
 					+ myLanguage.tab+myLanguage.reset+", \n"
@@ -822,22 +822,22 @@ public class SCAL implements SCALBackendAPI {
 					+ myLanguage.tab+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s\n);\n";
 	    			
 	    			// Stall stages to commit result of decoupled node
-	    			for(int stage=0; stage <= (startSpawnStage+1);stage++) {
+	    			for(int stage=0; stage <= startSpawnStage;stage++) {
 	    	    		if(!stallStages[stage].isEmpty())
 	    	 	    		stallStages[stage] += " || ";
 	    	 	    	stallStages[stage] +=  "stall_multicycle_"+node+"_"+ISAX+"_s";
 	    			}
 	    		    declarations += "reg stall_multicycle_"+node+"_"+ISAX+"_s; // Stall signal for multicycle instr that does not run decoupled\n";
 	    			logic += "always @(*)  \n"
-	    			 		+ myLanguage.tab + "stall_multicycle_"+node+"_"+ISAX+"_s = "+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage+1, ISAX)+" &&  !"+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s;\n";
-	    			
+	    			 		+ myLanguage.tab + "stall_multicycle_"+node+"_"+ISAX+"_s = "+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage, ISAX)+" &&  !"+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s;\n";
+	    			donStallISAX += " && !stall_multicycle_"+node+"_"+ISAX+"_s";
 	    			// Send Result
-	    			declarations += myLanguage.CreateDeclSig(nonSpawnNode, (startSpawnStage+1), ISAX, false, myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage+1), ISAX));
-	    			logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage+1), ISAX), myLanguage.CreateNodeName(node, this.core.GetSpawnStage(), ISAX));
+	    			declarations += myLanguage.CreateDeclSig(nonSpawnNode, (startSpawnStage), ISAX, false, myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage), ISAX));
+	    			logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage), ISAX), myLanguage.CreateNodeName(node, this.core.GetSpawnStage(), ISAX));
 	    			if(this.ISAXes.get(ISAX).GetNodes(nonSpawnNode).get(0).HasAdjSig(AdjacentNode.validReq)) {
 	    				SCAIEVNode validNonSpawnReq =BNode.GetAdjSCAIEVNode(nonSpawnNode, AdjacentNode.validReq);
-	    				declarations += myLanguage.CreateDeclSig(validNonSpawnReq, (startSpawnStage+1), ISAX, false, myLanguage.CreateNodeName(validNonSpawnReq, (startSpawnStage+1), ISAX));
-	    				logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(validNonSpawnReq, (startSpawnStage+1), ISAX), myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node, AdjacentNode.validReq), this.core.GetSpawnStage(), ISAX));
+	    				declarations += myLanguage.CreateDeclSig(validNonSpawnReq, (startSpawnStage), ISAX, false, myLanguage.CreateNodeName(validNonSpawnReq, (startSpawnStage), ISAX));
+	    				logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(validNonSpawnReq, (startSpawnStage), ISAX), myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node, AdjacentNode.validReq), this.core.GetSpawnStage(), ISAX));
 	    			}
 	    		 }
 
@@ -880,7 +880,7 @@ public class SCAL implements SCALBackendAPI {
     			 logic +=  "spawndatah_"+node+" spawndatah_"+node+"_inst(        \n"
     			 + "	.clk_i("+myLanguage.clk+"),                           \n"
     			 + "	.rst_i("+myLanguage.reset+"),             \n"
-    			 + "	.flush_i({"+flush+","+ myLanguage.CreateNodeName(BNode.RdFlush.NodeNegInput(), this.core.GetStartSpawnStage(), "")+"}),	 \n"
+    			 + "	.flush_i({"+flush+","+ myLanguage.CreateLocalNodeName(BNode.RdFlush, this.core.GetStartSpawnStage(), "")+"}),	 \n"
     			 + "	.RdIValid_ISAX0_2_i("+allIValid+"), \n"
     			 + "	.RdInstr_RDRS_i({"+instrSig+"[31:20], "+RdRS1Sig+","+instrSig+"[14:12],"+destSig+" ,"+instrSig+"[6:0] }),     \n"
     			 + "    ."+this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+"("+this.myLanguage.CreateLocalNodeName(BNode.RdIValid, this.core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+"),\n"
@@ -890,7 +890,7 @@ public class SCAL implements SCALBackendAPI {
     			 + "    .cancel_from_user_valid_i("+myLanguage.CreateNodeName(BNode.cancel_from_user_valid+"_"+node, spawnStage, "",false)+"),\n"
     			 + "    .cancel_from_user_addr_i("+myLanguage.CreateNodeName(BNode.cancel_from_user+"_"+node, spawnStage, "",false)+"),\n"
     			 + "	.stall_RDRS_o(to_CORE_stall_RS_"+node+"_s),  \n"
-    			 + "	.stall_RDRS_i("+stallFrCore+"),  \n"
+    			 + "	.stall_RDRS_i("+stallFrCore+")  \n"
     			 + "    );\n";
     			 
     			 // Stall stages because of DH 
@@ -938,18 +938,16 @@ public class SCAL implements SCALBackendAPI {
 	    }
 	    
 	    // Create RdStall Logic 
-	    // New Stall concept:  RdStall set by core BUT for stall decoupled we need this 
+	    // New Stall concept: RdStall from core does not include WrStall from ISAX 
 	    for(int stage=0; stage <= this.core.maxStage;stage++) 
 	    	if (this.ContainsOpInStage(BNode.RdStall,  stage)) {
 	    	 	String rdstall_val = myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage, "");
 	    	 	String IStall = "";
-	    	 	if(stallStages[stage].contains("to_CORE_stall_WB_")) {
-	    	 		for (SCAIEVNode node : this.spawn_instr_stage.keySet())
-	    	 			for(String instr : this.spawn_instr_stage.get(node).keySet())
-							if(!this.ISAXes.get(instr).GetRunsAsDecoupled())
-								IStall += " && !"+"to_CORE_stall_WB_"+node+"_"+instr+"_o_s " ;
-	    	 		rdstall_val += IStall; // TODO. RdStall comes from core only!!
-	    	 	}
+    	 		if(!this.spawn_instr_stage.isEmpty() && (stage == this.core.GetStartSpawnStage()))
+    	 			rdstall_val += " || (" + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, "") +donStallISAX +" ) "; 
+    	 		else if(!stallStages[stage].isEmpty() || this.ContainsOpInStage(BNode.WrStall, stage))
+    	 			rdstall_val += " || (" + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, "") +  " ) " ;
+	    	 	
 				logic += "assign "+myLanguage.CreateNodeName(BNode.RdStall, stage, "")+" = "+rdstall_val+";\n";
 	    		
 	    	}
@@ -1337,8 +1335,17 @@ public class SCAL implements SCALBackendAPI {
 				int maxStall = core.maxStage;
 				if(operation.equals(BNode.WrMem_spawn) || operation.equals(BNode.RdMem_spawn) )
 					maxStall = core.GetNodes().get(BNode.WrMem).GetEarliest();
-				for(int stage = this.core.GetNodes().get(BNode.WrStall).GetEarliest(); stage<=maxStall; stage++) // TODO workaround
-						AddToCoreInterfHashMap (BNode.WrStall,stage);
+				
+				// Add WrStall ONLY if needed (multicycle does not need to stall entire core)
+				boolean allMulticycle = true; 
+				for(String instr : this.spawn_instr_stage.get(operation).keySet())
+					if(ISAXes.get(instr).GetRunsAsDecoupled())
+						allMulticycle = false;
+				if(!allMulticycle) { // Decoupled stall entire core
+					for(int stage = this.core.GetNodes().get(BNode.WrStall).GetEarliest(); stage<=maxStall; stage++) // TODO workaround
+							AddToCoreInterfHashMap (BNode.WrStall,stage);
+				} else // Multicycle only
+					AddToCoreInterfHashMap (BNode.WrStall,this.core.GetNodes().get(BNode.GetSCAIEVNode(operation.nameParentNode)).GetEarliest());
 				
 				if(operation.allowMultipleSpawn) { // mem and wrrd need this for fence, kill spawn instr. WrRd needs it for scoreboard too for DH
 					AddToCoreInterfHashMap (BNode.RdInstr,this.core.GetStartSpawnStage());
@@ -1683,7 +1690,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
    				logic += wire +"["+adjOperation.size+"-1:0]"+ myLanguage.CreateLocalNodeName(adjOperation, spawnStage, ISAX)+";\n";
 		}
 	
-		if(this.SETTINGwithInputFIFO) {
+		if(this.SETTINGwithInputFIFO && this.ISAXes.get(ISAX).GetRunsAsDecoupled()) { // if it's not decoupled and is multicycle, no need for input FIFO
 			SCAIEVNode validReq = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest());
 			SCAIEVNode validResp = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidResponse());		
 			SCAIEVNode addr = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetAddr());
@@ -1848,10 +1855,10 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "	 counter <= 0; \n"
 				+ " else if(write_valid_i && !stall_i && counter==0)   \n"
 				+ "	 counter <= NR_CYCLES-1; \n"
-				+ " else if(counter>0)   \n"
+				+ " else if((counter>1) || counter == 1 && !stall_i)   \n"
 				+ "	 counter <= counter-1; \n"
 				+ "end \n"
-				+ "assign zero_o = (counter == 0 );"
+				+ "assign zero_o = (counter == 1 );"
 				+ "endmodule\n"
 				+ "\n";
 		return CounterModuleContent;
@@ -1996,7 +2003,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ " parameter RD_W_P = "+sizeAddr+",\n"
 				+ " parameter INSTR_W_P = 32, \n"
 				+ " parameter START_STAGE = "+this.core.GetStartSpawnStage()+", \n"
-				+ " parameter WB_STAGE = "+this.core.maxStage+",\n"
+				+ " parameter WB_STAGE = "+this.core.maxStage+"\n"
 				+ "                                                                      \n"
 				+ ")(                                                                    \n"
 				+ "   input clk_i,                                                           \n"
@@ -2013,7 +2020,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "    input  cancel_from_user_valid_i,// user validReq bit was zero, but we need to clear its scoreboard dirty bit \n"
 				+ "    input "+sizeZero+"cancel_from_user_addr_i,\n"
 				+ "    output stall_RDRS_o, //  stall from ISAX,  OR spawn DH   \n"
-				+ "    input  [WB_STAGE-START_STAGE:0] stall_RDRS_i, // input from core. core stalled. Includes user stall, as these sigs are combined within core  \n"
+				+ "    input  [WB_STAGE-START_STAGE:0] stall_RDRS_i // input from core. core stalled. Includes user stall, as these sigs are combined within core  \n"
 				+ ");                                                                     \n"
 				+ "  \n"
 				+ "                                                                      \n"

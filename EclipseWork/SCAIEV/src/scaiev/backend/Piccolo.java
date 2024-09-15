@@ -43,7 +43,6 @@ public class Piccolo extends CoreBackend{
 		ConfigPiccolo();
 		IntegrateISAX_IOs();
 		IntegrateISAX_NoIllegalInstr();
-		IntegrateISAX_RdStall();
 		IntegrateISAX_WrStall();
 		IntegrateISAX_SpawnRD();
 		IntegrateISAX_FlushStages();
@@ -196,33 +195,6 @@ public class Piccolo extends CoreBackend{
 		
 	}
 	
-	private void IntegrateISAX_RdStall() {
-		if(op_stage_instr.containsKey(BNode.RdStall)) {
-			for(int stage = 0; stage <=2; stage++) {
-				if(op_stage_instr.get(BNode.RdStall).containsKey(stage)) {
-					if(stage==1) {
-						toFile.UpdateContent(this.ModFile("mkCPU"), "end", new ToWrite("else\n"+tab+language.CreateLocalNodeName(BNode.RdStall, stage,"")+" <= True;",true,false,"// Move instruction from Stage"+(stage+1)+" to Stage"+(stage+2)));					
-						toFile.UpdateContent(this.ModFile("mkCPU"), "stage3.enq (stage2.out.data_to_stage3);", new ToWrite(language.CreateLocalNodeName(BNode.RdStall, stage,"")+" <= False;",false,true,""));					
-					} else if(stage == 0) {
-						toFile.UpdateContent(this.ModFile("mkCPU"), "begin", new ToWrite(language.CreateLocalNodeName(BNode.RdStall, stage,"")+" <= False;",true,false,"// Move instruction from Stage"+(stage+1)+" to Stage"+(stage+2)));					
-						toFile.UpdateContent(this.ModFile("mkCPU"), "end", new ToWrite("else\n"+tab+language.CreateLocalNodeName(BNode.RdStall, stage,"")+" <= True;",true,false,"// Move instruction from Stage"+(stage+1)+" to Stage"+(stage+2)));					
-					} else if (stage == 2) {
-						String toAdd = language.CreateLocalNodeName(BNode.RdStall, 2, "")+ " <= False;";
-						String grep  = "if (stage3.out.ostatus == OSTATUS_PIPE) begin";
-						this.toFile.UpdateContent(this.ModFile("mkCPU"), grep,new ToWrite(toAdd, false, true,"", true));
-						
-					} 
-					String declare = "Wire #( Bool ) "+language.CreateLocalNodeName(BNode.RdStall,stage,"")+" <- mkDWire( True );\n";
-					this.toFile.UpdateContent(this.ModFile("mkCPU"), ");",new ToWrite(declare, true,false,"module mkCPU"));
-					this.toFile.UpdateContent(this.ModInterfFile("mkCPU"), "endinterface",new ToWrite(language.CreateMethodName(BNode.RdStall,stage,"",false)+";\n",true,false,"interface",true));
-					this.toFile.UpdateContent(this.ModInterfFile("mkCore"), "endinterface",new ToWrite("(*always_enabled *)"+language.CreateMethodName(BNode.RdStall,stage,"",false)+";\n",true,false,"interface",true));
-					String assignText = language.CreateMethodName(BNode.RdStall,stage,"",false)+";\n"+tab+"return "+language.CreateLocalNodeName(BNode.RdStall,stage, "")+";\nendmethod";
-					this.toFile.UpdateContent(this.ModFile("mkCPU"), "endmodule",new ToWrite(assignText,true,false,"module mkCPU",true));
-					this.toFile.UpdateContent(this.ModFile("mkCore"), "endmodule",new ToWrite(language.CreateMethodName(BNode.RdStall,stage,"",true)+" = cpu.met_"+language.CreateNodeName(BNode.RdStall, stage,"")+";\n",true,false,"module mkCore",true));
-				}
-			}
-		}
-	}
 	
 	private void IntegrateISAX_WrStall() {
 		if(ContainsOpInStage(BNode.WrStall,1))
@@ -502,9 +474,9 @@ public class Piccolo extends CoreBackend{
 	 	this.PutNode("Bool", "", "mkCPU_Stage2",BNode.RdMem_addr_valid,stageMem);
 	 	this.PutNode("Bool", "", "mkCPU_Stage2",BNode.WrMem_addr_valid,stageMem);
 		 
-	 	this.PutNode("Bool", "", "mkCPU", BNode.RdStall,0);
-	 	this.PutNode("Bool", "", "mkCPU", BNode.RdStall,1);
-	 	this.PutNode("Bool", "", "mkCPU", BNode.RdStall,2);
+	 	this.PutNode("Bool", " (rg_state == CPU_RUNNING) && (! halting) && (! stage2_full) && (stage1.out.ostatus == OSTATUS_PIPE)", "mkCPU", BNode.RdStall,0);
+	 	this.PutNode("Bool", " (rg_state == CPU_RUNNING) && (! stage3_full) && (stage2.out.ostatus == OSTATUS_PIPE)", "mkCPU", BNode.RdStall,1);
+	 	this.PutNode("Bool", " (rg_state == CPU_RUNNING) && (stage3.out.ostatus == OSTATUS_PIPE)", "mkCPU", BNode.RdStall,2);
 	 	
 	 	this.PutNode("Bool", "", "mkCPU", BNode.WrStall,0);
 	 	this.PutNode("Bool", "", "mkCPU", BNode.WrStall,1);

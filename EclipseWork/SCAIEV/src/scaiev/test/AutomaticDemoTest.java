@@ -31,7 +31,7 @@ public class AutomaticDemoTest {
 	public static void main(String[] args) {
 		//////////   SETTINGS   //////////
 		String testFilePath = "TestMe.yaml";
-		String core = "VexRiscv_5s";
+		String core = "ORCA";
 		//////////   GENERATE   //////////
 		SCAIEV shim = new SCAIEV();
 		if(readRequest(testFilePath, core, shim)) {

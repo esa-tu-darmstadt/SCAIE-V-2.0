@@ -223,15 +223,18 @@ public class PicoRV32 extends CoreBackend {
 	}
 	
 	private void IntegrateISAX_WrRD() {
+		String addToState = "";
 		if(this.op_stage_instr.containsKey(BNode.WrRD))
 			for(int stage : this.op_stage_instr.get(BNode.WrRD).keySet()) {
+				if(stage<3)
+					addToState += " || "+(language.CreateNodeName(BNode.WrRD_valid, stage, ""));
 				toFile.UpdateContent(this.ModFile("picorv32"),"case (1'b1)",new ToWrite(language.CreateNodeName(BNode.WrRD_valid, stage, "") +": begin\n"+ tab + "cpuregs_wrdata = "+language.CreateNodeName(BNode.WrRD, stage, "")+";\n"+ tab + "cpuregs_write = 1;\n"+ "end ",true,false,"cpuregs_wrdata = 'bx;"));
 			}
 		
-		if(this.ContainsOpInStage(BNode.WrRD, 2)) {
+		if(this.ContainsOpInStage(BNode.WrRD, 2) || this.ContainsOpInStage(BNode.WrRD, 1)) {
 			String grep = "if (cpu_state == cpu_state_fetch"; 
 			String prereq = "cpuregs_wrdata = 'bx;"; 
-			String replace = "if (cpu_state == cpu_state_fetch || "+(language.CreateNodeName(BNode.WrRD_valid, 2, ""))+") begin";
+			String replace = "if (cpu_state == cpu_state_fetch "+addToState+") begin";
 			toFile.ReplaceContent(this.ModFile("picorv32"), grep, new ToWrite(replace, true,false,prereq));
 		}
 			
@@ -460,7 +463,7 @@ public class PicoRV32 extends CoreBackend {
 	}
 	private void ConfigPicoRV32 () {
 	 	this.PopulateNodesMap(this.picorv32.maxStage);
-		PutModule(pathPicoRV32+"\\picorv32.v","picorv32"				, pathPicoRV32+"\\picorv32.v", 			   "",		   "picorv32");
+		PutModule(pathPicoRV32+"/picorv32.v","picorv32"				, pathPicoRV32+"/picorv32.v", 			   "",		   "picorv32");
 	 	Module newModule = new Module();
 	 	newModule.name = "extension_name";
 
@@ -489,11 +492,10 @@ public class PicoRV32 extends CoreBackend {
 	this.PutNode( "reg", "cpuregs_rs2", "picorv32", BNode.RdRS2,2);	
 	this.PutNode( "reg", "cpuregs_rs2", "picorv32", BNode.RdRS2,3);
 	
-	this.PutNode( " ", "", "picorv32", BNode.WrRD,3); 
-	this.PutNode( " ", "", "picorv32", BNode.WrRD_valid,3);
-	
-	this.PutNode( " ", "", "picorv32", BNode.WrRD,2); 
-	this.PutNode( " ", "", "picorv32", BNode.WrRD_valid,2);
+	for(int i =1; i<spawnStage;i++) {
+		this.PutNode( " ", "", "picorv32", BNode.WrRD,i); 
+		this.PutNode( " ", "", "picorv32", BNode.WrRD_valid,i);
+	}
 	
 	this.PutNode( "wire", "", "picorv32", BNode.RdIValid,0);	 		
 	this.PutNode( "wire", "", "picorv32", BNode.RdIValid,1);	 		
@@ -513,8 +515,8 @@ public class PicoRV32 extends CoreBackend {
 	this.PutNode( " ", "", "picorv32", BNode.RdMem_addr_valid,stageMem);
 	
 	this.PutNode( " ", "(!(decoder_trigger) || (cpu_state !=  cpu_state_fetch)) || "+language.CreateNodeName(BNode.WrStall, 0, ""), "picorv32", BNode.RdStall,0);
-	this.PutNode( " ", "(cpu_state !=  cpu_state_ld_rs1) || "+language.CreateNodeName(BNode.WrStall, 1, ""), "picorv32", BNode.RdStall,1);
-	this.PutNode( " ", language.CreateNodeName(BNode.WrStall, 2, "") + "|| ((cpu_state_exec ==  cpu_state) && (((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE) && (alu_wait || alu_wait_2))) ) || ((mem_do_prefetch || ~mem_done) && ((cpu_state == cpu_state_stmem ) ||(cpu_state == cpu_state_ldmem ) )) || (cpu_state ==  cpu_state_fetch) || (cpu_state ==  cpu_state_ld_rs1)", "picorv32", BNode.RdStall,2);
+	this.PutNode( " ", "(cpu_state !=  cpu_state_ld_rs1) ", "picorv32", BNode.RdStall,1);
+	this.PutNode( " ",  " ((cpu_state_exec ==  cpu_state) && (((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE) && (alu_wait || alu_wait_2))) ) || ((mem_do_prefetch || ~mem_done) && ((cpu_state == cpu_state_stmem ) ||(cpu_state == cpu_state_ldmem ) )) || (cpu_state ==  cpu_state_fetch) || (cpu_state ==  cpu_state_ld_rs1)", "picorv32", BNode.RdStall,2);
 	this.PutNode( " ", "0", "picorv32", BNode.RdStall,3);
 	
 	this.PutNode( " ", "", "picorv32", BNode.WrStall,0);
@@ -522,10 +524,10 @@ public class PicoRV32 extends CoreBackend {
 	this.PutNode( " ", "", "picorv32", BNode.WrStall,2);
 	this.PutNode( " ", "", "picorv32", BNode.WrStall,3);
 	
-	this.PutNode( " ", "(!(decoder_trigger) || (cpu_state !=  cpu_state_fetch)) || "+language.CreateLocalNodeName(BNode.WrFlush, 0, ""), "picorv32", BNode.RdFlush,0);
-	this.PutNode( " ", "(cpu_state !=  cpu_state_ld_rs1) || "+language.CreateLocalNodeName(BNode.WrFlush, 1, ""), "picorv32", BNode.RdFlush,1);
+	this.PutNode( " ", "(!(decoder_trigger) || (cpu_state !=  cpu_state_fetch)) ", "picorv32", BNode.RdFlush,0);
+	this.PutNode( " ", "(cpu_state !=  cpu_state_ld_rs1) ", "picorv32", BNode.RdFlush,1);
 	this.PutNode( " ", " ~(|cpu_state[3:0]) || "+ language.CreateLocalNodeName(BNode.WrFlush, 2, ""), "picorv32", BNode.RdFlush,2);
-	this.PutNode( " ",  "(cpu_state !=  cpu_state_fetch) || "+language.CreateLocalNodeName(BNode.WrFlush, 3, ""), "picorv32", BNode.RdFlush,3); // TODO should be improved
+	this.PutNode( " ",  "(cpu_state !=  cpu_state_fetch)", "picorv32", BNode.RdFlush,3); // TODO should be improved
 	
 // WrFlush does not make sense without WrPC for this core and WrFlush is set in SCAL in case of WrPC
 	this.PutNode( " ", "", "picorv32", BNode.WrFlush,0);

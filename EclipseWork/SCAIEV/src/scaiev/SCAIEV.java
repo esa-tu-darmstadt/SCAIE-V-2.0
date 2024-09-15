@@ -155,9 +155,7 @@ public class SCAIEV {
 	}
 	
 	private void CreateOpStageInstr(Core core) throws FrontendNodeException {
-		int spawnStage = core.maxStage+1; 
 		int rdrsStage = core.GetNodes().get(BNode.RdRS1).GetEarliest();
-		int memstage = core.GetNodes().get(BNode.RdMem).GetEarliest();
 		boolean barrierInstrRequired = false;
 		
 		for(String instructionName : instrSet.keySet()) {
@@ -171,12 +169,8 @@ public class SCAIEV {
 					for (Scheduled sched : originalSchedNodes.get(operation)) {
 						SCAIEVNode spawnOperation = this.BNodes.GetMySpawnNode(operation);
 						if(spawnOperation != null) { // if this is a node that has a spawn feature
-							int actualSpawnStage = spawnStage; 
-							if(spawnOperation.equals(BNode.RdMem_spawn)  || spawnOperation.equals(BNode.WrMem_spawn))
-								actualSpawnStage = memstage+1;		// Mem stage has spawn from 1+ earliest memory stage
-							
 							int stage = sched.GetStartCycle();
-							if(stage>=actualSpawnStage) {
+							if(stage>=operation.spawnStage) {
 								if(!spawn_instr_stage.containsKey(spawnOperation)) 
 									spawn_instr_stage.put(spawnOperation, new HashMap<String,Integer>()); 
 								if(!spawn_instr_stage.get(spawnOperation).containsKey(instructionName))
@@ -193,21 +187,16 @@ public class SCAIEV {
 			
 			// STEP 3: Add nodes to op_stage_instr
 			HashMap<SCAIEVNode, List<Scheduled>> schedNodes = instruction.GetSchedNodes();
-			for(SCAIEVNode operation : schedNodes.keySet()) {
-				
+			for(SCAIEVNode operation : schedNodes.keySet()) {			
 				for (Scheduled sched : schedNodes.get(operation)) {
-					SCAIEVNode addOperation = operation; 
-					int actualSpawnStage = spawnStage; 
-					if(operation.equals(BNode.RdMem_spawn)  || operation.equals(BNode.WrMem_spawn))
-						actualSpawnStage = memstage+1;		// Mem stage has spawn from 1+ earliest memory stage
-					
+					SCAIEVNode addOperation = operation; 				
 					int stage = sched.GetStartCycle();
-					if(stage>=actualSpawnStage) {
+					if(stage>=operation.spawnStage) {
 						if(!instruction.GetRunsAsDecoupled()) { // If it is a spawn but we have Stall strategy, make it common WrRD so that core handles DH 
 							addOperation = this.BNodes.GetSCAIEVNode(operation.nameParentNode);
-							stage = rdrsStage+1;
+							stage = core.GetNodes().get(operation).GetEarliest();
 						} else {
-							stage = spawnStage;
+							stage = operation.spawnStage;
 							barrierInstrRequired = true;
 						}
 					}
@@ -227,12 +216,12 @@ public class SCAIEV {
 			if(node.isSpawn())
 				barrierNeeded = true;
 		if(barrierNeeded && barrierInstrRequired) {
-			AddIn_op_stage_instr(BNode.RdRS1,rdrsStage,"disaxkill");
-			AddIn_op_stage_instr(BNode.RdRS1,rdrsStage,"disaxfence");
+			AddIn_op_stage_instr(BNode.RdIValid,rdrsStage,"disaxkill");
+			AddIn_op_stage_instr(BNode.RdIValid,rdrsStage,"disaxfence");
 			SCAIEVInstr kill  = SCAL.PredefInstr.kill.instr;
 			SCAIEVInstr fence = SCAL.PredefInstr.fence.instr;
-			kill.PutSchedNode(FNode.RdRS1,rdrsStage);  
-			fence.PutSchedNode(FNode.RdRS1, rdrsStage);  
+			kill.PutSchedNode(FNode.RdIValid,rdrsStage);  
+			fence.PutSchedNode(FNode.RdIValid, rdrsStage);  
 			instrSet.put("disaxkill", kill);
 			instrSet.put("disaxfence", fence);
 		}
@@ -268,19 +257,20 @@ public class SCAIEV {
 	}
 	
 	private void AddCommitStagesToNodes (Core core){
+		// Add default values for all BNodes 
+		for(SCAIEVNode node : this.BNodes.GetAllBackNodes()) {
+			if(!node.isInput && !node.isAdj() &&  core.GetNodes().containsKey(node))  // Non-User Rd Nodes already have earliest defined in Core's datasheet. Only commit stage must be defined
+				UpdateSpawnCommitStage(node, core.maxStage+1, core.GetNodes().get(node).GetEarliest() );
+			else if(node.isInput && !node.isAdj() &&  core.GetNodes().containsKey(node)) // Write nodes
+				UpdateSpawnCommitStage(node, core.maxStage+1, core.GetNodes().get(node).GetLatest() );
+		}
 		
-		// Add commit stage of core 
-		BNodes.RdMem.commitStage = core.GetNodes().get(BNode.RdMem).GetEarliest();
-		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(BNode.RdMem))
-			nodeAdj.commitStage = core.maxStage;
-		BNodes.WrMem.commitStage = core.GetNodes().get(BNode.WrMem).GetEarliest();
-		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(BNode.WrMem))
-			nodeAdj.commitStage = core.maxStage;
-		BNodes.WrRD.commitStage = core.maxStage;
-		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(BNode.WrRD))
-			nodeAdj.commitStage = core.maxStage;
-		BNodes.WrPC.commitStage = core.GetNodes().get(BNode.WrPC).GetEarliest(); // risky: was core.maxStage; Updated it so that always wrpc would be mapped to 0 when nodeStage=100 in automatic demo class	
-		BNodes.WrPC_valid.commitStage =  core.GetNodes().get(BNode.WrPC).GetEarliest();
+		// Overwrite default values for specific core nodes 
+		UpdateSpawnCommitStage(BNodes.RdMem, core.GetNodes().get(BNode.RdMem).GetEarliest()+1,core.GetNodes().get(BNode.RdMem).GetEarliest());
+		UpdateSpawnCommitStage(BNodes.WrMem, core.GetNodes().get(BNode.WrMem).GetEarliest()+1,core.GetNodes().get(BNode.WrMem).GetEarliest());
+		UpdateSpawnCommitStage(BNodes.WrRD,core.maxStage+1,core.maxStage);
+		UpdateSpawnCommitStage(BNodes.WrPC,core.maxStage+1,0);
+
 		
 		// Add commit stage info of WrUser node. First write nodes, than read nodes 
 		for(SCAIEVNode node : this.BNodes.GetAllBackNodes()) {
@@ -325,11 +315,19 @@ public class SCAIEV {
 				for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(node)) {
 					nodeAdj.commitStage = earliest;
 				}
-			}
-			
+			} 			
 		}
 		
 	} 
+	
+	private void UpdateSpawnCommitStage (SCAIEVNode node, int spawnStage, int commitStage){
+		node.commitStage =commitStage;
+		node.spawnStage = spawnStage;
+		for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(node)) {
+			nodeAdj.commitStage = node.commitStage;
+			nodeAdj.spawnStage = node.spawnStage ;
+		}
+	}
 	
 	private void AddUserNodesToCore (Core core){
 		boolean added = false;

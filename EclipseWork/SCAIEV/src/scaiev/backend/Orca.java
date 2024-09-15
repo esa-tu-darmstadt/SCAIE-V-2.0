@@ -67,7 +67,6 @@ public class Orca extends CoreBackend {
 		IntegrateISAX_WrStall();
 		IntegrateISAX_WrFlush();
 		IntegrateISAX_RdStall();
-		IntegrateISAX_RdFlush();
 		IntegrateISAX_WrRD();
 		IntegrateISAX_Mem();
 		IntegrateISAX_WrPC();
@@ -86,15 +85,14 @@ public class Orca extends CoreBackend {
 	private void IntegrateISAX_RdStall() {
 		if(op_stage_instr.containsKey(BNode.RdStall)) {
 			for(int stage : op_stage_instr.get(BNode.RdStall).keySet()) {
-				if(stage<3) {
-					if(!this.ContainsOpInStage(BNode.WrStall, stage))  {
-						toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, stage)),Parse.declare,	new ToWrite(language.CreateDeclSig(BNode.WrStall, stage, ""), false, true,""));				
-						toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, stage)),Parse.behav,	  new ToWrite(language.CreateLocalNodeName(BNode.WrStall, stage, "") + " <= '0';\n",false,true,""));
-					} else {
-						toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, stage)),Parse.behav,	  new ToWrite(language.CreateLocalNodeName(BNode.WrStall, stage, "") + " <= "+language.CreateNodeName(BNode.WrStall, stage, "")+";\n",false,true,""));
-						toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, stage)),Parse.declare,	new ToWrite(language.CreateDeclSig(BNode.WrStall, stage, ""), false, true,""));				
-						
-					}
+				if(stage==3) {
+					String RdStallText = this.language.CreateNodeName(BNode.RdStall, stage, "") + " <= not((not to_execute_valid) or (from_writeback_ready and\n"
+							+ "                                                   (((not lsu_select) or from_lsu_ready) and\n"
+							+ "                                                    ((not alu_select) or from_alu_ready) and\n"
+							+ "                                                    ((not syscall_select) or from_syscall_ready) and\n"
+							+ "                                                    ((not vcp_select) or vcp_ready)))) or (not  (from_writeback_ready));";
+					toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, 3)), "to_vcp_valid     <=",new ToWrite(RdStallText,false,true,""));
+					
 				}
 				if(stage==2) {
 					language.UpdateInterface(NodeAssignM(BNode.RdStall, stage), ISAX_frwrd_to_stage1_ready, "", stage, false, false); 
@@ -103,21 +101,7 @@ public class Orca extends CoreBackend {
 		}
 	}
 	
-	private void IntegrateISAX_RdFlush() {
-		if(op_stage_instr.containsKey(BNode.RdFlush)) {
-			for(int stage : op_stage_instr.get(BNode.RdFlush).keySet()) {
-				if(!this.ContainsOpInStage(BNode.WrFlush, stage))  {
-					toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdFlush, stage)),Parse.declare,	new ToWrite(language.CreateDeclSig(BNode.WrFlush, stage, ""), false, true,""));				
-					toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdFlush, stage)),Parse.behav,	  new ToWrite(language.CreateLocalNodeName(BNode.WrFlush, stage, "") + " <= '0';\n",false,true,""));
-				} else {
-					if(stage==1)
-						toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdFlush, stage)),Parse.declare,	new ToWrite(language.CreateDeclSig(BNode.WrFlush, stage, ""), false, true,""));				
-					
-					toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdFlush, stage)),Parse.behav,	  new ToWrite(language.CreateLocalNodeName(BNode.WrFlush, stage, "") + " <= "+language.CreateNodeName(BNode.WrFlush, stage, "")+";\n",false,true,""));
-				}
-			}
-		}
-	}
+
 	private void IntegrateISAX_WrFlush() {
 		if(op_stage_instr.containsKey(BNode.WrFlush))
 			for(int stage : op_stage_instr.get(BNode.WrFlush).keySet()) {
@@ -140,7 +124,7 @@ public class Orca extends CoreBackend {
 				+ tab+"from_opcode_illegal <= '1';\n"
 				+ "end if;";
 		toFile.ReplaceContent(this.ModFile("execute"), "from_opcode_illegal <= '1';",new ToWrite(textIllegal,true,false,"when others =>"));
-		String aluSelect = "if ("+isISAXSignal+" = '0') then  --  otherwise all asaxe will be considered ALU and will write to regfile \n"
+		String aluSelect = "if ("+isISAXSignal+" = '0') then  --  otherwise all ISAXes will be considered ALU and will write to regfile \n"
 				+ tab + "alu_select <= '1';\n"
 				+ "else\n"
 				+ tab + "alu_select <= '0';\n"
@@ -165,10 +149,12 @@ public class Orca extends CoreBackend {
 		String addText = language.CreateText1or0(isISAXSignal,language.CreateAllEncoding(allISAXes, ISAXes, "to_execute_instruction"));
 		toFile.UpdateContent(this.ModFile("execute"),Parse.behav,  new ToWrite(addText,false,true,""));
 		
-		// is_ISAX register in stage 4. Declare & behavior 
-		toFile.UpdateContent(this.ModFile("execute"),Parse.declare,  new ToWrite("signal "+language.CreateRegNodeName(is_ISAX, 4, "")+" : std_logic;\n",false,true,""));		
-		addText = language.CreateTextRegResetStall(language.CreateRegNodeName(is_ISAX, 4, ""), isISAXSignal,"(not from_execute_ready)" );
-		toFile.UpdateContent(this.ModFile("execute"),Parse.behav,  new ToWrite(addText,false,true,""));
+		// is_ISAX register in stage 4. Declare & behavior. Needded only for RdFlush 4
+		if(this.ContainsOpInStage(BNode.RdFlush, 4)) {
+			toFile.UpdateContent(this.ModFile("execute"),Parse.declare,  new ToWrite("signal "+language.CreateRegNodeName(is_ISAX, 4, "")+" : std_logic;\n",false,true,""));		
+			addText = language.CreateTextRegResetStall(language.CreateRegNodeName(is_ISAX, 4, ""), isISAXSignal,"(not from_execute_ready)" );
+			toFile.UpdateContent(this.ModFile("execute"),Parse.behav,  new ToWrite(addText,false,true,""));
+		}
 	}
 	
 	
@@ -233,8 +219,6 @@ public class Orca extends CoreBackend {
 			decl_lineToBeInserted += "signal "+ISAX_execute_to_rf_valid_s+" : std_logic;\n";
 			decl_lineToBeInserted += "signal "+ISAX_execute_to_rf_data_s+" : std_logic_vector(REGISTER_SIZE-1 downto 0);\n";
 			toFile.UpdateContent(this.ModFile("orca_core"),Parse.declare, new ToWrite(decl_lineToBeInserted,false,true,""));
-			language.UpdateInterface("orca",BNode.WrRD_valid, "",3,true,false);
-			language.UpdateInterface("orca",BNode.WrRD_validData, "",3,true,false);
 					
 			// Send to decode correct result
 			toFile.ReplaceContent(this.ModFile("orca_core"),"to_rf_data   =>", new ToWrite("to_rf_data => "+ISAX_execute_to_rf_data_s+",",true,false,"D : decode"));
@@ -247,17 +231,23 @@ public class Orca extends CoreBackend {
 						+ tab+ISAX_execute_to_rf_data_s+" <= "+language.CreateNodeName(BNode.WrRD_spawn, 5, "")+"; \n"
 						+ "    els";
 			}
-			if(this.ContainsOpInStage(BNode.WrRD, 3)) {
-				wrrdDataBody +=  "if( "+language.CreateRegNodeName(BNode.WrRD_valid, 3, "")+" = '1' ) then\n"
-						+ tab+ISAX_execute_to_rf_data_s+" <= "+language.CreateRegNodeName(BNode.WrRD, 3, "")+"; \n"
-						+ "    els";
-			}
 			if(this.ContainsOpInStage(BNode.WrRD, 4)) {
-				wrrdDataBody +=  "if( "+language.CreateNodeName(BNode.WrRD_valid, 4, "")+" = '1' ) then\n"
+				//language.UpdateInterface("orca",BNode.WrRD_validData, "",4,true,false);
+				wrrdDataBody +=  "if( "+language.CreateNodeName(BNode.WrRD_validData, 4, "")+" = '1' and "+language.CreateRegNodeName(BNode.WrRD_validData, 4, "")+" = '0') then\n"
 						+ tab+ISAX_execute_to_rf_data_s+" <= "+language.CreateNodeName(BNode.WrRD, 4, "")+"; \n"
 						+ "    els";
+				toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateInProc(false, wrrdDataBody),false,true,""));
 			}
-			wrrdDataBody += "e\n"+ tab+ISAX_execute_to_rf_data_s+" <= execute_to_rf_data;\nend if;\n";		
+			if(this.ContainsOpInStage(BNode.WrRD, 3)) {
+				String replaceText  = "if lui_select = '1' then"; 
+				String addText =  "if( "+language.CreateNodeName(BNode.WrRD_valid, 3, "")+" = '1' and  "+language.CreateNodeName(BNode.WrRD_validData, 3, "")+" = '1' ) then\n"
+						          + tab + "from_alu_data <= "+language.CreateNodeName(BNode.WrRD, 3, "")+"; \n"
+						          + tab + "from_alu_valid <= '1';\n"
+						          + "elsif lui_select = '1' then\n";
+				toFile.ReplaceContent(this.ModFile("arithmetic_unit"),replaceText, new ToWrite(addText,false,true,""));
+			}
+			
+			wrrdDataBody +=  this.language.OpIfNEmpty(wrrdDataBody, "e\n") + tab+ISAX_execute_to_rf_data_s+" <= execute_to_rf_data;\n"+this.language.OpIfNEmpty(wrrdDataBody,"end if;\n");				
 			toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateInProc(false, wrrdDataBody),false,true,""));
 			
 			
@@ -272,8 +262,9 @@ public class Orca extends CoreBackend {
 				wrrdValid +=  "if( "+language.CreateNodeName(BNode.WrRD_valid, 4, "")+" = '1' and (execute_to_rf_select /=\"00000\") ) then\n"
 						+ tab+ISAX_execute_to_rf_valid_s+" <=  '1';\n"
 						+ "    els";
-			}
-			wrrdValid += "e\n"+ tab+ISAX_execute_to_rf_valid_s+" <= execute_to_rf_valid;\nend if;\n";		
+			} else // default signal to avoid error in wrapper
+				language.UpdateInterface("orca",BNode.WrRD_valid, "",4,true,false);
+			wrrdValid =  this.language.OpIfNEmpty(wrrdValid, "e\n") + tab+ISAX_execute_to_rf_valid_s+" <= execute_to_rf_valid;\n " +this.language.OpIfNEmpty(wrrdValid,"end if;\n");		
 			toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateInProc(false, wrrdValid),false,true,""));
 			
 			
@@ -291,16 +282,15 @@ public class Orca extends CoreBackend {
 				
 			}
 			
-			// Instantiate regs in case wrrd in stage 3 
-			if(this.ContainsOpInStage(BNode.WrRD, 3)) {
-				String newText = language.CreateTextRegResetStall( language.CreateRegNodeName(BNode.WrRD_validData, 4, "")  ,   language.CreateNodeName(BNode.WrRD_valid, 3, ""), "(not from_execute_ready)");
-				toFile.UpdateContent(this.ModFile("execute"),Parse.behav, new ToWrite(newText,false,true,""));
-				language.UpdateInterface("orca",BNode.WrRD_validData, "",3,true,false);
-				
-				newText = language.CreateTextRegResetStall( language.CreateRegNodeName(BNode.WrRD, 4, "")  ,   language.CreateNodeName(BNode.WrRD, 3, ""), "(not from_execute_ready)");
-				toFile.UpdateContent(this.ModFile("execute"),Parse.behav, new ToWrite(newText,false,true,""));
-			}
+			// Compute ValidData DH Signal 
+			// If we have writes both in stage 3 and 4, we need to know which data to take in 4, for this we need if _validData[4] && !_validData_reg[3] --> reg for validData[3]
+			decl_lineToBeInserted += this.language.CreateDeclReg(BNode.WrRD_validData, 4, ""); 
+			if(this.ContainsOpInStage(BNode.WrRD, 3) && this.ContainsOpInStage(BNode.WrRD, 4)) 
+					toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateTextRegResetStall(language.CreateRegNodeName(BNode.WrRD_validData, 4, ""), language.CreateNodeName(BNode.WrRD_validData, 3, ""), "from_execute_ready"),false,true,"")); // add logic			
+			else if(this.ContainsOpInStage(BNode.WrRD, 4))
+				toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateRegNodeName(BNode.WrRD_validData, 4, "") + " <= '0';\n",false,true,"")); // add default logic			
 			
+
 			// Datahaz. ISAX to standard 
 			if(this.ContainsOpInStage(BNode.WrRD, 4)) {
 				String replace = "";
@@ -337,10 +327,11 @@ public class Orca extends CoreBackend {
 				toFile.ReplaceContent(this.ModFile("execute"),replace, new ToWrite(newText,false,true,""));		
 				replace = "rs3_data <= from_alu_data when rs3_mux = ALU_FWD";
 				newText = 	replace + " and ( "+language.CreateNodeName(BNode.WrRD_validData, 4, "")+"  = '0' or "+language.CreateNodeName(BNode.WrRD_valid, 4, "")+"  = '1' ) else";
-				toFile.ReplaceContent(this.ModFile("execute"),replace, new ToWrite(newText,false,true,""));		
-				
-				
-			}		
+				toFile.ReplaceContent(this.ModFile("execute"),replace, new ToWrite(newText,false,true,""));						
+			} 
+			if(this.ContainsOpInStage(BNode.WrRD, 3)) {
+				toFile.ReplaceContent(this.ModFile("execute"),"from_branch_valid or", new ToWrite("from_branch_valid or "+language.CreateNodeName(BNode.WrRD_validData, 3, "")+"or\n",true,false,"to_rf_valid  <="));
+			}
 		}
 	}	
 
@@ -546,7 +537,7 @@ public class Orca extends CoreBackend {
 		PutModule(pathORCA+"/components.vhd","instruction_fetch"	, pathORCA+"/instruction_fetch.vhd", "orca_core","instruction_fetch");
 		PutModule(pathORCA+"/components.vhd","decode"				, pathORCA+"/decode.vhd",			   "orca_core","decode");
 		PutModule(pathORCA+"/components.vhd","execute"				, pathORCA+"/execute.vhd", 		   "orca_core","execute");
-		PutModule(pathORCA+"/components.vhd","arithmetic_unit"		, pathORCA+"/alu.vhd",			   "execute",  "arithmetic_unit ");
+		PutModule(pathORCA+"/components.vhd","arithmetic_unit"		, pathORCA+"/alu.vhd",			   "execute",  "arithmetic_unit");
 		PutModule(pathORCA+"/components.vhd","branch_unit"			, pathORCA+"/branch_unit.vhd",	   "execute",  "branch_unit");
 		PutModule(pathORCA+"/components.vhd","load_store_unit"		, pathORCA+"/load_store_unit.vhd",   "execute",  "load_store_unit");
 		PutModule(pathORCA+"/components.vhd","orca_core"			, pathORCA+"/orca_core.vhd",		   "orca",     "orca_core");
@@ -578,9 +569,10 @@ public class Orca extends CoreBackend {
 	 	this.PutNode( "std_logic_vector", "rs2_data", "decode", BNode.RdRS2,2);
 	 	this.PutNode( "std_logic_vector", "rs2_data", "execute", BNode.RdRS2,3);	
 	 	
+	 	this.PutNode( "std_logic_vector", "", "arithmetic_unit", BNode.WrRD,3); 
 	 	this.PutNode( "std_logic_vector", "", "execute", BNode.WrRD,4); 
-	 	this.PutNode( "std_logic", "", "execute", BNode.WrRD_valid,3); 
-	 	this.PutNode( "std_logic", "", "execute", BNode.WrRD_validData,3); 
+	 	this.PutNode( "std_logic", "", "arithmetic_unit", BNode.WrRD_valid,3); 
+	 	this.PutNode( "std_logic", "", "arithmetic_unit", BNode.WrRD_validData,3); 
 	 	//this.PutNode( "std_logic_vector", "", "orca_core", BNode.WrRD_addr,4);
 	 	this.PutNode( "std_logic", "", "execute", BNode.WrRD_valid,4);
 	 	this.PutNode( "std_logic", "", "execute", BNode.WrRD_validData,4); 
@@ -603,10 +595,10 @@ public class Orca extends CoreBackend {
 	 	this.PutNode( "std_logic", "", "load_store_unit", BNode.RdMem_addr_valid,stageMem);
 	 	
 	 
-	 	this.PutNode( "std_logic", "not (pc_fifo_write) or "+language.CreateLocalNodeName(BNode.WrStall, 0, ""), "instruction_fetch", BNode.RdStall,0);
+	 	this.PutNode( "std_logic", "not (pc_fifo_write) ", "instruction_fetch", BNode.RdStall,0);
 	 	this.PutNode( "std_logic", "not (decode_to_ifetch_ready) ", "orca_core", BNode.RdStall,1);
-	 	this.PutNode( "std_logic", "not ("+language.CreateLocalNodeName(ISAX_frwrd_to_stage1_ready, 2, "")+") or "+language.CreateLocalNodeName(BNode.WrStall, 2, ""), "orca_core", BNode.RdStall,2);
-	 	this.PutNode( "std_logic", "not (from_execute_ready) or (not (from_writeback_ready))  ", "execute", BNode.RdStall,3);	 // wrstall already within execute_to_decode_ready  	
+	 	this.PutNode( "std_logic", "not ("+language.CreateLocalNodeName(ISAX_frwrd_to_stage1_ready, 2, "")+")", "orca_core", BNode.RdStall,2);
+	 	this.PutNode( "std_logic", "", "execute", BNode.RdStall,3);	  	
 	 	this.PutNode( "std_logic", "not (from_writeback_ready)", "execute", BNode.RdStall,4);
 	 	
 	 	this.PutNode( "std_logic", "", "instruction_fetch", BNode.WrStall,0);
@@ -615,11 +607,11 @@ public class Orca extends CoreBackend {
 	 	this.PutNode( "std_logic", "", "execute", BNode.WrStall,3);
 	 	this.PutNode( "std_logic", "", "execute", BNode.WrStall,4);
 	 	
-	 	this.PutNode("std_logic", "to_pc_correction_valid or " +language.CreateLocalNodeName(BNode.WrFlush, 0, ""), "orca_core", BNode.RdFlush,0);
-	 	this.PutNode("std_logic", "not (to_decode_valid)  or (not to_decode_valid) or " +language.CreateLocalNodeName(BNode.WrFlush, 1, ""), "orca_core", BNode.RdFlush,1);
-	 	this.PutNode("std_logic", "not (from_stage1_valid)  or "+language.CreateLocalNodeName(BNode.WrFlush, 2, ""), "decode", BNode.RdFlush,2);// TODO to_decode_valid
-	 	this.PutNode("std_logic", "to_pc_correction_valid  or (not to_execute_valid) or "+language.CreateLocalNodeName(BNode.WrFlush,3, ""), "orca_core", BNode.RdFlush,3);
-	 	this.PutNode("std_logic", " not (from_syscall_valid or from_lsu_valid or from_branch_valid or from_alu_valid or "+language.CreateRegNodeName(is_ISAX, 4, "")+") or "+ language.CreateLocalNodeName(BNode.WrFlush, 4, ""), "execute", BNode.RdFlush,4); // is_ISAX for internal reg
+	 	this.PutNode("std_logic", "to_pc_correction_valid ", "orca_core", BNode.RdFlush,0);
+	 	this.PutNode("std_logic", "not (to_decode_valid)  or (not to_decode_valid) ", "orca_core", BNode.RdFlush,1);
+	 	this.PutNode("std_logic", "not (from_stage1_valid)", "decode", BNode.RdFlush,2);// TODO to_decode_valid
+	 	this.PutNode("std_logic", "to_pc_correction_valid  or (not to_execute_valid) ", "orca_core", BNode.RdFlush,3);
+	 	this.PutNode("std_logic", " not (from_syscall_valid or from_lsu_valid or from_branch_valid or from_alu_valid or "+language.CreateRegNodeName(is_ISAX, 4, "")+") ", "execute", BNode.RdFlush,4); // is_ISAX for internal reg
 	 	
 	 	
 	 	this.PutNode("std_logic", "" , "orca_core", BNode.WrFlush,0);

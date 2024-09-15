@@ -18,7 +18,6 @@ public class FNode{
 	public static SCAIEVNode RdImm     = new SCAIEVNode("RdImm",32,true);	
 	public static SCAIEVNode RdRS1    = new SCAIEVNode("RdRS1",32,false);
 	public static SCAIEVNode RdRS2    = new SCAIEVNode("RdRS2",32,false);
-	public static SCAIEVNode RdRD    = new SCAIEVNode("RdRD",32,false);
 	public static SCAIEVNode RdInstr  = new SCAIEVNode("RdInstr",32,false) ;
 	public static SCAIEVNode RdIValid = new SCAIEVNode("RdIValid",1,false) {{oneInterfToISAX = false;}};//{{RdIValid.forEachInstr = true;}}; // interface to be generated for each Instr
 	public static SCAIEVNode RdStall  = new SCAIEVNode("RdStall",1,false);
@@ -27,6 +26,8 @@ public class FNode{
 	public static SCAIEVNode WrFlush  = new SCAIEVNode("WrFlush",1,true){{oneInterfToISAX = false;}};
 	public static SCAIEVNode RdCSR  = new SCAIEVNode("RdCSR",32,false);
 	public static SCAIEVNode WrCSR  = new SCAIEVNode("WrCSR",32,true);
+	public static SCAIEVNode RdFence  = new SCAIEVNode("RdFence",1,false);
+	public static SCAIEVNode RdKill  = new SCAIEVNode("RdKill",1,false);
 	
 	public  HashSet<SCAIEVNode> user_FNode = new  HashSet<SCAIEVNode>();
 	public static String rdName = "Rd";
@@ -41,7 +42,6 @@ public class FNode{
 		fnodes.add(RdPC);
 		fnodes.add(RdRS1);
 		fnodes.add(RdRS2);
-		fnodes.add(RdRD);
 		fnodes.add(RdInstr);
 		fnodes.add(RdIValid);
 		fnodes.add(RdStall);
@@ -50,6 +50,8 @@ public class FNode{
 		fnodes.add(WrFlush);
 		fnodes.add(RdCSR);
 		fnodes.add(WrCSR);
+		fnodes.add(RdFence);
+		fnodes.add(RdKill);
 		if(!this.user_FNode.isEmpty()) fnodes.addAll(this.user_FNode);
 		return fnodes;
 	}
