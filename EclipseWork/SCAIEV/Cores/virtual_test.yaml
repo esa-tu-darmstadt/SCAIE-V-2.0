@@ -14,11 +14,6 @@
   latency: 1
   costly: 4
   latest: 5
-- operation: RdRD
-  earliest: 2
-  latency: 0
-  latest: 3
-  costly: 3
 - operation: RdPC
   earliest: 0
   latency: 0
