@@ -196,7 +196,7 @@ public class SCAIEV {
 							addOperation = this.BNodes.GetSCAIEVNode(operation.nameParentNode);
 							stage = core.GetNodes().get(operation).GetEarliest();
 						} else {
-							stage = operation.spawnStage;
+							stage = core.GetSpawnStage(); // it's actually mapped in HW in node's CommitStage, but interf contains core.spawnStage in naming for debug purposes 
 							barrierInstrRequired = true;
 						}
 					}

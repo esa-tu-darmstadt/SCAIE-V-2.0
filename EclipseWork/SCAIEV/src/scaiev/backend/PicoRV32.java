@@ -322,12 +322,12 @@ public class PicoRV32 extends CoreBackend {
 			toFile.ReplaceContent(this.ModFile("picorv32"),"instr_sb    <= is_sb_sh_sw", new ToWrite("instr_sb    <= (is_sb_sh_sw || ("+validISAXWrMem+")) && mem_rdata_q[14:12] == 3'b000;",false,true,""));
 			toFile.ReplaceContent(this.ModFile("picorv32"),"instr_sh    <= is_sb_sh_sw", new ToWrite("instr_sh    <= (is_sb_sh_sw || ("+validISAXWrMem+")) && mem_rdata_q[14:12] == 3'b001;",false,true,""));
 			toFile.ReplaceContent(this.ModFile("picorv32"),"instr_sw    <= is_sb_sh_sw", new ToWrite("instr_sw    <= (is_sb_sh_sw || ("+validISAXWrMem+")) && mem_rdata_q[14:12] == 3'b010;",false,true,""));
+			toFile.ReplaceContent(this.ModFile("picorv32"),"is_sb_sh_sw:", new ToWrite("|{is_sb_sh_sw, " +validISAXWrMem+"}:",true,false,"|{instr_jalr,"));
 			
 			validISAXWrMem = language.CreateNodeName(BNode.WrMem_validReq, stage-1, "");
 			this.toFile.UpdateContent(this.ModFile("picorv32"),") (",new ToWrite("input "+validISAXWrMem+",\n",true,false,"module picorv32 ",false,"picorv32"));
 			
 			toFile.ReplaceContent(this.ModFile("picorv32"),"reg_op1 <=",new ToWrite("reg_op1 <= ("+ language.CreateNodeName(BNode.WrMem_addr_valid, stage, "") + ") ? "+ language.CreateNodeName(BNode.WrMem_addr, stage, "")+" :  reg_op1 + decoded_imm;",true,false,"cpu_state_stmem: begin"));
-			toFile.ReplaceContent(this.ModFile("picorv32"),"is_sb_sh_sw:", new ToWrite("|{is_sb_sh_sw, " +validISAXWrMem+"}:",true,false,"|{instr_jalr,"));
 			toFile.ReplaceContent(this.ModFile("picorv32"),"is_sb_sh_sw", new ToWrite ("is_sb_sh_sw ||" + validISAXWrMem+": begin",true,false,"default: begin"));
 			
 			// Update WDATA with ISAX wdata
@@ -516,7 +516,7 @@ public class PicoRV32 extends CoreBackend {
 	
 	this.PutNode( " ", "(!(decoder_trigger) || (cpu_state !=  cpu_state_fetch)) || "+language.CreateNodeName(BNode.WrStall, 0, ""), "picorv32", BNode.RdStall,0);
 	this.PutNode( " ", "(cpu_state !=  cpu_state_ld_rs1) ", "picorv32", BNode.RdStall,1);
-	this.PutNode( " ",  " ((cpu_state_exec ==  cpu_state) && !"+language.CreateNodeName(BNode.WrStall, 2, "")+" && (((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE) && (alu_wait || alu_wait_2))) ) || ((mem_do_prefetch || ~mem_done) && ((cpu_state == cpu_state_stmem ) ||(cpu_state == cpu_state_ldmem ) )) || (cpu_state ==  cpu_state_fetch) || (cpu_state ==  cpu_state_ld_rs1)", "picorv32", BNode.RdStall,2);
+	this.PutNode( " ",  " ((cpu_state_exec ==  cpu_state) && !"+language.CreateNodeName(BNode.WrStall, 2, "")+" && (((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE) && (alu_wait || alu_wait_2))) ) || ((mem_do_prefetch || ~mem_done) && !"+language.CreateNodeName(BNode.WrStall, 2, "")+" && ((cpu_state == cpu_state_stmem ) ||(cpu_state == cpu_state_ldmem ) )) || (cpu_state ==  cpu_state_fetch) || (cpu_state ==  cpu_state_ld_rs1)", "picorv32", BNode.RdStall,2);
 	this.PutNode( " ", "0", "picorv32", BNode.RdStall,3);
 	
 	this.PutNode( " ", "", "picorv32", BNode.WrStall,0);
