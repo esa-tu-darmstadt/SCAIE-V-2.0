@@ -459,7 +459,7 @@ public class SCAL implements SCALBackendAPI {
 	    ////////////////////// LOGIC FOR WR STALL //////////////////////
 	    // Has to be handled separately because spawn operations need to update it. 
 	    String [] stallStagesPrefix = new String[ this.core.maxStage+1];
-	    String donStallISAX = ""; // used by multicycle instructions, which should stall only the core but not the ISASX.
+	    HashMap<Integer, String> donStallISAX = new HashMap<Integer, String>(); // used by multicycle instructions, which should stall only the core but not the ISASX. Map bc for picorv32 Mem in 2, WrRd in 1
 	    String [] stallStages = new String[ this.core.maxStage+1];
 	    for(int stage= this.core.maxStage; stage >=0;stage--) {
 	    	stallStages[stage] ="";
@@ -666,8 +666,8 @@ public class SCAL implements SCALBackendAPI {
     		 String stallShiftReg = "";
     		 String stallFrSpawn = "";
     		 String stallFrCore = "";
-    		 int startSpawnStage =  this.core.GetStartSpawnStage();
-    		
+    		 int startSpawnStage =  this.core.GetNodes().get(this.BNode.GetSCAIEVNode(node.nameParentNode)).GetEarliest();  //this.core.GetStartSpawnStage();
+      		
     		 // Construct stall, flush signals for optional modules. Required by the DH spawn module, shift reg module for ValidReq, FIFO for addr
     		 if(startSpawnStage<this.core.maxStage) {
 				 flush += "}";
@@ -703,23 +703,26 @@ public class SCAL implements SCALBackendAPI {
     		 ///////////////////    SCAL SPAWN MODULES /////////////////////////
     		 // Instantiate modules for FIFO Addr, shift reg for valid request bit...
     		 for(String ISAX : spawn_instr_stage.get(node).keySet()) {
-	    		 // RdInstr required by the DH module to determine result address. If core can provide it, read it from interface, otherwise read it from local register 
-	    		 if(this.core.GetNodes().get(BNode.RdInstr).GetExpensive()>startSpawnStage)
-	    			 AddToCoreInterfHashMap(BNode.RdInstr, startSpawnStage);
-	    		 else {
-	    			 declarations += "wire [31:0] "+ myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), startSpawnStage, "")+";\n";
-	    			 logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), startSpawnStage, ""), myLanguage.CreateRegNodeName(BNode.RdInstr.NodeNegInput(), startSpawnStage, ""));
-	    		     if(maxStageInstr<startSpawnStage) { // RdInstr Reg not pressent . !!!! TODO not recursive till stage where available. It helps for picorv32 where rdinstr is in 0 and spawn in 1 but  would not work if rdinstr is in 0 and spawn in 2
-	    		    	 int stage = startSpawnStage;
-	    		    	 String signalName = this.myLanguage.CreateRegNodeName(BNode.RdInstr, stage, "");
-				    	 String signalAssign = this.myLanguage.CreateRegNodeName(BNode.RdInstr, stage-1, "");
-				    	 declarations += this.myLanguage.CreateDeclReg(BNode.RdInstr,stage,"");
-				    	 if(!addRdNodeReg.containsKey(BNode.RdInstr) || !addRdNodeReg.get(BNode.RdInstr).contains(stage-1))
-				    		 signalAssign = this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), stage-1, "");
-				    	 logic += this.myLanguage.CreateTextRegReset(signalName, "("+this.myLanguage.CreateLocalNodeName(BNode.RdFlush, stage-1, "")+") ? 0 : "+signalAssign, this.myLanguage.CreateLocalNodeName(BNode.RdStall, stage-1, ""));
-				     
-	    		     }
-	    		 }
+	    		 
+    			 // RdInstr required by the DH module to determine result address. If core can provide it, read it from interface, otherwise read it from local register 
+    			 if(node.DH && ISAXes.get(ISAX).GetRunsAsDecoupled()) { // Only if node requires DH and is ISAX not ran as multicycle, where no DH issue
+	    		     if(this.core.GetNodes().get(BNode.RdInstr).GetExpensive()>startSpawnStage)
+		    			 AddToCoreInterfHashMap(BNode.RdInstr, startSpawnStage);
+		    		 else {
+		    			 declarations += "wire [31:0] "+ myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), startSpawnStage, "")+";\n";
+		    			 logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), startSpawnStage, ""), myLanguage.CreateRegNodeName(BNode.RdInstr.NodeNegInput(), startSpawnStage, ""));
+		    		     if(maxStageInstr<startSpawnStage) { // RdInstr Reg not pressent . !!!! TODO not recursive till stage where available. It helps for picorv32 where rdinstr is in 0 and spawn in 1 but  would not work if rdinstr is in 0 and spawn in 2
+		    		    	 int stage = startSpawnStage;
+		    		    	 String signalName = this.myLanguage.CreateRegNodeName(BNode.RdInstr, stage, "");
+					    	 String signalAssign = this.myLanguage.CreateRegNodeName(BNode.RdInstr, stage-1, "");
+					    	 declarations += this.myLanguage.CreateDeclReg(BNode.RdInstr,stage,"");
+					    	 if(!addRdNodeReg.containsKey(BNode.RdInstr) || !addRdNodeReg.get(BNode.RdInstr).contains(stage-1))
+					    		 signalAssign = this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), stage-1, "");
+					    	 logic += this.myLanguage.CreateTextRegReset(signalName, "("+this.myLanguage.CreateLocalNodeName(BNode.RdFlush, stage-1, "")+") ? 0 : "+signalAssign, this.myLanguage.CreateLocalNodeName(BNode.RdStall, stage-1, ""));
+					     
+		    		     }
+		    		 }
+    			 }
 	    		 
 	    		 
 	    	     // Prepare signals
@@ -828,7 +831,10 @@ public class SCAL implements SCALBackendAPI {
 	    		    declarations += "reg stall_multicycle_"+node+"_"+ISAX+"_s; // Stall signal for multicycle instr that does not run decoupled\n";
 	    			logic += "always @(*)  \n"
 	    			 		+ myLanguage.tab + "stall_multicycle_"+node+"_"+ISAX+"_s = "+myLanguage.CreateLocalNodeName(BNode.RdIValid, startSpawnStage, ISAX)+" &&  !"+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"_count_s;\n";
-	    			donStallISAX += " && !stall_multicycle_"+node+"_"+ISAX+"_s";
+	    			String dontStallPrevNodes = ""; 
+	    			if(donStallISAX.containsKey(startSpawnStage))
+	    				dontStallPrevNodes = donStallISAX.get(startSpawnStage);
+	    			donStallISAX.put(startSpawnStage, dontStallPrevNodes + " && !stall_multicycle_"+node+"_"+ISAX+"_s");
 	    			// Send Result
 	    			declarations += myLanguage.CreateDeclSig(nonSpawnNode, (startSpawnStage), ISAX, false, myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage), ISAX));
 	    			logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage), ISAX), myLanguage.CreateNodeName(node, this.core.GetSpawnStage(), ISAX));
@@ -941,8 +947,8 @@ public class SCAL implements SCALBackendAPI {
     	    declarations += "wire "+ myLanguage.CreateLocalNodeName(BNode.RdStall, stage, "")+";\n"; // declare local sig as default. Can be used by internal regs. If not used, will be optimized away
     	 	String rdstall_val = myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage, "");
     	 	String IStall = "";
-	 		if(!this.spawn_instr_stage.isEmpty() && (stage == this.core.GetStartSpawnStage()))
-	 			rdstall_val += " || (" + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, "") +donStallISAX +" ) "; 
+    	 	if(!this.spawn_instr_stage.isEmpty() && donStallISAX.containsKey(stage))
+    	 		rdstall_val += " || (" + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, "") +donStallISAX.get(stage) +" ) ";
 	 		else if(!stallStages[stage].isEmpty() || this.ContainsOpInStage(BNode.WrStall, stage))
 	 			rdstall_val += " || (" + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, "") +  " ) " ;
 	 		if (this.ContainsOpInStage(BNode.RdStall,  stage)) // If user needs the stall signal, assign it to default RdStall_s

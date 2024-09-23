@@ -127,7 +127,7 @@ public class PicoRV32 extends CoreBackend {
 		if(this.ContainsOpInStage(BNode.RdInstr, 0)) {
 			text = "always @(posedge "+language.clk+") begin \n"
 					+ "		if (mem_do_rinst && mem_done) \n"
-					+ "			rdInstr_0_r <= mem_rdata_latched;\n"
+					+ "			rdInstr_0_r <= isax_mem_rdata_latched;\n" // was mem_rdata_latched. I had to update it for stall mem, bc when mem_do_rinst && mem_done and stall2 set, _latched had old data
 					+ "	end\n "
 					+ "wire [32 -1:0] "+language.CreateLocalNodeName(BNode.RdInstr, 0, "")+";\n"
 					+ "assign "+language.CreateLocalNodeName(BNode.RdInstr,0, "")+" = rdInstr_0_r;";
@@ -372,9 +372,9 @@ public class PicoRV32 extends CoreBackend {
 		if(rdMem || wrMem ) {
 			String clause = "";
 			if(rdMem)
-				clause = " &&  !"+language.CreateNodeName(BNode.RdMem_addr_valid, 2, "")+" ";
+				clause = " && !"+language.CreateNodeName(BNode.RdMem_addr_valid, 2, "")+" ";
 			if(wrMem)
-				clause = this.language.OpIfNEmpty(clause, " && ") +" !"+ language.CreateNodeName(BNode.WrMem_addr_valid, 2, "")+" ";
+				clause = " && !"+ language.CreateNodeName(BNode.WrMem_addr_valid, 2, "")+" ";
 			
 			String toAdd = "if (CATCH_MISALIGN "+clause+" && resetn && (mem_do_rdata || mem_do_wdata)) begin\n"; 
 			String grep = "if (CATCH_MISALIGN && resetn && (mem_do_rdata";
@@ -516,7 +516,7 @@ public class PicoRV32 extends CoreBackend {
 	
 	this.PutNode( " ", "(!(decoder_trigger) || (cpu_state !=  cpu_state_fetch)) || "+language.CreateNodeName(BNode.WrStall, 0, ""), "picorv32", BNode.RdStall,0);
 	this.PutNode( " ", "(cpu_state !=  cpu_state_ld_rs1) ", "picorv32", BNode.RdStall,1);
-	this.PutNode( " ",  " ((cpu_state_exec ==  cpu_state) && (((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE) && (alu_wait || alu_wait_2))) ) || ((mem_do_prefetch || ~mem_done) && ((cpu_state == cpu_state_stmem ) ||(cpu_state == cpu_state_ldmem ) )) || (cpu_state ==  cpu_state_fetch) || (cpu_state ==  cpu_state_ld_rs1)", "picorv32", BNode.RdStall,2);
+	this.PutNode( " ",  " ((cpu_state_exec ==  cpu_state) && !"+language.CreateNodeName(BNode.WrStall, 2, "")+" && (((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE) && (alu_wait || alu_wait_2))) ) || ((mem_do_prefetch || ~mem_done) && ((cpu_state == cpu_state_stmem ) ||(cpu_state == cpu_state_ldmem ) )) || (cpu_state ==  cpu_state_fetch) || (cpu_state ==  cpu_state_ld_rs1)", "picorv32", BNode.RdStall,2);
 	this.PutNode( " ", "0", "picorv32", BNode.RdStall,3);
 	
 	this.PutNode( " ", "", "picorv32", BNode.WrStall,0);

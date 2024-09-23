@@ -109,7 +109,7 @@ public class SCAIEVInstr {
 						}
 					// We must distinguish : a) SCAL must implement spawn as decoupled b) SCAL must implement spawn with stall
 					if(!decoupled) {
-						oldSched.UpdateStartCycle(core.GetStartSpawnStage()); // in stall strategy, operands read & result returned in start spawn stage
+						oldSched.UpdateStartCycle(core.GetNodes().get(parentNode).GetEarliest()); // in stall strategy, operands read & result returned in start spawn stage = earliest of node
 					} else {
 						node_scheduled.remove(parentNode); // Remove parent node which was not spawn
 						PutSchedNode(node, oldSched); // Add spawn, leave user options for portability	
