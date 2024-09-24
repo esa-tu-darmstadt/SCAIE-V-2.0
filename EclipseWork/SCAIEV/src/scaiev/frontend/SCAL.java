@@ -782,10 +782,14 @@ public class SCAL implements SCALBackendAPI {
 		    		 dataW = BNode.GetAdjSCAIEVNode(node, AdjacentNode.validReq).size;
 		    		 declarations +=  "wire "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+this.ShiftmoduleSuffix+";\n";
 		    		 if(SETTINGWithValid && !this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled()){ // Make shift reg available also without scoreboard; for dynamic decoupled, latency unknown, so valid comes from user	    				
+		    			 String rdInstr = myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(),  core.GetStartSpawnStage(), ""); 
+		    			 if( core.GetStartSpawnStage()>= core.GetNodes().get(BNode.RdInstr).GetExpensive())
+		    				 rdInstr = myLanguage.CreateRegNodeName(BNode.RdInstr,  core.GetStartSpawnStage(), ""); 
+		    			 
 		    			 logic +=  this.ShiftmoduleName + " #( "+(ISAXes.get(ISAX).GetFirstNode(node).GetStartCycle()- core.GetStartSpawnStage())+", "+dataW +" ) "+this.ShiftmoduleName+"_"+node+"_"+ISAX+"_"+spawnStage+"_inst (\n"
 			   			 		+ myLanguage.tab+myLanguage.clk+",\n"
 			   			 		+ myLanguage.tab+myLanguage.reset+",\n"
-			   			 		+ myLanguage.tab+myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(),  core.GetStartSpawnStage(), "")+",\n" 
+			   			 		+ rdInstr+",\n" 
 			   			 		+ myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+",\n"	       			 
 			   			 	    + myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName())+",\n"	       			 
 		   			 		    + myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid,  core.GetStartSpawnStage(), ISAX)+",\n" // insert data into shift reg
@@ -1346,14 +1350,30 @@ public class SCAL implements SCALBackendAPI {
 				for(String instr : this.spawn_instr_stage.get(operation).keySet())
 					if(ISAXes.get(instr).GetRunsAsDecoupled())
 						allMulticycle = false;
-				for(int stage = this.core.GetNodes().get(BNode.WrStall).GetEarliest(); stage<=core.GetNodes().get(operation).GetEarliest(); stage++) // default = from tage 0 to earliest(needed also by multicycle)
+				SCAIEVNode parentOperation = operation;
+				if(operation.isSpawn())
+					parentOperation = BNode.GetSCAIEVNode(operation.nameParentNode);
+				for(int stage = this.core.GetNodes().get(BNode.WrStall).GetEarliest(); stage<=core.GetNodes().get(parentOperation).GetEarliest(); stage++) // default = from tage 0 to earliest(needed also by multicycle)
 					AddToCoreInterfHashMap (BNode.WrStall,stage);
 				if(!allMulticycle) { // Decoupled must stall entire core
-					for(int stage = core.GetNodes().get(operation).GetEarliest(); stage<=maxStall; stage++) // TODO workaround
+					for(int stage = core.GetNodes().get(parentOperation).GetEarliest(); stage<=maxStall; stage++) // TODO workaround
 							AddToCoreInterfHashMap (BNode.WrStall,stage);
 				} 
 				if(operation.allowMultipleSpawn) { // mem and wrrd need this for fence, kill spawn instr. WrRd needs it for scoreboard too for DH
 					AddToCoreInterfHashMap (BNode.RdInstr,this.core.GetStartSpawnStage());
+					for(int prev_stage = this.core.GetNodes().get(BNode.RdInstr).GetExpensive(); prev_stage<=this.core.GetStartSpawnStage();prev_stage++ ) { // for cores that do not have rdinstr in this stage
+						if(addRdNodeReg.containsKey(BNode.RdInstr))
+							addRdNodeReg.get(BNode.RdInstr).add(prev_stage); 
+						else {
+							HashSet<Integer> stages = new HashSet<Integer>(); 
+							stages.add(prev_stage);
+							addRdNodeReg.put(BNode.RdInstr, stages);
+						}
+						if((prev_stage-1)>=0) { // bullet proof, avoid errors
+							AddToCoreInterfHashMap(FNode.RdStall,prev_stage-1);
+							AddToCoreInterfHashMap(FNode.RdFlush,prev_stage-1);
+						}
+					}
 					for(int stage = this.core.GetStartSpawnStage()+1; stage <= this.core.maxStage; stage ++ ) {
 						AddToCoreInterfHashMap (BNode.RdStall,stage);
 						AddToCoreInterfHashMap (BNode.RdFlush,stage);

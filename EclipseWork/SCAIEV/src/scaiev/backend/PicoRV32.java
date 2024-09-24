@@ -127,7 +127,7 @@ public class PicoRV32 extends CoreBackend {
 		if(this.ContainsOpInStage(BNode.RdInstr, 0)) {
 			text = "always @(posedge "+language.clk+") begin \n"
 					+ "		if (mem_do_rinst && mem_done) \n"
-					+ "			rdInstr_0_r <= isax_mem_rdata_latched;\n" // was mem_rdata_latched. I had to update it for stall mem, bc when mem_do_rinst && mem_done and stall2 set, _latched had old data
+					+ "			rdInstr_0_r <= mem_rdata_latched;\n" //I updated it to isax_mem_rdata_latched for stall mem, bc when mem_do_rinst && mem_done and stall2 set, _latched had old data. Updated it back now
 					+ "	end\n "
 					+ "wire [32 -1:0] "+language.CreateLocalNodeName(BNode.RdInstr, 0, "")+";\n"
 					+ "assign "+language.CreateLocalNodeName(BNode.RdInstr,0, "")+" = rdInstr_0_r;";
@@ -249,11 +249,18 @@ public class PicoRV32 extends CoreBackend {
 			String logic  = "";
 			String stall = "";
 			
-			if(this.ContainsOpInStage(BNode.WrStall, 1))
+			if(this.ContainsOpInStage(BNode.WrStall, 1)) // it should contain it anyways due to spawn
 				stall += " || "+language.CreateNodeName(BNode.WrStall, 1, "");
-			logic += language.CreateAssign( language.CreateNodeName(BNode.ISAX_spawnAllowed, 1, ""),"(cpu_state == cpu_state_ld_rs1) && (mem_state==0)" +stall);
+			logic += language.CreateAssign( language.CreateNodeName(BNode.ISAX_spawnAllowed, 1, ""),"decoder_trigger) && (cpu_state == cpu_state_fetch) && (mem_state==0) && (!instr_jal)" +stall);
 			addLogic(logic);
 		}
+		
+		if(op_stage_instr.containsKey(BNode.RdMem_spawn))
+			addLogic(language.CreateAssign(language.CreateFamNodeName(BNode.RdMem_spawn_rdAddr, spawnStage, "", true),"cpuregs_rs1 + RdInstr_0_o[31:20]")); 
+		if(op_stage_instr.containsKey(BNode.WrMem_spawn))
+			addLogic(language.CreateAssign(language.CreateFamNodeName(BNode.WrMem_spawn_rdAddr, spawnStage, "", true),"cpuregs_rs1 + {RdInstr_0_o[31:25], RdInstr_0_o[11:7]}")); 
+		if(op_stage_instr.containsKey(BNode.RdMem_spawn) && op_stage_instr.containsKey(BNode.WrMem_spawn) )
+			System.out.println("CRITICAL. PicoRV32: if user needs decoupled (not dynamic) both for rd and wr mem, for picorv32 the part with Mem Addr is not yet implemented. Mem_spawn_rdAddr would need a basic if-else in RTL depending rd/wr type");
 		
 		if(op_stage_instr.containsKey(BNode.WrRD_spawn)) {
 			toFile.ReplaceContent(this.ModFile("picorv32"),"if (resetn && cpuregs_write && latched_rd", new ToWrite("if (resetn && cpuregs_write && latched_rd || "+language.CreateNodeName(BNode.WrRD_spawn_valid, spawnStage, "")+")", false, true, ""));
@@ -284,7 +291,7 @@ public class PicoRV32 extends CoreBackend {
 					+ "		if ("+language.CreateNodeName(BNode.WrMem_spawn_validReq, spawnStage, "")+") begin\n"
 					+ "			mem_valid <= 1;\n"
 					+ "			mem_addr <= "+language.CreateNodeName(BNode.WrMem_spawn_addr, spawnStage, "")+";\n"
-					+ "			mem_wstrb <= mem_la_wstrb & {4{"+language.CreateNodeName(BNode.WrMem_spawn_write, spawnStage, "")+"}};\n"
+					+ "			mem_wstrb <= {4{"+language.CreateNodeName(BNode.WrMem_spawn_write, spawnStage, "")+"}};\n"
 					+ "			mem_wdata <= "+language.CreateNodeName(BNode.WrMem_spawn, spawnStage, "")+";\n"
 					+ "		    mem_state_spawn <= 1;\n"
 					+ "         mem_instr <= 0;"
@@ -292,10 +299,11 @@ public class PicoRV32 extends CoreBackend {
 					+ "		end\n"
 					+ "	end\n"
 					+ "	1: begin\n"
+					+ "     mem_addr <= Mem_spawn_addr_4_i;\n"
+					+ "		mem_wstrb <= {4{Mem_spawn_write_4_i}};\n"
 					+ "		if (mem_valid && mem_ready) begin\n"
 					+ "				mem_valid <= 0;\n"
 					+ "				mem_la_secondword <= 0;\n"
-					+ "				\n"
 					+ "				mem_state_spawn <= 0;\n"
 					+ "		end\n"
 					+ "	end\n"
@@ -549,8 +557,8 @@ public class PicoRV32 extends CoreBackend {
 	this.PutNode( " ", "", "picorv32", BNode.WrMem_spawn_validReq,spawnStage);
 	this.PutNode( " ", "","picorv32", BNode.RdMem_spawn_addr,spawnStage);
 	this.PutNode( " ", "","picorv32", BNode.WrMem_spawn_addr,spawnStage);
-	this.PutNode( " ", "reg_op1 + decoded_imm","picorv32", BNode.RdMem_spawn_rdAddr,spawnStage); //TODO to be tested
-	this.PutNode( " ", "reg_op1 + decoded_imm","picorv32", BNode.WrMem_spawn_rdAddr,spawnStage);
+	this.PutNode( " ", "","picorv32", BNode.RdMem_spawn_rdAddr,spawnStage); 
+	this.PutNode( " ", "","picorv32", BNode.WrMem_spawn_rdAddr,spawnStage);
 	this.PutNode( " ", "","picorv32", BNode.RdMem_spawn_write,spawnStage);
 	this.PutNode( " ", "","picorv32", BNode.WrMem_spawn_write,spawnStage);
 	
