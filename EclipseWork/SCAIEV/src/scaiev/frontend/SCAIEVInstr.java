@@ -96,7 +96,7 @@ public class SCAIEVInstr {
 			boolean isRequired = HasSchedWith(node, snode -> snode.GetStartCycle()>=0);
 			boolean isSpawn = HasSchedWith(parentNode, snode -> snode.GetStartCycle()>=spawnStage);
 			Scheduled oldSched =this.GetFirstNode(parentNode);
-			if(this.HasNoOp()  && !node.isAdj() && isRequired) { // if no op = always, no matter which stage
+			if(this.HasNoOp()  && !node.isAdj() && isRequired && !node.equals(userBNode.RdStall)  && !node.equals(userBNode.RdFlush)) { // if no op = always, no matter which stage. Flush and stall not impacted, used for synchro
 					oldSched.UpdateStartCycle(parentNode.commitStage); // for write nodes, take the WB stage of that node // for read nodes, take the "read regfile" stage
 			} else if(node.isSpawn() && !node.isAdj() && isSpawn) { // If we look at a main spawn node & the user wants this spawn operation (>=spawnStage)
 				// This is no spawn in traditional (scaiev trad) sense, it's an instruction that writes right away based on its valid bit. Not really started by an opcode. Always block
