@@ -160,6 +160,9 @@ public class SCAIEV {
 		
 		for(String instructionName : instrSet.keySet()) {
 			SCAIEVInstr instruction = instrSet.get(instructionName);
+			// Prereq: make sure nodes in instr map have correct metadata (spawn, commit, stage) 
+			instruction.UpdateNodesMetadata(this.BNodes);
+
 			
 			// STEP 1: store actual spawn stages , to be used later in SCAL for fire logic & Scoreboard
 			// HEADSUP. Make sure code bellow does NOT add always blocks, otherwise SCAL will generate fire logic
@@ -286,10 +289,7 @@ public class SCAIEV {
 						}	
 					}				
 				}
-				node.commitStage = latest;
-				for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(node)) {
-					nodeAdj.commitStage = latest;
-					}        		 
+				UpdateSpawnCommitStage(node,latest+1,latest);           		 
 			}
 		}		
 		 
@@ -311,10 +311,7 @@ public class SCAIEV {
 					SCAIEVNode WrNode = BNodes.GetSCAIEVNode(BNodes.GetNameWrNode(node));
 					earliest = WrNode.commitStage;
 				}
-				node.commitStage = earliest;
-				for(SCAIEVNode nodeAdj : BNodes.GetAdjSCAIEVNodes(node)) {
-					nodeAdj.commitStage = earliest;
-				}
+				UpdateSpawnCommitStage(node,core.maxStage+1,earliest);     
 			} 			
 		}
 		

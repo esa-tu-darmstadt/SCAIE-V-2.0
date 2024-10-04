@@ -948,17 +948,17 @@ public class SCAL implements SCALBackendAPI {
 	    // Create RdStall Logic 
 	    // New Stall concept: RdStall from core does not include WrStall from ISAX 
 	    for(int stage=0; stage <= this.core.maxStage;stage++) {
-    	    declarations += "wire "+ myLanguage.CreateLocalNodeName(BNode.RdStall, stage, "")+";\n"; // declare local sig as default. Can be used by internal regs. If not used, will be optimized away
-    	 	String rdstall_val = myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage, "");
-    	 	String IStall = "";
-    	 	if(!this.spawn_instr_stage.isEmpty() && donStallISAX.containsKey(stage))
-    	 		rdstall_val += " || (" + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, "") +donStallISAX.get(stage) +" ) ";
-	 		else if(!stallStages[stage].isEmpty() || this.ContainsOpInStage(BNode.WrStall, stage))
-	 			rdstall_val += " || (" + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, "") +  " ) " ;
-	 		if (this.ContainsOpInStage(BNode.RdStall,  stage)) // If user needs the stall signal, assign it to default RdStall_s
-	 			logic += "assign "+myLanguage.CreateNodeName(BNode.RdStall, stage, "")+" = "+myLanguage.CreateLocalNodeName(BNode.RdStall, stage, "")+";\n";
-	 		logic += "assign "+myLanguage.CreateLocalNodeName(BNode.RdStall, stage, "")+" = "+rdstall_val+";\n";
-	    		
+	    	if (this.ContainsOpInStage(BNode.RdStall,  stage) || addToCoreInterf.containsKey(BNode.RdStall) && addToCoreInterf.get(BNode.RdStall).contains(stage)) {		 		
+	    	    declarations += "wire "+ myLanguage.CreateLocalNodeName(BNode.RdStall, stage, "")+";\n"; // declare local sig as default. Can be used by internal regs. If not used, will be optimized away
+	    	 	String rdstall_val = myLanguage.CreateNodeName(BNode.RdStall.NodeNegInput(), stage, "");
+	    	 	if(!this.spawn_instr_stage.isEmpty() && donStallISAX.containsKey(stage))
+	    	 		rdstall_val += " || (" + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, "") +donStallISAX.get(stage) +" ) ";
+		 		else if(!stallStages[stage].isEmpty() || this.ContainsOpInStage(BNode.WrStall, stage))
+		 			rdstall_val += " || (" + myLanguage.CreateNodeName(BNode.WrStall.NodeNegInput(), stage, "") +  " ) " ;
+		 		if (this.ContainsOpInStage(BNode.RdStall,  stage)) // If user needs the stall signal, assign it to default RdStall_s
+		 			logic += "assign "+myLanguage.CreateNodeName(BNode.RdStall, stage, "")+" = "+myLanguage.CreateLocalNodeName(BNode.RdStall, stage, "")+";\n";
+		 		logic += "assign "+myLanguage.CreateLocalNodeName(BNode.RdStall, stage, "")+" = "+rdstall_val+";\n";
+	    	}	
 	    	}
 	    
 	    

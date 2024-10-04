@@ -120,6 +120,12 @@ public class SCAIEVInstr {
 		}
 		
 		// Make sure sched contains the same BNode feature as updated by SCAIEV Class 
+        UpdateNodesMetadata(userBNode);
+    }
+		       
+	public void UpdateNodesMetadata (BNode userBNode) {
+		
+		// Make sure sched contains the same BNode feature as updated by SCAIEV Class 
 		for(SCAIEVNode node: userBNode.GetAllFrontendNodes()) {
 			if(this.node_scheduled.containsKey(node)) {
 				List<Scheduled> oldSched = node_scheduled.get(node); 
