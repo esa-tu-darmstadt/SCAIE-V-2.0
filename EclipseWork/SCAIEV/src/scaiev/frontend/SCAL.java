@@ -932,6 +932,33 @@ public class SCAL implements SCALBackendAPI {
 			    declarations += "wire "+ privateregs.GetNodeInstName(BNode.RdStall, stage)+";\n";
 	    	}
     	
+    	// Stall of WrPC 
+    	// Add RdInstr & WrStall for WrPC in case this happens later than instr that commit results (rd/wrmem) 
+	    if(this.op_stage_instr.containsKey(FNode.WrPC)) {
+			for(int stage : this.op_stage_instr.get(FNode.WrPC).keySet()) 				
+				if(stage >  core.GetNodes().get(BNode.RdMem).GetEarliest()) { // Proof of conecpt. TODO in future maybe define nodes which commit and update state and here go through all nodes.
+					int earliestMem =  core.GetNodes().get(BNode.RdMem).GetEarliest();
+					for(int past = 0; past <=earliestMem; past++) {
+						if(!stallStages[past].isEmpty())
+				    		stallStages[past] += " || ";
+						stallStages[past] += "StallWrPC_"+stage;
+					}
+				    declarations += "wire StallWrPC_"+stage+";\n";
+				    String isWrPC = "";
+				    for (int future = earliestMem+1; future <=stage; future++) {
+				    	String rdInstr =  myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), future, ""); 
+				    	if(future >=  core.GetNodes().get(BNode.RdInstr).GetExpensive())
+				    		rdInstr =  myLanguage.CreateRegNodeName(BNode.RdInstr, future, ""); 
+				    	isWrPC = myLanguage.OpIfNEmpty(isWrPC, " || ")+ myLanguage.CreateAllEncoding( this.op_stage_instr.get(FNode.WrPC).get(stage), ISAXes, rdInstr);
+				    }
+				    String rdInstr =  myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), earliestMem, ""); 
+			    	if(earliestMem >=  core.GetNodes().get(BNode.RdInstr).GetExpensive())
+			    		rdInstr =  myLanguage.CreateRegNodeName(BNode.RdInstr, earliestMem, ""); 
+				    logic += "assign StallWrPC_"+stage+" = ("+isWrPC+") && ("+rdInstr+"[6:0] == 7'b0000011 || " + rdInstr+"[6:0] == 7'b0100011);\n";
+				}
+			}
+		
+    	
 	    // Finish array for WrStall, RdStall signals 
 	    for(int stage=0; stage <= this.core.maxStage;stage++) {
 	    	if (!stallStages[stage].isEmpty() || this.ContainsOpInStage(BNode.WrStall,  stage) || (addToCoreInterf.containsKey(BNode.WrStall) && addToCoreInterf.get(BNode.WrStall).contains(stage))) {
@@ -959,7 +986,7 @@ public class SCAL implements SCALBackendAPI {
 		 			logic += "assign "+myLanguage.CreateNodeName(BNode.RdStall, stage, "")+" = "+myLanguage.CreateLocalNodeName(BNode.RdStall, stage, "")+";\n";
 		 		logic += "assign "+myLanguage.CreateLocalNodeName(BNode.RdStall, stage, "")+" = "+rdstall_val+";\n";
 	    	}	
-	    	}
+	    }
 	    
 	    
 		////////////////////// ADDITIONAL INTERF TO CORE //////////////////////
@@ -1318,11 +1345,22 @@ public class SCAL implements SCALBackendAPI {
 
 		
 		// Add WrFlush for WrPC 
-		if(this.op_stage_instr.containsKey(FNode.WrPC)) {
+	    // Add RdInstr & WrStall for WrPC in case this happens later than instr that commit results (rd/wrmem) 
+	    if(this.op_stage_instr.containsKey(FNode.WrPC)) {
 			for(int stage : this.op_stage_instr.get(FNode.WrPC).keySet())
-				for(int i=0;i<stage;i++)
+				for(int i=0;i<stage;i++) {
 					AddToCoreInterfHashMap(FNode.WrFlush,i);
+					if(stage > core.GetNodes().get(BNode.RdMem).GetEarliest()) { // Proof of conecpt. TODO in future maybe define nodes which commit and update state and here go through all nodes.
+						if(i <= core.GetNodes().get(BNode.RdMem).GetEarliest() ) AddToCoreInterfHashMap(FNode.WrStall,i);
+						if(i >= core.GetNodes().get(BNode.RdMem).GetEarliest())  AddToCoreInterfHashMap(FNode.RdInstr,i);
+						if(i >= core.GetNodes().get(BNode.RdMem).GetEarliest() && (i>=this.core.GetNodes().get(FNode.RdInstr).GetExpensive()))
+							System.out.println("CRITICAL WARNING. Currently not supported that wrpc is in this stage for this core. To be added in future releases. Simple workaround: add in TestMe.yaml RdInstr in stage of WrPC & should work");
+					}
+				}
 		}
+		
+	
+		
 		// Add WrFlush to prior stages for WrFlush
 		if(this.op_stage_instr.containsKey(FNode.WrFlush)) {
 			for(int stage : this.op_stage_instr.get(FNode.WrFlush).keySet())
