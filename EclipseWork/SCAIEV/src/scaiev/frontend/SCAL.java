@@ -936,7 +936,7 @@ public class SCAL implements SCALBackendAPI {
     	// Add RdInstr & WrStall for WrPC in case this happens later than instr that commit results (rd/wrmem) 
 	    if(this.op_stage_instr.containsKey(FNode.WrPC)) {
 			for(int stage : this.op_stage_instr.get(FNode.WrPC).keySet()) 				
-				if(stage >  core.GetNodes().get(BNode.RdMem).GetEarliest()) { // Proof of conecpt. TODO in future maybe define nodes which commit and update state and here go through all nodes.
+				if((stage-1) >  core.GetNodes().get(BNode.RdMem).GetEarliest()) { // Proof of conecpt. TODO in future maybe define nodes which commit and update state and here go through all nodes.
 					int earliestMem =  core.GetNodes().get(BNode.RdMem).GetEarliest();
 					for(int past = 0; past <=earliestMem; past++) {
 						if(!stallStages[past].isEmpty())
@@ -945,7 +945,7 @@ public class SCAL implements SCALBackendAPI {
 					}
 				    declarations += "wire StallWrPC_"+stage+";\n";
 				    String isWrPC = "";
-				    for (int future = earliestMem+1; future <=stage; future++) {
+				    for (int future = earliestMem+1; future <stage; future++) {
 				    	String rdInstr =  myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), future, ""); 
 				    	if(future >=  core.GetNodes().get(BNode.RdInstr).GetExpensive())
 				    		rdInstr =  myLanguage.CreateRegNodeName(BNode.RdInstr, future, ""); 
