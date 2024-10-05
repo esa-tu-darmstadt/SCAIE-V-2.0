@@ -1350,7 +1350,7 @@ public class SCAL implements SCALBackendAPI {
 			for(int stage : this.op_stage_instr.get(FNode.WrPC).keySet())
 				for(int i=0;i<stage;i++) {
 					AddToCoreInterfHashMap(FNode.WrFlush,i);
-					if(stage > core.GetNodes().get(BNode.RdMem).GetEarliest()) { // Proof of conecpt. TODO in future maybe define nodes which commit and update state and here go through all nodes.
+					if((stage-1) > core.GetNodes().get(BNode.RdMem).GetEarliest()) { // Proof of conecpt. TODO in future maybe define nodes which commit and update state and here go through all nodes.
 						if(i <= core.GetNodes().get(BNode.RdMem).GetEarliest() ) AddToCoreInterfHashMap(FNode.WrStall,i);
 						if(i >= core.GetNodes().get(BNode.RdMem).GetEarliest())  AddToCoreInterfHashMap(FNode.RdInstr,i);
 						if(i >= core.GetNodes().get(BNode.RdMem).GetEarliest() && (i>=this.core.GetNodes().get(FNode.RdInstr).GetExpensive()))
