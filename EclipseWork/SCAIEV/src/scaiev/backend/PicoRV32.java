@@ -432,7 +432,7 @@ public class PicoRV32 extends CoreBackend {
 			String grepText = "if (CATCH_MISALIGN && resetn && (mem_do_rdata || mem_do_wdata)) begin";
 			toFile.UpdateContent(this.ModFile("picorv32"),grepText,  new ToWrite (textToAdd, false,true,"",true));
 			
-			textToAdd = "end else begin if(!WrPC_validReq_2_i)begin";
+			textToAdd = "end else if(!WrPC_validReq_2_i)begin";
 			grepText = "end else begin";
 			toFile.ReplaceContent(this.ModFile("picorv32"),grepText,  new ToWrite (textToAdd, true,false,"if (TWO_CYCLE_COMPARE ? alu_out_0_q : alu_out_0) begin",false));
 		}
