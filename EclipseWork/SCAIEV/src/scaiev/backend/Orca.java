@@ -247,7 +247,10 @@ public class Orca extends CoreBackend {
 				toFile.ReplaceContent(this.ModFile("arithmetic_unit"),replaceText, new ToWrite(addText,false,true,""));
 			}
 			
-			wrrdDataBody +=  this.language.OpIfNEmpty(wrrdDataBody, "e\n") + tab+ISAX_execute_to_rf_data_s+" <= execute_to_rf_data;\n"+this.language.OpIfNEmpty(wrrdDataBody,"end if;\n");				
+			if(wrrdDataBody.isEmpty())
+				wrrdDataBody = ISAX_execute_to_rf_data_s+" <= execute_to_rf_data;\n"; 	
+			else
+				wrrdDataBody = wrrdDataBody+"e\n" + tab+ISAX_execute_to_rf_data_s+" <= execute_to_rf_data;\nend if;\n"; 
 			toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateInProc(false, wrrdDataBody),false,true,""));
 			
 			
@@ -264,7 +267,10 @@ public class Orca extends CoreBackend {
 						+ "    els";
 			} else // default signal to avoid error in wrapper
 				language.UpdateInterface("orca",BNode.WrRD_valid, "",4,true,false);
-			wrrdValid =  this.language.OpIfNEmpty(wrrdValid, "e\n") + tab+ISAX_execute_to_rf_valid_s+" <= execute_to_rf_valid;\n " +this.language.OpIfNEmpty(wrrdValid,"end if;\n");		
+			if(wrrdValid.isEmpty())
+				wrrdValid = ISAX_execute_to_rf_valid_s+" <= execute_to_rf_valid;\n"; 	
+			else
+				wrrdValid = wrrdValid+"e\n" + tab+ISAX_execute_to_rf_valid_s+" <= execute_to_rf_valid;\nend if;\n";
 			toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateInProc(false, wrrdValid),false,true,""));
 			
 			
