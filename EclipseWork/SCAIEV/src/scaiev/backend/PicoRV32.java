@@ -426,11 +426,15 @@ public class PicoRV32 extends CoreBackend {
 					+ tab + tab +"latched_rd <= 0;\n"
 					+ tab + tab +"latched_branch <= 1;\n"
 					+ tab + tab +"latched_stalu <= 0;\n"
-					+ tab + tab +"cpu_state <= cpu_state_fetch; \n"
+					+ tab + tab +"if(mem_done) cpu_state <= cpu_state_fetch; \n"
 					+ tab +"end\n  "
 					+ "end\n";
 			String grepText = "if (CATCH_MISALIGN && resetn && (mem_do_rdata || mem_do_wdata)) begin";
 			toFile.UpdateContent(this.ModFile("picorv32"),grepText,  new ToWrite (textToAdd, false,true,"",true));
+			
+			textToAdd = "end else begin if(!WrPC_validReq_2_i)begin";
+			grepText = "end else begin";
+			toFile.ReplaceContent(this.ModFile("picorv32"),grepText,  new ToWrite (textToAdd, true,false,"if (TWO_CYCLE_COMPARE ? alu_out_0_q : alu_out_0) begin",false));
 		}
 		
 		if(this.ContainsOpInStage(BNode.WrPC, 3)) {		
