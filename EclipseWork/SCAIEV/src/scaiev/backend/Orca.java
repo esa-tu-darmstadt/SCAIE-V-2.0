@@ -236,7 +236,6 @@ public class Orca extends CoreBackend {
 				wrrdDataBody +=  "if( "+language.CreateNodeName(BNode.WrRD_validData, 4, "")+" = '1' and "+language.CreateRegNodeName(BNode.WrRD_validData, 4, "")+" = '0') then\n"
 						+ tab+ISAX_execute_to_rf_data_s+" <= "+language.CreateNodeName(BNode.WrRD, 4, "")+"; \n"
 						+ "    els";
-				toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateInProc(false, wrrdDataBody),false,true,""));
 			}
 			if(this.ContainsOpInStage(BNode.WrRD, 3)) {
 				String replaceText  = "if lui_select = '1' then"; 
