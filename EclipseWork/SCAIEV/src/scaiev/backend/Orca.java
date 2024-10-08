@@ -264,6 +264,8 @@ public class Orca extends CoreBackend {
 				wrrdValid +=  "if( "+language.CreateNodeName(BNode.WrRD_valid, 4, "")+" = '1' and (execute_to_rf_select /=\"00000\") ) then\n"
 						+ tab+ISAX_execute_to_rf_valid_s+" <=  '1';\n"
 						+ "    els";
+				if(!this.ContainsOpInStage(BNode.WrRD, 3)) // if validReq in 3 not there bc user requested it, add it on interf for datahazard mechanism
+					language.UpdateInterface("execute",BNode.WrRD_valid, "",3,true,false);
 			} else // default signal to avoid error in wrapper
 				language.UpdateInterface("orca",BNode.WrRD_valid, "",4,true,false);
 			if(wrrdValid.isEmpty())
@@ -292,9 +294,10 @@ public class Orca extends CoreBackend {
 			decl_lineToBeInserted += this.language.CreateDeclReg(BNode.WrRD_validData, 4, ""); 
 			if(this.ContainsOpInStage(BNode.WrRD, 3) && this.ContainsOpInStage(BNode.WrRD, 4)) 
 					toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateTextRegResetStall(language.CreateRegNodeName(BNode.WrRD_validData, 4, ""), language.CreateNodeName(BNode.WrRD_validData, 3, ""), "from_execute_ready"),false,true,"")); // add logic			
-			else if(this.ContainsOpInStage(BNode.WrRD, 4))
+			else if(this.ContainsOpInStage(BNode.WrRD, 4)) {
+				toFile.UpdateContent(this.ModFile("orca_core"),Parse.declare, new ToWrite("signal "+language.CreateRegNodeName(BNode.WrRD_validData, 4, "")+" : std_logic;\n",false,true,"")); // declare sig
 				toFile.UpdateContent(this.ModFile("orca_core"),Parse.behav, new ToWrite(language.CreateRegNodeName(BNode.WrRD_validData, 4, "") + " <= '0';\n",false,true,"")); // add default logic			
-			
+			}
 
 			// Datahaz. ISAX to standard 
 			if(this.ContainsOpInStage(BNode.WrRD, 4)) {
