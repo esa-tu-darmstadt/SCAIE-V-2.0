@@ -198,6 +198,7 @@ public class Orca extends CoreBackend {
 		}
 		
 		if(this.ContainsOpInStage(BNode.WrStall, 3)) {
+			toFile.ReplaceContent(this.ModFile("execute"), "to_lsu_valid     <= lsu_select and to_execute_valid",new ToWrite("to_lsu_valid     <= lsu_select and to_execute_valid and from_writeback_ready and not WrStall_3_i;\n",false,true,"", true));
 			toFile.ReplaceContent(this.ModFile(NodeAssignM(BNode.WrStall, 3)), "((not vcp_select) or vcp_ready)))",new ToWrite("((not vcp_select) or vcp_ready))));\n",false,true,"", true));
 			toFile.ReplaceContent(this.ModFile(NodeAssignM(BNode.WrStall, 3)), "from_execute_ready <=",new ToWrite(" from_execute_ready <= (not WrStall_3_i) and ((not to_execute_valid) or (from_writeback_ready and",false,true,"", true));
 			
@@ -244,7 +245,7 @@ public class Orca extends CoreBackend {
 						          + tab + "from_alu_valid <= '1';\n"
 						          + "elsif lui_select = '1' then\n";
 				toFile.ReplaceContent(this.ModFile("arithmetic_unit"),replaceText, new ToWrite(addText,false,true,""));
-			}
+			} 
 			
 			if(wrrdDataBody.isEmpty())
 				wrrdDataBody = ISAX_execute_to_rf_data_s+" <= execute_to_rf_data;\n"; 	
@@ -264,8 +265,10 @@ public class Orca extends CoreBackend {
 				wrrdValid +=  "if( "+language.CreateNodeName(BNode.WrRD_valid, 4, "")+" = '1' and (execute_to_rf_select /=\"00000\") ) then\n"
 						+ tab+ISAX_execute_to_rf_valid_s+" <=  '1';\n"
 						+ "    els";
-				if(!this.ContainsOpInStage(BNode.WrRD, 3)) // if validReq in 3 not there bc user requested it, add it on interf for datahazard mechanism
-					language.UpdateInterface("execute",BNode.WrRD_valid, "",3,true,false);
+				if(!this.ContainsOpInStage(BNode.WrRD, 3)) { // if validReq in 3 not there bc user requested it, add it on interf for datahazard mechanism
+					language.UpdateInterface("excute",BNode.WrRD_valid, "",3,true,false);
+					language.UpdateInterface("orca",BNode.WrRD_validData, "",3,true,false); // just for wrapper, not used in this case
+				}
 			} else // default signal to avoid error in wrapper
 				language.UpdateInterface("orca",BNode.WrRD_valid, "",4,true,false);
 			if(wrrdValid.isEmpty())
@@ -357,16 +360,20 @@ public class Orca extends CoreBackend {
 	        //			lsu_select <= '1';
 	        //		end if;
 			String textToAdd = "";
+			String reads = "";
 			if(readRequired) {
 				textToAdd =  "if("+language.CreateNodeName(BNode.RdMem_validReq, stage, "")+" = '1') then -- ISAX load \n" // CreateValidEncoding generates text to decode instructions in op_stage_instr.get(BNode.RdMem).get(stage)
 								+ tab+"lsu_select <= '1';\n"
 								+"end if;\n";
-				toFile.UpdateContent(this.ModFile("load_store_unit"),Parse.declare,new ToWrite("signal read_s :std_logic; -- ISAX, signaling a read", false, true,""));
 				toFile.UpdateContent(this.ModFile("load_store_unit"),Parse.behav,new ToWrite(language.CreateText1or0("read_s", language.CreateNodeName(BNode.RdMem_validReq,stage,"")+" = '1' or ((opcode(5) = LOAD_OP(5)) and ("+language.CreateNodeName(is_ISAX, 3, "")+" = '0'))"), false,true,""));
-				toFile.ReplaceContent(this.ModFile("load_store_unit"),"process (opcode, func3) is", new ToWrite("process (opcode, func3, read_s) is", false,true,""));
-				toFile.ReplaceContent(this.ModFile("load_store_unit"),"if opcode(5) = LOAD_OP(5) then", new ToWrite("if read_s = '1' then", false,true,""));
-				toFile.ReplaceContent(this.ModFile("load_store_unit"),"oimm_readnotwrite <= '1' when opcode(5) = LOAD_OP(5)",new ToWrite("oimm_readnotwrite <= '1' when (read_s  = '1') else '0';",false,true,""));
+				reads = language.CreateNodeName(BNode.RdMem_validReq,stage,"")+" = '1' or";
 			}
+			toFile.UpdateContent(this.ModFile("load_store_unit"),Parse.declare,new ToWrite("signal read_s :std_logic; -- ISAX, signaling a read", false, true,""));
+			toFile.UpdateContent(this.ModFile("load_store_unit"),Parse.behav,new ToWrite(language.CreateText1or0("read_s", reads+" ((opcode(5) = LOAD_OP(5)) and ("+language.CreateNodeName(is_ISAX, 3, "")+" = '0'))"), false,true,""));
+			toFile.ReplaceContent(this.ModFile("load_store_unit"),"process (opcode, func3) is", new ToWrite("process (opcode, func3, read_s) is", false,true,""));
+			toFile.ReplaceContent(this.ModFile("load_store_unit"),"if opcode(5) = LOAD_OP(5) then", new ToWrite("if read_s = '1' then", false,true,""));
+			toFile.ReplaceContent(this.ModFile("load_store_unit"),"oimm_readnotwrite <= '1' when opcode(5) = LOAD_OP(5)",new ToWrite("oimm_readnotwrite <= '1' when (read_s  = '1') else '0';",false,true,""));
+			toFile.ReplaceContent(this.ModFile("load_store_unit"),"imm <= instruction(31 downto 25)",  new ToWrite("imm <= instruction(31 downto 25) & instruction(11 downto 7) when read_s = '0'",false,true,""));
 			if(writeRequired) { 
 				textToAdd += "if("+language.CreateNodeName(BNode.WrMem_validReq,stage,"")+" = '1') then -- ISAX store \n"
 								+ tab+"lsu_select <= '1';\n"

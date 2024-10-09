@@ -264,7 +264,7 @@ public class Verilog extends GenerateText {
 		String body = "always @(*) begin \n" 
 					+this.tab.repeat(1)+ "case(1'b1)\n";
 		SCAIEVNode checkAdj = BNode.GetAdjSCAIEVNode(operation, AdjacentNode.validReq);
-		boolean returnEmpty = true;
+		boolean onlyAlways = true;
 		for (int stageISAX :  stage_lookAtISAX.keySet()) {
 			
 			// Order ISAXes so that the ones without opcode have priority (they are like spawn)
@@ -272,11 +272,11 @@ public class Verilog extends GenerateText {
 			for(int priority : lookAtISAXOrdered.descendingKeySet())  {
 				String ISAX = lookAtISAXOrdered.get(priority);
 				// Check if no opcode ISAX (which does not have rdivalid).  
-				if(allISAXes.get(ISAX).HasNoOp() && (stage != operation.commitStage))
+				if(allISAXes.get(ISAX).HasNoOp() && (stage != operation.commitStage)) //always block must still write result in commit stage
 					continue; 
-				else 
-					returnEmpty = false;
-				
+				if(!allISAXes.get(ISAX).HasNoOp())
+					onlyAlways = false;
+							
 				// Create RdIValid = user valid for instr without encoding, else decode instr and create IValid
 				String RdIValid = this.CreateLocalNodeName(BNode.RdIValid, stage, ISAX); 
 				if(allISAXes.get(ISAX).HasNoOp()) {
@@ -288,29 +288,30 @@ public class Verilog extends GenerateText {
 					else 
 						RdIValid = this.CreateNodeName(userValid, stage, ISAX);
 				}
-				// For ISAXes with opcode, generate case-logic
+				// Generate case-logic
 				if(stage == stageISAX && allISAXes.get(ISAX).GetFirstNode(operation).HasAdjSig( AdjacentNode.validReq)) {			
 					body += this.tab.repeat(2) +RdIValid+ " : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = "+this.CreateNodeName(checkAdj, stage,ISAX)+";\n";
 				} else if(stageISAX>=stage)
 					body += this.tab.repeat(2) +RdIValid+" : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b1;\n";			
 			}
 		}
-		if(stage == earliestStage)
+		if(stage == earliestStage || onlyAlways)
 			body += this.tab.repeat(2)+"default : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "")+" = 1'b0;\n";
 		else 
 			body += this.tab.repeat(2)+"default : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "")+" = "+this.CreateRegNodeName(checkAdj.NodeNegInput(), stage, "")+" && ! "+this.CreateNodeName(BNode.RdFlush.NodeNegInput(), stage, "")+";\n";
 		
 		body += this.tab.repeat(1)+"endcase\nend\n";
 		// Generates the reg for next stage. If not needed, it will be optimized away 
-		body +=   "reg "+ this.CreateRegNodeName(checkAdj.NodeNegInput(), stage+1, "") +"; // Info: if not really needed, will be optimized away by synth tool \n"
+		if(!((stage+1)>=operation.spawnStage))
+			body +=   "reg "+ this.CreateRegNodeName(checkAdj.NodeNegInput(), stage+1, "") +"; // Info: if not really needed, will be optimized away by synth tool \n"
 				+ "always @(posedge "+this.clk+") begin \n"
 				+ tab+"if("+this.reset+")\n"
 				+ tab+tab+this.CreateRegNodeName(checkAdj.NodeNegInput(), stage+1, "")+" <= 1'b0;\n"
 				+ tab+"else if(!"+this.CreateNodeName(BNode.RdStall.NodeNegInput(), stage, "")+")\n"
 				+ tab+tab+this.CreateRegNodeName(checkAdj.NodeNegInput(), stage+1, "") +" <= "+ this.CreateNodeName(checkAdj.NodeNegInput(), stage, "")+";\n"
 				+ "end\n"; 
-		if(returnEmpty)
-			return "assign "+ this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b1; // CRITICAL WARNING, NO ISAX detected with opcode, RTL probably not functional\n";
+		if(onlyAlways && stage != operation.commitStage)
+			return "assign "+ this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b0; // CRITICAL WARNING, NO ISAX detected with opcode, RTL might be not functional\n";
 		else
 			return body  ;		
 	}
@@ -327,17 +328,19 @@ public class Verilog extends GenerateText {
 		String body = "always @(*) begin \n"
 				+this.tab.repeat(1)+ "case(1'b1)\n";
 		SCAIEVNode checkAdj = BNode.GetAdjSCAIEVNode(operation, AdjacentNode.validData);
-		boolean returnEmpty = true;
+		boolean onlyAlways = true;
 		
 		for (int stageISAX :  stage_lookAtISAX.keySet()) 
 			for (String ISAX  :  stage_lookAtISAX.get(stageISAX)) {
 				// Check if no opcode ISAX (which does not have rdivalid).  
-				if(allISAXes.get(ISAX).HasNoOp())
+				if(allISAXes.get(ISAX).HasNoOp() && (stage != operation.commitStage)) //always block must still write result in commit stage
 					continue; 
-				else 
-					returnEmpty = false;
+				if(!allISAXes.get(ISAX).HasNoOp())
+					onlyAlways = false;
 				// For ISAXes with opcode, generate case-logic
-				if(stageISAX>stage)
+				if(allISAXes.get(ISAX).HasNoOp()) // in case of always block, we don't use RdIVAlid, but the valid req interf signal
+					body += this.tab.repeat(2) +this.CreateNodeName(BNode.GetAdjSCAIEVNode(operation, AdjacentNode.validReq),  stage, ISAX)+" : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b1;\n";
+				else if(stageISAX>stage)
 					body += this.tab.repeat(2) +this.CreateLocalNodeName(BNode.RdIValid, stage, ISAX)+" : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b0;\n";
 				else 
 					body += this.tab.repeat(2) +this.CreateLocalNodeName(BNode.RdIValid, stage, ISAX)+" : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b1;\n";
@@ -345,8 +348,8 @@ public class Verilog extends GenerateText {
 			}
 		body += this.tab.repeat(2)+"default : "+this.CreateNodeName(checkAdj.NodeNegInput(), stage, "")+" = 1'b0;\n";
 		body += this.tab.repeat(1)+"endcase\nend\n";
-		if(returnEmpty)
-			return "assign "+ this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b1; // CRITICAL WARNING, NO ISAX detected with opcode, RTL probably not functional\n";
+		if(onlyAlways && stage != operation.commitStage)
+			return "assign "+ this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b0; // CRITICAL WARNING, NO ISAX detected with opcode, RTL could be not functional\n";
 		else
 			return body  ;
 	}

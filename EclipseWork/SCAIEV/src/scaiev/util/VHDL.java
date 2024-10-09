@@ -179,7 +179,13 @@ public class VHDL extends GenerateText {
 	}
 	
 	public String CreateText1or0(String new_signal, String condition) {
-		String text =  new_signal + " <= '1' when ("+condition+") else '0';\n";
+		String text =  ""; 
+		if(condition.equals("\'1\'"))
+			text = new_signal + " <= '1';\n";
+		else if(condition.equals("\'0\'"))
+			text = new_signal + " <= '0';\n";
+		else
+			text = new_signal + " <= '1' when ("+condition+") else '0';\n";
 		return text;
 	}
 	

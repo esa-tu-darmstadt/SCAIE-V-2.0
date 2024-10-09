@@ -410,10 +410,12 @@ public class SCAL implements SCALBackendAPI {
 	    	 for(SCAIEVNode node : node_earliestStageValid.keySet()) {
 		    	 if(node.DH && this.op_stage_instr.containsKey(node)) { // If it requires DH and is requested earlies, is a valid DH node. Info: ORCA also requests it. If not used, the WrRD_DataValid will be optimized by synth tool
 		    		 HashMap<Integer,HashSet<String>> stage_lookAtISAX = new  HashMap<Integer,HashSet<String>>();	    			 
-	    			 for (int stage: this.op_stage_instr.get(node).keySet()) {
+		    		 boolean onlyAlways = true;
+		    		 for (int stage: this.op_stage_instr.get(node).keySet()) {
 	    				 stage_lookAtISAX.put(stage,  this.op_stage_instr.get(node).get(stage));
+	    				 onlyAlways = OnlyAlways( this.op_stage_instr.get(node).get(stage)); 
 	    			 }
-	    			 for(int stage = node_earliestStageValid.get(node); stage <= node_LatestStageValid.get(node); stage++) { 
+	    			 for(int stage = node_earliestStageValid.get(node); stage <= node_LatestStageValid.get(node); stage++) {
 						logic += this.myLanguage.CreateValidDataEncodingEarlierStages(stage_lookAtISAX, ISAXes, stage, node );
 						SCAIEVNode nodeValidData =  BNode.GetAdjSCAIEVNode(node, AdjacentNode.validData);
 						if(!BNode.IsUserBNode(node)) {
@@ -1135,7 +1137,7 @@ public class SCAL implements SCALBackendAPI {
 			SCAIEVNode adjOperation = BNode.GetAdjSCAIEVNode(operation,AdjacentNode.validReq);
 			if (!BNode.IsUserBNode(operation)) {
 				dataT = "reg";//this.virtualBackend.NodeDataT(adjOperation, stage);
-				newinterf = this.CreateAndRegisterTextInterfaceForCore(adjOperation.NodeNegInput(), stage, "", dataT);			
+				newinterf = this.CreateAndRegisterTextInterfaceForCore(adjOperation.NodeNegInput(), stage, "", dataT);	
 				interfaceText.add(newinterf);
 			} else 
 				declares.add(myLanguage.CreateDeclSig(adjOperation.NodeNegInput(), stage,"", adjOperation.isInput, myLanguage.CreateNodeName(adjOperation.NodeNegInput(), stage, "")));
@@ -1300,8 +1302,13 @@ public class SCAL implements SCALBackendAPI {
 	    			 HashSet<String> lookAtISAX = new HashSet<String>();
 	    			 for (int stage: this.op_stage_instr.get(node).keySet())
 	    				 lookAtISAX.addAll(this.op_stage_instr.get(node).get(stage));
-	    			 for(int stage = node_earliestStageValid.get(node); stage < this.core.GetNodes().get(node).GetEarliest(); stage++) {
-	    				 AddRdIValid(lookAtISAX,node,stage,maxStageRdInstr); // this adds all RdFlush, RdStall and RdInstr for generating RdIValid
+	    			 boolean onlyAlways = true;
+	    			 for(String ISAX : lookAtISAX) // If we have only always blocks, this logic not needed
+	    				 if(!ISAXes.get(ISAX).HasNoOp())
+	    					 onlyAlways = false;
+	    			 if(!onlyAlways)
+	    				 for(int stage = node_earliestStageValid.get(node); stage < this.core.GetNodes().get(node).GetEarliest(); stage++) {
+	    					 AddRdIValid(lookAtISAX,node,stage,maxStageRdInstr); // this adds all RdFlush, RdStall and RdInstr for generating RdIValid
 	    			 }
 	    		 }
 	    	 }
@@ -1320,10 +1327,16 @@ public class SCAL implements SCALBackendAPI {
 	    					 latestStage = stage;
 	    				 lookAtISAX.addAll(  this.op_stage_instr.get(node).get(stage));
 	    			 }
-	    			 node_LatestStageValid.put(node, latestStage);
-	    			 for(int stage = node_earliestStageValid.get(node); stage <= latestStage; stage++) {
-	    				 AddRdIValid(lookAtISAX,node,stage,maxStageRdInstr);
-	    				 AddToCoreInterfHashMap(FNode.RdStall,stage); // if latest equals to earliest, not really needed & will be optimized
+	    			 boolean onlyAlways = true;
+	    			 for(String ISAX : lookAtISAX) // If we have only always blocks, this logic not needed
+	    				 if(!ISAXes.get(ISAX).HasNoOp())
+	    					 onlyAlways = false;
+	    			 if(!onlyAlways) {
+		    			 node_LatestStageValid.put(node, latestStage);    			 
+		    			 for(int stage = node_earliestStageValid.get(node); stage <= latestStage; stage++) {
+		    				 AddRdIValid(lookAtISAX,node,stage,maxStageRdInstr);
+		    				 AddToCoreInterfHashMap(FNode.RdStall,stage); // if latest equals to earliest, not really needed & will be optimized
+		    			 }
 	    			 }
 	    		 }
 	    	 }
@@ -1552,6 +1565,14 @@ public class SCAL implements SCALBackendAPI {
 	 */
 	private boolean ContainsOpInStage(SCAIEVNode operation, int stage ) {
 		return op_stage_instr.containsKey(operation) && op_stage_instr.get(operation).containsKey(stage);
+	}
+	
+	private boolean OnlyAlways(HashSet<String> lookAtISAX) {
+		boolean onlyAlways = true;
+		 for(String ISAX : lookAtISAX) // If we have only always blocks, this logic not needed
+			 if(!ISAXes.get(ISAX).HasNoOp())
+				 onlyAlways = false;
+		 return onlyAlways;
 	}
 	
 	
