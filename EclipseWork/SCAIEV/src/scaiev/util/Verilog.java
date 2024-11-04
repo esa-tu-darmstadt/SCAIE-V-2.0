@@ -260,7 +260,7 @@ public class Verilog extends GenerateText {
 	 * @param operation
 	 * @return
 	 */
-	public String  CreateValidReqEncodingEarlierStages(HashMap<Integer,HashSet<String>> stage_lookAtISAX,  HashMap <String,SCAIEVInstr>  allISAXes, int stage, SCAIEVNode operation, int earliestStage) {
+	public String  CreateValidReqEncodingEarlierStages(HashMap<Integer,HashSet<String>> stage_lookAtISAX,  HashMap <String,SCAIEVInstr>  allISAXes, int stage, SCAIEVNode operation, int earliestStage, int latestStage) {
 		String body = "always @(*) begin \n" 
 					+this.tab.repeat(1)+ "case(1'b1)\n";
 		SCAIEVNode checkAdj = BNode.GetAdjSCAIEVNode(operation, AdjacentNode.validReq);
@@ -310,6 +310,8 @@ public class Verilog extends GenerateText {
 				+ tab+"else if(!"+this.CreateNodeName(BNode.RdStall.NodeNegInput(), stage, "")+")\n"
 				+ tab+tab+this.CreateRegNodeName(checkAdj.NodeNegInput(), stage+1, "") +" <= "+ this.CreateNodeName(checkAdj.NodeNegInput(), stage, "")+";\n"
 				+ "end\n"; 
+		if(latestStage == stage && (stage+1) < operation.spawnStage) // patch for ORCA, when we have operations only in 2, latestStage = 2, but we need validreq in 3 too due to DH frwrd PATH FROM STAGE 4 TO 3
+			body +=  "assign "+ this.CreateNodeName(checkAdj.NodeNegInput(), stage+1, "") +" = "+this.CreateRegNodeName(checkAdj.NodeNegInput(), stage+1, "")+"; // will be optimized away if not used\n";
 		if(onlyAlways && stage != operation.commitStage)
 			return "assign "+ this.CreateNodeName(checkAdj.NodeNegInput(), stage, "") +" = 1'b0; // CRITICAL WARNING, NO ISAX detected with opcode, RTL might be not functional\n";
 		else

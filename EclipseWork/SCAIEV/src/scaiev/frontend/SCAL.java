@@ -372,10 +372,11 @@ public class SCAL implements SCALBackendAPI {
 	    			 }
 	    			 node_LatestStageValid.put(corrctPropNode, latestStage);
 	    			 for(int stage = node_earliestStageValid.get(node); stage <= latestStage; stage++) 
-	    				 logic += this.myLanguage.CreateValidReqEncodingEarlierStages(stage_lookAtISAX, ISAXes, stage, corrctPropNode, node_earliestStageValid.get(corrctPropNode));
+	    				 logic += this.myLanguage.CreateValidReqEncodingEarlierStages(stage_lookAtISAX, ISAXes, stage, corrctPropNode, node_earliestStageValid.get(corrctPropNode), latestStage);
 	    		 }
 	    	 }
 	     }
+	     
 	     
 	     // Step 2: generate Valid bits for all other nodes 
 	     for (SCAIEVNode node : this.op_stage_instr.keySet())
@@ -416,7 +417,7 @@ public class SCAL implements SCALBackendAPI {
 	    				 onlyAlways = OnlyAlways( this.op_stage_instr.get(node).get(stage)); 
 	    			 }
 	    			 for(int stage = node_earliestStageValid.get(node); stage <= node_LatestStageValid.get(node); stage++) {
-						logic += this.myLanguage.CreateValidDataEncodingEarlierStages(stage_lookAtISAX, ISAXes, stage, node );
+	    				logic += this.myLanguage.CreateValidDataEncodingEarlierStages(stage_lookAtISAX, ISAXes, stage, node );
 						SCAIEVNode nodeValidData =  BNode.GetAdjSCAIEVNode(node, AdjacentNode.validData);
 						if(!BNode.IsUserBNode(node)) {
 							String newinterf = this.CreateAndRegisterTextInterfaceForCore(nodeValidData.NodeNegInput(), stage, "", "reg");
@@ -764,8 +765,8 @@ public class SCAL implements SCALBackendAPI {
 	    		 		+ myLanguage.tab+myLanguage.clk+",\n"
 	    		 		+ myLanguage.tab+myLanguage.reset+",\n"
 	    		 		+ myLanguage.tab+ myLanguage.CreateLocalNodeName(BNode.RdIValid.NodeNegInput(), core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+",\n"
-	    		 		+ myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, this.core.GetStartSpawnStage(), ISAX)
-	    		 		  +" && ! "+myLanguage.CreateLocalNodeName(BNode.RdStall, this.core.GetStartSpawnStage(), "")+",\n " // write fifo
+	    		 		+ myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, this.core.GetNodes().get(BNode.GetSCAIEVNode(node.nameParentNode)).GetEarliest(), ISAX)
+	    		 		  +" && ! "+myLanguage.CreateLocalNodeName(BNode.RdStall,  this.core.GetNodes().get(BNode.GetSCAIEVNode(node.nameParentNode)).GetEarliest(), "")+",\n " // write fifo
 	    		 		+ myLanguage.tab+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+",\n"            // read fifo
 	    		 		+ myLanguage.tab+addrReadSig // write data
 	    		 		+ "dummy"+ISAX+","
@@ -773,7 +774,11 @@ public class SCAL implements SCALBackendAPI {
 	    		 		+ ");\n";
 	    			 declarations += "wire ["+addrNode.size+"-1:0] "+ myLanguage.CreateFamNodeName(addrNode,  spawnStage, ISAX,false)+";\n";
 	    			 declarations += "wire dummy"+ISAX+";\n";
+	    			 
+	    			 if((this.core.GetNodes().get(BNode.GetSCAIEVNode(node.nameParentNode)).GetEarliest()-1)>this.core.GetStartSpawnStage())
+	    				 System.out.println("CRITICAL WARNING. FIFO ADDR FOR DECOUPLED WILL MALFUNCTION, IF DISAXKILL IN STAGE "+this.core.GetStartSpawnStage()+ " AND A DECOUPLED IN >="+(this.core.GetStartSpawnStage()+2));
 	    		 }
+	    		 
 	    		 
 	    	//	 Scheduled oldSched = new Scheduled();
 				//	oldSched = GetCheckUniqueSchedWith(parentNode, snode -> snode.GetStartCycle()>=spawnStage);
@@ -1297,7 +1302,7 @@ public class SCAL implements SCALBackendAPI {
 				
 		// Add RdIvalid for nodes which require a WrNode_ValidReq signal also in earlier stages, not only where the user needs (due to core's uA)	
 		if(!this.node_earliestStageValid.isEmpty()) {                  // if core has any nodes which requrie valid signals in earlier stages
-	    	 for(SCAIEVNode node : node_earliestStageValid.keySet()) {  // go through these nodes
+			for(SCAIEVNode node : node_earliestStageValid.keySet()) {  // go through these nodes
 	    		 if(this.op_stage_instr.containsKey(node))      {        // if the user actually wants this node (otherwise no logic is added)
 	    			 HashSet<String> lookAtISAX = new HashSet<String>();
 	    			 for (int stage: this.op_stage_instr.get(node).keySet())
@@ -1356,10 +1361,20 @@ public class SCAL implements SCALBackendAPI {
     			 }
 	    	 }
 
-		
-		// Add WrFlush for WrPC 
-	    // Add RdInstr & WrStall for WrPC in case this happens later than instr that commit results (rd/wrmem) 
-	    if(this.op_stage_instr.containsKey(FNode.WrPC)) {
+	     // Add RdIvalid if we have spawn dec memory, we need to store adddr, but mem addr computed in spawn_start stage + 1. Add rdivalid in +1 for FIFO addr write signal
+	     if((this.op_stage_instr.containsKey(BNode.WrMem_spawn) || this.op_stage_instr.containsKey(BNode.RdMem_spawn)) && (this.core.GetStartSpawnStage() < this.core.GetNodes().get(BNode.WrMem).GetEarliest())) {
+			 HashSet<String> allSpawnMem = new  HashSet<String> (); 
+			 if(this.op_stage_instr.containsKey(BNode.WrMem_spawn)) allSpawnMem.addAll(this.op_stage_instr.get(BNode.WrMem_spawn).get(this.core.GetSpawnStage()));
+			 if(this.op_stage_instr.containsKey(BNode.RdMem_spawn)) allSpawnMem.addAll(this.op_stage_instr.get(BNode.RdMem_spawn).get(this.core.GetSpawnStage()));
+		     // Simply selected bellow WrMem, NOT spawn, bc if we would add spawn, function below would place the rdivalid in the start spawn stage, and we need it in earliest stage of mem
+			 AddRdIValid(allSpawnMem,BNode.WrMem, this.core.GetNodes().get(BNode.WrMem).GetEarliest(),maxStageRdInstr);		 
+	     }
+
+
+	     
+	     // Add WrFlush for WrPC 
+	     // Add RdInstr & WrStall for WrPC in case this happens later than instr that commit results (rd/wrmem) 
+	     if(this.op_stage_instr.containsKey(FNode.WrPC)) {
 			for(int stage : this.op_stage_instr.get(FNode.WrPC).keySet())
 				for(int i=0;i<stage;i++) {
 					AddToCoreInterfHashMap(FNode.WrFlush,i);
@@ -1370,7 +1385,7 @@ public class SCAL implements SCALBackendAPI {
 							System.out.println("CRITICAL WARNING. Currently not supported that wrpc is in this stage for this core. To be added in future releases. Simple workaround: add in TestMe.yaml RdInstr in stage of WrPC & should work");
 					}
 				}
-		}
+		}	
 		
 	
 		
