@@ -19,6 +19,7 @@ import scaiev.coreconstr.Core;
 import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
+import scaiev.frontend.SCAIEVNode.NodeTypeTag;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
@@ -31,6 +32,7 @@ import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.NodeRegistryRO;
 import scaiev.scal.strategy.MultiNodeStrategy;
+import scaiev.ui.SCAIEVConfig;
 import scaiev.util.Verilog;
 
 /**
@@ -55,6 +57,7 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
   boolean SETTINGenforceOrdering_Memory_Decoupled;
   boolean SETTINGenforceOrdering_User_Semicoupled;
   boolean SETTINGenforceOrdering_User_Decoupled;
+  SCAIEVConfig cfg;
   /**
    * @param language The (Verilog) language object
    * @param bNodes The BNode object for the node instantiation
@@ -66,13 +69,15 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
    * @param SETTINGenforceOrdering_Memory_Decoupled Flag if decoupled memory operations should be handled in ISAX issue order
    * @param SETTINGenforceOrdering_User_Semicoupled Flag if semi-coupled user operations should be handled in ISAX issue order
    * @param SETTINGenforceOrdering_User_Decoupled Flag if decoupled user operations should be handled in ISAX issue order
+   * @param cfg The SCAIE-V global config
    */
   public SpawnOrderedMuxStrategy(Verilog language, BNode bNodes, Core core,
                                  HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
                                  HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage,
                                  HashMap<String, SCAIEVInstr> allISAXes, boolean SETTINGenforceOrdering_Memory_Semicoupled,
                                  boolean SETTINGenforceOrdering_Memory_Decoupled, boolean SETTINGenforceOrdering_User_Semicoupled,
-                                 boolean SETTINGenforceOrdering_User_Decoupled) {
+                                 boolean SETTINGenforceOrdering_User_Decoupled,
+                                 SCAIEVConfig cfg) {
     this.language = language;
     this.bNodes = bNodes;
     this.core = core;
@@ -83,6 +88,7 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
     this.SETTINGenforceOrdering_Memory_Decoupled = SETTINGenforceOrdering_Memory_Decoupled;
     this.SETTINGenforceOrdering_User_Semicoupled = SETTINGenforceOrdering_User_Semicoupled;
     this.SETTINGenforceOrdering_User_Decoupled = SETTINGenforceOrdering_User_Decoupled;
+    this.cfg = cfg;
   }
 
   private static final Purpose SubpipeSelectionPurpose = new Purpose("SubpipeSelectionNum", true, Optional.empty(), List.of());
@@ -118,8 +124,9 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
     return operation.equals(bNodes.WrCommit_spawn) && stage.getKind() == StageKind.Core;
   }
 
-  protected NodeLogicBlock buildSelectFromISAX(NodeInstanceDesc.Key nodeKey, SCAIEVNode selectBaseNode, RequestedForSet requestedFor,
-                                               List<MuxISAXInfo> muxISAXes, NodeRegistryRO registry, int aux) {
+  protected NodeLogicBlock buildSelectFromISAX(NodeInstanceDesc.Key nodeKey, SCAIEVNode baseNode, SCAIEVNode selectBaseNode,
+                                               RequestedForSet requestedFor, List<MuxISAXInfo> muxISAXes, NodeRegistryRO registry,
+                                               int aux) {
     final String tab = language.tab;
     var ret = new NodeLogicBlock();
 
@@ -155,16 +162,26 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
           "case(%s[%d-1:0])\n",
           registry.lookupExpressionRequired(new NodeInstanceDesc.Key(SubpipeSelectionPurpose, selectBaseNode, nodeKey.getStage(), "")),
           selectWidth);
+      boolean skippedAny = false;
       for (int iSel = 0; iSel < muxISAXes.size(); ++iSel) {
         MuxISAXInfo muxISAX = muxISAXes.get(iSel);
+        if (!muxISAX.baseNodes.contains(baseNode)) {
+          skippedAny = true;
+          continue;
+        }
         var inputNode = registry.lookupRequired(
             new NodeInstanceDesc.Key(Purpose.REGISTERED, nodeKey.getNode(), nodeKey.getStage(), muxISAX.isaxName), requestedFor);
         requestedFor.addAll(inputNode.getRequestedFor(), true);
         String assignStatement = String.format("%s = %s;", nodeWireName, inputNode.getExpression());
-        if (iSel < muxISAXes.size() - 1)
+        if (iSel < muxISAXes.size() - 1 || skippedAny)
           body += tab + String.format("%d'd%d: %s\n", selectWidth, iSel, assignStatement);
         else
           body += tab + String.format("default: %s\n", assignStatement);
+      }
+      if (skippedAny) {
+        // The specific ISAX has no such node, so the interface should not be valid.
+        String assignStatement = String.format("%s = %s;", nodeWireName, nodeKey.getNode().isAdj() ? "0" : "'x");
+        body += tab + String.format("default: %s\n", assignStatement);
       }
       body += "endcase\n";
 
@@ -179,8 +196,8 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
     return ret;
   }
 
-  protected NodeLogicBlock buildSelectToISAX(NodeInstanceDesc.Key nodeKey, SCAIEVNode selectBaseNode, RequestedForSet requestedFor,
-                                             List<MuxISAXInfo> muxISAXes, NodeRegistryRO registry, int aux) {
+  protected NodeLogicBlock buildSelectToISAX(NodeInstanceDesc.Key nodeKey, SCAIEVNode baseNode, SCAIEVNode selectBaseNode,
+                                             RequestedForSet requestedFor, List<MuxISAXInfo> muxISAXes, NodeRegistryRO registry, int aux) {
     var ret = new NodeLogicBlock();
 
     String nodeWireName = language.CreateLocalNodeName(nodeKey.getNode(), nodeKey.getStage(), nodeKey.getISAX());
@@ -201,6 +218,7 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
           break;
         }
         iMuxISAX_found = iSel;
+        assert(muxISAX.baseNodes.contains(baseNode));
       }
     }
 
@@ -357,7 +375,7 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
       ret.logic += language.CreateInAlways(false, deqBody);
     }
 
-    int fifoDepth = 4;
+    int fifoDepth = cfg.semicoupled_fifo_depth;
 
     String validWireName = String.format("%s_valid", wireNameBase);
     ret.declarations += String.format("wire %s;\n", validWireName);
@@ -603,19 +621,26 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
       if (!nodeKey.getPurpose().matches(Purpose.REGULAR) && !nodeKey.getPurpose().matches(SubpipeSelectionPurpose))
         continue;
       SCAIEVNode baseNode = nodeKey.getNode().isAdj() ? bNodes.GetSCAIEVNode(nodeKey.getNode().nameParentNode) : nodeKey.getNode();
-      if (!handlesNode(baseNode, nodeKey.getStage()))
+      SCAIEVNode baseNodeNonport = baseNode.tags.contains(NodeTypeTag.isPortNode) ? bNodes.GetSCAIEVNode(baseNode.nameParentNode) : baseNode;
+      if (baseNodeNonport.name.isEmpty() || !handlesNode(baseNodeNonport, nodeKey.getStage()))
         continue;
 
       var stageFront = new PipelineFront(nodeKey.getStage());
 
-      boolean handleAllCommitOps = requiresCommitToCore(baseNode, nodeKey.getStage());
+      boolean handleAllCommitOps = requiresCommitToCore(baseNodeNonport, nodeKey.getStage());
       List<SCAIEVNode> handledBaseNodes;
       if (handleAllCommitOps) {
         handledBaseNodes =
             bNodes.GetAllBackNodes()
                 .stream()
-                .filter(
-                    bnode -> !bnode.isAdj() && handlesNode(bnode, nodeKey.getStage()) && requiresCommitToCore(bnode, nodeKey.getStage()))
+                .filter(bnode -> {
+                      if (bnode.tags.contains(NodeTypeTag.isPortNode) && !bnode.isAdj()) {
+                        bnode = bNodes.GetSCAIEVNode(bnode.nameParentNode);
+                        if (bnode.name.isEmpty())
+                          return false;
+                      }
+                      return !bnode.isAdj() && handlesNode(bnode, nodeKey.getStage()) && requiresCommitToCore(bnode, nodeKey.getStage());
+                    })
                 .toList();
       } else {
         handledBaseNodes = List.of(baseNode);
@@ -697,11 +722,13 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
       if (nodeKey.getPurpose().matches(Purpose.REGULAR) && nodeKey.getNode().isInput /*ISAX -> SCAL( -> core)*/) {
         if (!nodeKey.getISAX().isEmpty())
           continue; // Can only generate the MUXed node across ISAXes.
+        if (!muxISAXesEntry.stream().anyMatch(isaxEntry -> isaxEntry.baseNodes.contains(baseNode)))
+          continue; // Can't do anything if no ISAX uses this particular baseNode.
         if (isNew) {
           requestedForByKey.put(requestedForKey, requestedForSet);
           // Generate a MUX, selecting across the ISAXes.
           out.accept(NodeLogicBuilder.fromFunction("SpawnOrderedMuxStrategy_fromISAX_" + nodeKey.toString(), (registry, aux) -> {
-            return buildSelectFromISAX(nodeKey, muxKey.baseNode, requestedForSet, muxISAXesEntry, registry, aux);
+            return buildSelectFromISAX(nodeKey, baseNode, muxKey.baseNode, requestedForSet, muxISAXesEntry, registry, aux);
           }));
         }
         keyIter.remove();
@@ -726,11 +753,14 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
         } else if (nodeKey.getISAX().isEmpty()) {
           continue; // Can only generate the ISAX-specific selection.
         }
+        if (!muxISAXesEntry.stream().anyMatch(
+                isaxEntry -> isaxEntry.isaxName.equals(nodeKey.getISAX()) && isaxEntry.baseNodes.contains(baseNode)))
+          continue; // Can't do anything if the ISAX doesn't use this particular baseNode.
         if (isNew) {
           requestedForByKey.put(requestedForKey, requestedForSet);
           // Assign from the general value,
           out.accept(NodeLogicBuilder.fromFunction("SpawnOrderedMuxStrategy_toISAX_" + nodeKey.toString(), (registry, aux) -> {
-            return buildSelectToISAX(nodeKey, muxKey.baseNode, requestedForSet, muxISAXesEntry, registry, aux);
+            return buildSelectToISAX(nodeKey, baseNode, muxKey.baseNode, requestedForSet, muxISAXesEntry, registry, aux);
           }));
         }
         keyIter.remove();

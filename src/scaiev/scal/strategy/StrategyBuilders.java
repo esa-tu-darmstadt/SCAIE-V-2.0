@@ -48,7 +48,9 @@ import scaiev.scal.strategy.standard.RdInStageValidStrategy;
 import scaiev.scal.strategy.standard.SCALInputOutputStrategy;
 import scaiev.scal.strategy.standard.StallFlushDeqStrategy;
 import scaiev.scal.strategy.standard.ValidMuxStrategy;
+import scaiev.scal.strategy.state.SCALStateContextStrategy;
 import scaiev.scal.strategy.state.SCALStateStrategy;
+import scaiev.ui.SCAIEVConfig;
 import scaiev.util.Verilog;
 
 /**
@@ -120,6 +122,7 @@ public class StrategyBuilders {
                      (Map<String, Object> args) -> this.default_buildSpawnOptionalInputFIFOStrategy(args));
 
     putUniqueBuilder(UUID_SCALStateStrategy, (Map<String, Object> args) -> this.default_buildSCALStateStrategy(args));
+    putUniqueBuilder(UUID_SCALStateContextStrategy, (Map<String, Object> args) -> this.default_buildSCALStateContextStrategy(args));
     putUniqueBuilder(UUID_SpawnOrderedMuxStrategy, (Map<String, Object> args) -> this.default_buildSpawnOrderedMuxStrategy(args));
     putUniqueBuilder(UUID_DefaultRdwrInStageStrategy, (Map<String, Object> args) -> this.default_buildDefaultRdwrInStageStrategy(args));
     putUniqueBuilder(UUID_DefaultWrCommitStrategy, (Map<String, Object> args) -> this.default_buildDefaultWrCommitStrategy(args));
@@ -306,7 +309,7 @@ public class StrategyBuilders {
    * Args: Verilog language, BNode bNodes, Core core,
    *       HashMap<SCAIEVNode,HashMap<PipelineStage,HashSet<String>>> op_stage_instr,
    *       HashMap<String,SCAIEVInstr> allISAXes,
-   *       boolean SETTINGwithInputFIFO
+   *       boolean SETTINGwithInputFIFO, SCAIEVConfig cfg
    */
   public static UUID UUID_SpawnOptionalInputFIFOStrategy = uuidFor("SpawnOptionalInputFIFOStrategy");
   /**
@@ -323,10 +326,21 @@ public class StrategyBuilders {
    * UUID for a SCALStateStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.state.SCALStateStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<SCAIEVNode, HashMap<PipelineStage,HashSet<String>>> op_stage_instr,
-   *       HashMap<String, SCAIEVInstr> allISAXes
+   *       HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
+   *       HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage,
+   *       HashMap<String, SCAIEVInstr> allISAXes, SCAIEVConfig cfg
    */
   public static UUID UUID_SCALStateStrategy = uuidFor("SCALStateStrategy");
+
+  /**
+   * UUID for a SCALStateContextStrategy-compatible implementation.
+   * {@link scaiev.scal.strategy.state.SCALStateContextStrategy}
+   * Args: Verilog language, BNode bNodes, Core core,
+   *       HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
+   *       HashMap<String, SCAIEVInstr> allISAXes,
+   *       SCAIEVConfig cfg
+   */
+  public static UUID UUID_SCALStateContextStrategy = uuidFor("SCALStateContextStrategy");
 
   /**
    * UUID for a SpawnOrderedMuxStrategy-compatible implementation.
@@ -338,7 +352,8 @@ public class StrategyBuilders {
    *       boolean SETTINGenforceOrdering_Memory_Semicoupled,
    *       boolean SETTINGenforceOrdering_Memory_Decoupled,
    *       boolean SETTINGenforceOrdering_User_Semicoupled,
-   *       boolean SETTINGenforceOrdering_User_Decoupled
+   *       boolean SETTINGenforceOrdering_User_Decoupled,
+   *       SCAIEVConfig cfg
    */
   public static UUID UUID_SpawnOrderedMuxStrategy = uuidFor("SpawnOrderedMuxStrategy");
   /**
@@ -532,8 +547,8 @@ public class StrategyBuilders {
    * @param bNodes The BNode object for the node instantiation
    * @param core The core node description
    */
-  public final SingleNodeStrategy buildDefaultRerunStrategy(Verilog language, BNode bNodes, Core core) {
-    return buildSingleNodeStrategy(UUID_DefaultRerunStrategy,
+  public final MultiNodeStrategy buildDefaultRerunStrategy(Verilog language, BNode bNodes, Core core) {
+    return buildMultiNodeStrategy(UUID_DefaultRerunStrategy,
                                    Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core)));
   }
 
@@ -698,14 +713,36 @@ public class StrategyBuilders {
    * @param bNodes The BNode object for the node instantiation
    * @param core The core nodes description
    * @param op_stage_instr The Node-Stage-ISAX mapping
+   * @param spawn_instr_stage The Node-ISAX-Stage mapping providing the precise sub-pipeline stage for spawn operations
    * @param allISAXes The ISAX descriptions
+   * @param cfg The SCAIE-V global config
    */
   public final MultiNodeStrategy buildSCALStateStrategy(Verilog language, BNode bNodes, Core core,
                                                         HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
-                                                        HashMap<String, SCAIEVInstr> allISAXes) {
-    return buildMultiNodeStrategy(UUID_SCALStateStrategy,
-                                  Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core),
-                                                entry("op_stage_instr", op_stage_instr), entry("allISAXes", allISAXes)));
+                                                        HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage,
+                                                        HashMap<String, SCAIEVInstr> allISAXes, SCAIEVConfig cfg) {
+    return buildMultiNodeStrategy(UUID_SCALStateStrategy, Map.ofEntries(entry("language", language), entry("bNodes", bNodes),
+                                                                        entry("core", core), entry("op_stage_instr", op_stage_instr),
+                                                                        entry("spawn_instr_stage", spawn_instr_stage),
+                                                                        entry("allISAXes", allISAXes), entry("config", cfg)));
+  }
+
+  /**
+   * Helper function to call the builder for SCALStateContextStrategy.
+   * @param language The (Verilog) language object
+   * @param bNodes The BNode object for the node instantiation
+   * @param core The core nodes description
+   * @param op_stage_instr The Node-Stage-ISAX mapping
+   * @param allISAXes The ISAX descriptions
+   * @param cfg The SCAIE-V global config
+   */
+  public final SingleNodeStrategy buildSCALStateContextStrategy(Verilog language, BNode bNodes, Core core,
+                                                                HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
+                                                                HashMap<String, SCAIEVInstr> allISAXes, SCAIEVConfig cfg) {
+    return buildSingleNodeStrategy(UUID_SCALStateContextStrategy,
+                                   Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core),
+                                                 entry("op_stage_instr", op_stage_instr), entry("allISAXes", allISAXes),
+                                                 entry("config", cfg)));
   }
 
   /**
@@ -732,14 +769,17 @@ public class StrategyBuilders {
    * @param op_stage_instr The Node-Stage-ISAX mapping
    * @param allISAXes The ISAX descriptions
    * @param SETTINGwithInputFIFO Flag if a FIFO should be created rather than a plain assignment
+   * @param cfg The SCAIE-V global config
    */
   public final MultiNodeStrategy buildSpawnOptionalInputFIFOStrategy(
       Verilog language, BNode bNodes, Core core, HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
-      HashMap<String, SCAIEVInstr> allISAXes, boolean SETTINGwithInputFIFO) {
+      HashMap<String, SCAIEVInstr> allISAXes, boolean SETTINGwithInputFIFO,
+      SCAIEVConfig cfg) {
     return buildMultiNodeStrategy(UUID_SpawnOptionalInputFIFOStrategy,
                                   Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core),
                                                 entry("op_stage_instr", op_stage_instr), entry("allISAXes", allISAXes),
-                                                entry("SETTINGwithInputFIFO", SETTINGwithInputFIFO)));
+                                                entry("SETTINGwithInputFIFO", SETTINGwithInputFIFO),
+                                                entry("cfg", cfg)));
   }
   /**
    * Helper function to call the builder for SpawnOrderedMuxStrategy.
@@ -753,12 +793,14 @@ public class StrategyBuilders {
    * @param SETTINGenforceOrdering_Memory_Decoupled Flag if decoupled memory operations should be handled in ISAX issue order
    * @param SETTINGenforceOrdering_User_Semicoupled Flag if semi-coupled user operations should be handled in ISAX issue order
    * @param SETTINGenforceOrdering_User_Decoupled Flag if decoupled user operations should be handled in ISAX issue order
+   * @param cfg The SCAIE-V global config
    */
   public final MultiNodeStrategy buildSpawnOrderedMuxStrategy(
       Verilog language, BNode bNodes, Core core, HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
       HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage, HashMap<String, SCAIEVInstr> allISAXes,
       boolean SETTINGenforceOrdering_Memory_Semicoupled, boolean SETTINGenforceOrdering_Memory_Decoupled,
-      boolean SETTINGenforceOrdering_User_Semicoupled, boolean SETTINGenforceOrdering_User_Decoupled) {
+      boolean SETTINGenforceOrdering_User_Semicoupled, boolean SETTINGenforceOrdering_User_Decoupled,
+      SCAIEVConfig cfg) {
     return buildMultiNodeStrategy(
         UUID_SpawnOrderedMuxStrategy,
         Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core), entry("op_stage_instr", op_stage_instr),
@@ -766,7 +808,8 @@ public class StrategyBuilders {
                       entry("SETTINGenforceOrdering_Memory_Semicoupled", SETTINGenforceOrdering_Memory_Semicoupled),
                       entry("SETTINGenforceOrdering_Memory_Decoupled", SETTINGenforceOrdering_Memory_Decoupled),
                       entry("SETTINGenforceOrdering_User_Semicoupled", SETTINGenforceOrdering_User_Semicoupled),
-                      entry("SETTINGenforceOrdering_User_Decoupled", SETTINGenforceOrdering_User_Decoupled)));
+                      entry("SETTINGenforceOrdering_User_Decoupled", SETTINGenforceOrdering_User_Decoupled),
+                      entry("cfg", cfg)));
   }
   /**
    * Helper function to call the builder for DefaultRdwrInStageStrategy.
@@ -843,8 +886,8 @@ public class StrategyBuilders {
     return new DefaultValidCancelReqStrategy(this, (Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"),
                                              (HashMap<String, SCAIEVInstr>)args.get("allISAXes"));
   }
-  private final SingleNodeStrategy default_buildDefaultRerunStrategy(Map<String, Object> args) {
-    return new DefaultRerunStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"));
+  private final MultiNodeStrategy default_buildDefaultRerunStrategy(Map<String, Object> args) {
+    return new DefaultRerunStrategy(this, (Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"));
   }
 
   @SuppressWarnings("unchecked") /* Need to rely on the caller */
@@ -909,7 +952,14 @@ public class StrategyBuilders {
   private final MultiNodeStrategy default_buildSCALStateStrategy(Map<String, Object> args) {
     return new SCALStateStrategy(this, (Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"),
                                  (HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>>)args.get("op_stage_instr"),
-                                 (HashMap<String, SCAIEVInstr>)args.get("allISAXes"));
+                                 (HashMap<SCAIEVNode, HashMap<String, PipelineStage>>)args.get("spawn_instr_stage"),
+                                 (HashMap<String, SCAIEVInstr>)args.get("allISAXes"), (SCAIEVConfig)args.get("config"));
+  }
+  @SuppressWarnings("unchecked") /* Need to rely on the caller */
+  private final MultiNodeStrategy default_buildSCALStateContextStrategy(Map<String, Object> args) {
+    return new SCALStateContextStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"),
+                                        (HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>>)args.get("op_stage_instr"),
+                                        (HashMap<String, SCAIEVInstr>)args.get("allISAXes"), (SCAIEVConfig)args.get("config"));
   }
   @SuppressWarnings("unchecked") /* Need to rely on the caller */
   private final MultiNodeStrategy default_buildSpawnOutputSelectStrategy(Map<String, Object> args) {
@@ -922,7 +972,7 @@ public class StrategyBuilders {
     return new SpawnOptionalInputFIFOStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"),
                                               (HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>>)args.get("op_stage_instr"),
                                               (HashMap<String, SCAIEVInstr>)args.get("allISAXes"),
-                                              (Boolean)args.get("SETTINGwithInputFIFO"));
+                                              (Boolean)args.get("SETTINGwithInputFIFO"), (SCAIEVConfig)args.get("cfg"));
   }
   @SuppressWarnings("unchecked") /* Need to rely on the caller */
   private final MultiNodeStrategy default_buildSpawnOrderedMuxStrategy(Map<String, Object> args) {
@@ -932,7 +982,7 @@ public class StrategyBuilders {
         (HashMap<SCAIEVNode, HashMap<String, PipelineStage>>)args.get("spawn_instr_stage"),
         (HashMap<String, SCAIEVInstr>)args.get("allISAXes"), (Boolean)args.get("SETTINGenforceOrdering_Memory_Semicoupled"),
         (Boolean)args.get("SETTINGenforceOrdering_Memory_Decoupled"), (Boolean)args.get("SETTINGenforceOrdering_User_Semicoupled"),
-        (Boolean)args.get("SETTINGenforceOrdering_User_Decoupled"));
+        (Boolean)args.get("SETTINGenforceOrdering_User_Decoupled"), (SCAIEVConfig)args.get("cfg"));
   }
   private final MultiNodeStrategy default_buildDefaultRdwrInStageStrategy(Map<String, Object> args) {
     return new DefaultRdwrInStageStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"));

@@ -1,16 +1,32 @@
 # ORCA
+!SerialCoreDescription
+pipeline:
+  name: root
+  kind: root
+  tags: []
+  externalID: -1
+  continuous: false
+  nextStages: []
+  children:
+  - {name: fetch,      kind: core,          externalID: 0,  continuous: true,  tags: [inorder], nextStages: [decode1], children: []}
+  - {name: decode1,    kind: core,          externalID: 1,  continuous: true,  tags: [inorder], nextStages: [decode2], children: []}
+  - {name: decode2,    kind: core,          externalID: 2,  continuous: true,  tags: [inorder], nextStages: [execute], children: []}
+  - {name: execute,    kind: core,          externalID: 3,  continuous: true,  tags: [inorder, execute, commit], nextStages: [writeback], children: []}
+  - {name: writeback,  kind: core,          externalID: 4,  continuous: true,  tags: [inorder, commit], nextStages: [decoupled1], children: []}
+  - {name: decoupled1, kind: decoupled,     externalID: 5,  continuous: true,  tags: [inorder, commit], nextStages: [], children: []}
+operations:
 - operation: RdCustReg
   earliest: 1
   latency: 0
   latest: 4 
 - operation: WrCustReg.addr
-  earliest: RdCustReg.earliest
+  earliest: 1
   latency: 0
-  latest: RdCustReg.earliest
+  latest: 1
 - operation: WrCustReg.data
-  earliest: RdCustReg.earliest
+  earliest: 1
   latency: 1
-  costly: RdCustReg.earliest+1
+  costly: 2
 - operation: RdRS1
   earliest: 3
   latency: 0

@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Pattern;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import scaiev.frontend.FNode;
@@ -261,6 +262,14 @@ public class BNode extends FNode {
    */
   public SCAIEVNode WrRerunNext = new SCAIEVNode("WrRerunNext", 1, true);
 
+  /**
+   * The original PC before Fetch-stage WrPC.
+   * Only present if WrPC was used in this "instruction"-'s lifetime
+   * Generated as needed by DefaultRerunStrategy.
+   */
+  public SCAIEVNode RdOrigPC = new SCAIEVNode("RdOrigPC", datawidth, false) {{ validBy = AdjacentNode.validReq; }};
+  public SCAIEVNode RdOrigPC_valid = new SCAIEVNode(RdOrigPC, AdjacentNode.validReq, 1, false, false);
+
   //	/**
   //	 * Sets the wait count for the current instruction entering the scoreboard.
   //	 * The core ensures that the instruction is not issued as long as the value is not zero.
@@ -442,6 +451,9 @@ public class BNode extends FNode {
       logger.error("AddUserNodePort called on a non-registered user node {}", userNode.name);
       return null;
     }
+    if (portName.isEmpty()) {
+      throw new IllegalArgumentException("portName must not be empty");
+    }
     SCAIEVNode portNode = SCAIEVNode.makePortNodeOf(userNode, portName);
     var existingPorts = GetAllPortsByBaseName().get(userNode.name);
     if (existingPorts != null) {
@@ -532,8 +544,10 @@ public class BNode extends FNode {
 
     bnodes.add(RdPipeInto);
 
-    // bnodes.add(WrRerunCurrent);
     bnodes.add(WrRerunNext);
+
+    bnodes.add(RdOrigPC);
+    bnodes.add(RdOrigPC_valid);
 
     bnodes.add(WrDeqInstr);
     bnodes.add(RdInStageID);
@@ -662,8 +676,33 @@ public class BNode extends FNode {
     if (node.isSpawn())
       return Optional.of(node);
     SCAIEVNode nodeNonadj = node.isAdj() ? GetSCAIEVNode(node.nameParentNode) : node;
-    return GetMySpawnNode(nodeNonadj)
+    SCAIEVNode nodeNonportNonadj = node;
+    String portName = "";
+    if (nodeNonadj.tags.contains(NodeTypeTag.isPortNode)) {
+      portName = getPortName(nodeNonadj);
+      assert(!portName.isEmpty());
+      //Retrieve the non-ported spawn node
+      var nodeNonportNonadj_opt = GetSCAIEVNode_opt(nodeNonadj.nameParentNode);
+      if (!nodeNonportNonadj_opt.isPresent())
+        return Optional.empty();
+      nodeNonportNonadj = nodeNonportNonadj_opt.get();
+    }
+    String portName_ = portName;
+    return GetMySpawnNode(nodeNonportNonadj)
+        .flatMap(nodeSpawnNonport -> Optional.ofNullable(portName_.isEmpty() ? nodeSpawnNonport : AddUserNodePort(nodeSpawnNonport, portName_)))
         .flatMap(nodeSpawnNonadj -> node.isAdj() ? GetAdjSCAIEVNode(nodeSpawnNonadj, node.getAdj()) : Optional.of(nodeSpawnNonadj));
+  }
+  /**
+   * Determines the port name of a node, or returns "" if it is not a port of a base node.
+   */
+  public String getPortName(SCAIEVNode node) {
+    SCAIEVNode nodeNonadj = node.isAdj() ? GetSCAIEVNode(node.nameParentNode) : node;
+    if (!nodeNonadj.tags.contains(NodeTypeTag.isPortNode))
+      return "";
+    assert(nodeNonadj.name.startsWith(nodeNonadj.nameParentNode + SCAIEVNode.portbaseSuffix));
+    String ret = nodeNonadj.name.substring(nodeNonadj.nameParentNode.length() + SCAIEVNode.portbaseSuffix.length());
+    assert(!ret.isEmpty());
+    return ret;
   }
   /**
    * Returns the equivalent non-spawn adj/non-adj node to a spawn adj/non-adj node, or an empty Optional if it doesn't exist
@@ -671,7 +710,32 @@ public class BNode extends FNode {
    */
   public Optional<SCAIEVNode> GetEquivalentNonspawnNode(SCAIEVNode node) {
     SCAIEVNode nodeNonadj = node.isAdj() ? GetSCAIEVNode(node.nameParentNode) : node;
-    SCAIEVNode nodeNonspawnNonadj = nodeNonadj.isSpawn() ? GetSCAIEVNode(nodeNonadj.nameParentNode) : nodeNonadj;
+    SCAIEVNode nodeNonspawnNonadj = nodeNonadj;
+    if (nodeNonadj.isSpawn()) {
+      String portName = getPortName(nodeNonadj);
+      SCAIEVNode nodeNonportNonadj = nodeNonadj;
+      //Special case: port nodes
+      if (nodeNonadj.tags.contains(NodeTypeTag.isPortNode)) {
+        assert(!portName.isEmpty());
+        //Retrieve the non-ported spawn node
+        var nodeNonportNonadj_opt = GetSCAIEVNode_opt(node.nameParentNode);
+        if (!nodeNonportNonadj_opt.isPresent())
+          return Optional.empty();
+        nodeNonportNonadj = nodeNonportNonadj_opt.get();
+      }
+      
+      //Retrieve the non-spawn base node (non-ported)
+      var nodeNonspawnNonadj_opt = GetSCAIEVNode_opt(nodeNonportNonadj.nameParentNode);
+      if (!nodeNonspawnNonadj_opt.isPresent())
+        return Optional.empty();
+      nodeNonspawnNonadj = nodeNonspawnNonadj_opt.get();
+      
+      if (!portName.isEmpty()) {
+        //Retrieve the ported non-spawn node
+        nodeNonspawnNonadj = AddUserNodePort(nodeNonspawnNonadj, portName);
+      }
+    }
+    
     return node.isAdj() ? GetAdjSCAIEVNode(nodeNonspawnNonadj, node.getAdj()) : Optional.of(nodeNonspawnNonadj);
   }
 
@@ -723,7 +787,7 @@ public class BNode extends FNode {
     String baseName = look4Node.name;
     if (look4Node.tags.contains(NodeTypeTag.isPortNode)) {
       // Not likely to be intended, as spawn ports are allocated separately from non-spawn ports.
-      logger.warn("BNode.GetMySpawnNode called on a port node");
+      logger.warn("BNode.GetMySpawnNode called on a port node; if intentional, consider using GetEquivalentSpawnNode instead");
       return Optional.empty();
       //			//Name should look like <node name>_port<n>
       //			assert(look4Node.name.startsWith(look4Node.nameParentNode + SCAIEVNode.portbaseSuffix)

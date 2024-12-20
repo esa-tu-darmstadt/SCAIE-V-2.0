@@ -519,10 +519,14 @@ public class PicoRV32 extends CoreBackend {
   private void IntegrateISAX_WrPC() {
     // TODO check stages 0,3. 1,2 checked
     if (this.ContainsOpInStage(BNode.WrPC, 0)) {
-      String text = "if(" + language.CreateNodeName(BNode.WrPC_valid, stages[0], "") + " )begin \n" + tab + "mem_do_rinst <= 1; \n" + tab +
-                    "reg_next_pc <= " + language.CreateNodeName(BNode.WrPC, stages[0], "") + "; \n" + tab +
-                    "cpu_state <= cpu_state_fetch; \n"
-                    + "end";
+      //NOTE: mem_do_rinst<=1, cpu_state<=cpu_state_fetch cause the fetch to be repeated, scrapping what was already read from memory.
+      //      At the same time, RdStall_0 is set to 0, so SCAL does apply custom state updates.
+      //NOTE: A combination of WrPC_0 and WrRD is not possible currently.
+      String text = "if(" + language.CreateNodeName(BNode.WrPC_valid, stages[0], "") + " )begin \n" +
+                    tab + "mem_do_rinst <= 1; \n" +
+                    tab + "reg_next_pc <= " + language.CreateNodeName(BNode.WrPC, stages[0], "") + "; \n" +
+                    tab + "cpu_state <= cpu_state_fetch; \n" +
+                    "end";
       toFile.UpdateContent(this.ModFile("picorv32"), "end", new ToWrite(text, true, false, "cpu_state <= cpu_state_ld_rs1;"));
     }
 

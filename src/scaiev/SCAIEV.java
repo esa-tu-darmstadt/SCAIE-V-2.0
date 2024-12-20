@@ -38,6 +38,7 @@ import scaiev.pipeline.PipelineStage.StageKind;
 import scaiev.pipeline.PipelineStage.StageTag;
 import scaiev.pipeline.ScheduleFront;
 import scaiev.scal.NodeInstanceDesc;
+import scaiev.ui.SCAIEVConfig;
 
 public class SCAIEV {
 
@@ -48,8 +49,7 @@ public class SCAIEV {
   private String extensionName = "DEMO";
   private HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage = new HashMap<>();
   private HashMap<String, Integer> earliest_useroperation = new HashMap<String, Integer>();
-  // TODO: Remove
-  private SCAIEVInstr zol;
+  private SCAIEVConfig cfg;
 
   public BNode BNodes = new BNode();
   public FNode FNodes = BNodes;
@@ -88,9 +88,9 @@ public class SCAIEV {
     return newISAX;
   }
 
-  public void setSCAL(boolean nonDecWithDH, boolean decWithValid, boolean decWithAddr, boolean decWithDH, boolean decWithStall,
-                      boolean decWithInpFIFO) {
-    scal.SetSCAL(nonDecWithDH, decWithValid, decWithAddr, decWithInpFIFO);
+  public void setSCAL(SCAIEVConfig cfg) {
+    scal.SetSCAL(cfg);
+    this.cfg = cfg;
   }
 
   void FixUserNodeSchedule() {
@@ -594,6 +594,12 @@ public class SCAIEV {
       fence.PutSchedNode(FNodes.RdRS1, rdrsStage.getStagePos());
       instrSet.put("disaxkill", kill);
       instrSet.put("disaxfence", fence);
+    }
+
+    // add instruction context switching for custom registers
+    if (cfg.number_of_contexts > 1) {
+      SCAIEVInstr ctx = SCAL.PredefInstr.ctx.instr;
+      instrSet.put("isaxctx", ctx);
     }
   }
 

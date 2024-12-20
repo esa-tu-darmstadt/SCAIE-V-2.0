@@ -18,6 +18,7 @@ import scaiev.coreconstr.Core;
 import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
+import scaiev.frontend.SCAIEVNode.NodeTypeTag;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
@@ -202,7 +203,10 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
       else if (node.equals(bNodes.WrMem_spawn) || node.equals(bNodes.RdMem_spawn))
         maxStall = core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.WrMem).GetEarliest());
       final PipelineFront maxStall_ = maxStall;
-      core.GetRootStage().getAllChildren().filter(stage -> maxStall_.isAroundOrAfter(stage, false)).forEach(stage -> {
+      core.GetRootStage().getAllChildren()
+                         .filter(stage -> stage.getKind() != StageKind.CoreInternal) //Filter out CoreInternal stages, which may not have WrStall.
+                         .filter(stage -> maxStall_.isAroundOrAfter(stage, false))
+                         .forEach(stage -> {
         var stallInst = new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrStall, stage, "", aux), ISAX_fire2_r_sig,
                                              ExpressionType.AnyExpression);
         stallInst.addRequestedFor(fireRequestedForBase, true);
@@ -234,23 +238,23 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
                                                                       SCAIEVNode spawnNode) {
     assert (!spawnNode.isAdj());
     assert (spawnNode.isSpawn());
+    String portName = bNodes.getPortName(spawnNode);
+    assert(portName.isEmpty() == !spawnNode.tags.contains(NodeTypeTag.isPortNode));
+    SCAIEVNode nonportSpawnNode = spawnNode.tags.contains(NodeTypeTag.isPortNode)
+        ? bNodes.GetSCAIEVNode(spawnNode.nameParentNode)
+        : spawnNode;
     SortedSet<SCAIEVNode> sortedNodes = new TreeSet<>((a, b) -> a.name.compareTo(b.name));
     do {
-      if (!sortedNodes.add(spawnNode))
+      if (!sortedNodes.add(nonportSpawnNode))
         break;
-      spawnNode = bNodes.GetSCAIEVNode(spawnNode.nameCousinNode);
-    } while (!spawnNode.nameCousinNode.isEmpty());
-    //		var ret = priorities.getOrDefault(spawnNode, List.of()).stream().map(isax -> Map.entry(spawnNode, isax));
-    //		//NOTE: Using lexicographic ordering between related nodes; i.e., RdMem ends up having a higher priority than WrMem.
-    //		if (!spawnNode.nameCousinNode.isEmpty()) assert(spawnNode.name.compareTo(spawnNode.nameCousinNode) != 0);
-    //		if (!spawnNode.nameCousinNode.isEmpty() && spawnNode.name.compareTo(spawnNode.nameCousinNode) > 0) {
-    //			SCAIEVNode precedingNode = bNodes.GetSCAIEVNode(spawnNode.nameCousinNode);
-    //			ret = Stream.concat(
-    //				priorities.getOrDefault(precedingNode, List.of()).stream().map(isax -> Map.entry(precedingNode, isax)),
-    //				ret
-    //			);
-    //		}
-    return sortedNodes.stream().flatMap(node -> priorities.getOrDefault(node, List.of()).stream().map(isax -> Map.entry(node, isax)));
+      nonportSpawnNode = bNodes.GetSCAIEVNode(nonportSpawnNode.nameCousinNode);
+    } while (!nonportSpawnNode.nameCousinNode.isEmpty());
+    return sortedNodes.stream().flatMap(node -> {
+      SCAIEVNode nodePorted = bNodes.GetAllPortsByBaseName().getOrDefault(node, List.of()).stream()
+          .filter(portnode -> bNodes.getPortName(portnode).equals(portName))
+          .findAny().orElse(node);
+      return priorities.getOrDefault(node, List.of()).stream().map(isax -> Map.entry(nodePorted, isax));
+    });
   }
   /**
    * Given a priority stream (see {@link SpawnFireStrategy#getISAXPriority(BNode, Map, SCAIEVNode)}),
@@ -345,12 +349,16 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
                         // SpawnOptionalInputFIFOStrategy.makeNotEmptyNode(bNodes, spawnNode_),
                         SpawnOptionalInputFIFOStrategy.makeLevelNode(bNodes, spawnNode_, 0 /*not relevant*/), keys.get(0).getStage(),
                         keys.get(0).getISAX()));
+                    var optInputFIFONotFullBlock = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(
+                        SpawnOptionalInputFIFOStrategy.makeNotFullNode(bNodes, spawnNode_), keys.get(0).getStage(),
+                        keys.get(0).getISAX()));
                     relevantForSet.addRelevantISAX(keys.get(0).getISAX());
+                    String optInputFIFONotFullCond = optInputFIFONotFullBlock.map(x->x.getExpressionWithParens()).orElse("1'b0");
                     Stream<String> spawnInputFIFOAsSize =
                         optInputFIFOBlock.filter(inputFIFOBlock -> inputFIFOBlock.getKey().getNode().size > 1)
                             .map(inputFIFOBlock
-                                 -> Stream.of(String.format("%d'(%s>%d'd1)", ISAX_spawn_sum.size, inputFIFOBlock.getExpression(),
-                                                            inputFIFOBlock.getKey().getNode().size)))
+                                 -> Stream.of(String.format("%d'(%s>%d'd1||!%s)", ISAX_spawn_sum.size, inputFIFOBlock.getExpression(),
+                                                            inputFIFOBlock.getKey().getNode().size, optInputFIFONotFullCond)))
                             .orElse(Stream.empty());
                     return Stream.concat(validReqAsSize, spawnInputFIFOAsSize);
                   })

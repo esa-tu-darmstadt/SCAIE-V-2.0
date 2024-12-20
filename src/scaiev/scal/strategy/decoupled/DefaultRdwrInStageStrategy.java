@@ -137,6 +137,7 @@ public class DefaultRdwrInStageStrategy extends MultiNodeStrategy {
             String.format("%s = %s /*comb. new instruction dequeue*/ || %s && !%s /*still pending sub-pipeline instruction*/;\n",
                           pendingInstrStallWire, deqInstrExpr, instrHiddenReg, wrInStageExpr);
         // Add an assertion to the assumption that a commit override can only be done with a priorly hidden instruction.
+        stallCondBody += "`ifndef SYNTHESIS\n";
         stallCondBody += String.format("if (%s && !%s) begin\n", wrInStageExpr, instrHiddenReg);
         stallCondBody +=
             tab +
@@ -145,6 +146,7 @@ public class DefaultRdwrInStageStrategy extends MultiNodeStrategy {
                 stage.getName());
         stallCondBody += tab + "$stop;\n";
         stallCondBody += "end\n";
+        stallCondBody += "`endif\n";
         ret.logic += language.CreateInAlways(false, stallCondBody);
 
         ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrStall, stage, "", aux),

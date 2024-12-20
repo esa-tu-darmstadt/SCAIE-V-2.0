@@ -28,14 +28,18 @@ public class Scheduled {
    * @param adjNode
    * @return
    */
-  public Boolean HasAdjSig(AdjacentNode adjNode) { return adjSignals.contains(adjNode); }
+  public boolean HasAdjSig(AdjacentNode adjNode) { return adjNode == AdjacentNode.none || adjSignals.contains(adjNode); }
 
   /**
    * Function to add adjacent signal to scheduled node
    * @param adjNode
    * @return
    */
-  public Boolean AddAdjSig(AdjacentNode adjNode) { return adjSignals.add(adjNode); }
+  public boolean AddAdjSig(AdjacentNode adjNode) {
+    if (adjNode != AdjacentNode.none)
+      return adjSignals.add(adjNode);
+    return false;
+  }
 
   /**
    * Returns const values for adjacent signals. For example to be used by CSRs. -1 means no constant value
@@ -45,8 +49,7 @@ public class Scheduled {
   public int GetConstAdjSig(AdjacentNode adjNode) {
     if (constAdj.containsKey(adjNode))
       return constAdj.get(adjNode);
-    else
-      return -1;
+    return -1;
   }
 
   @Override

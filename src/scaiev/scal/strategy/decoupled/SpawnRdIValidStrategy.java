@@ -235,6 +235,7 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
             counterLogic += tab + String.format("%s <= 0;\n", counterRegName, counterWidthStr);
             counterLogic += "end\n";
             counterLogic += "else begin\n";
+            counterLogic += tab + "`ifndef SYNTHESIS\n";
             counterLogic += tab + String.format("if (%s && (%s) && !(%s)) begin\n", stallCond, issueCond, commitCond);
             counterLogic += tab + tab + String.format("$display(\"ERROR: %s ISAX counter overflow\");\n", nodeKey.getISAX());
             counterLogic += tab + tab + "$stop;\n";
@@ -243,6 +244,7 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
             counterLogic += tab + tab + String.format("$display(\"ERROR: %s ISAX counter underflow\");\n", nodeKey.getISAX());
             counterLogic += tab + tab + "$stop;\n";
             counterLogic += tab + "end\n";
+            counterLogic += tab + "`endif\n";
             counterLogic += tab + String.format("%s <= (!(%s) ? (%s - (%s ? 1 : 0)) : 0) + (%s ? 1 : 0);\n", counterRegName, flushCond,
                                                 counterRegName, commitCond, issueCond);
             counterLogic += "end\n";

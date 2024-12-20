@@ -26,23 +26,10 @@ public class NodeLogicBlock {
      * Used for wrapper netlist generation.
      */
     public NodeInstanceDesc nodeDesc;
-    /**
-     * List of receivers/senders for a wrapper netlist around SCAL.
-     * - A list of ISAXes for SCAL<->ISAX pins tagged with InterfToISAXKey.
-     *   For inputs to SCAL, there must be exactly one entry.
-     * - Empty for SCAL<->Core pins tagged with InterfToCoreKey.
-     */
-    public List<String> receivers;
 
     public InterfacePin(String declaration, NodeInstanceDesc nodeDesc) {
       this.declaration = declaration;
       this.nodeDesc = nodeDesc;
-      this.receivers = new ArrayList<String>();
-    }
-    public InterfacePin(String declaration, NodeInstanceDesc nodeDesc, Collection<String> receivers) {
-      this.declaration = declaration;
-      this.nodeDesc = nodeDesc;
-      this.receivers = new ArrayList<String>(receivers);
     }
 
     @Override
@@ -58,8 +45,7 @@ public class NodeLogicBlock {
       if (getClass() != obj.getClass())
         return false;
       InterfacePin other = (InterfacePin)obj;
-      return Objects.equals(declaration, other.declaration) && Objects.equals(nodeDesc, other.nodeDesc) &&
-          Objects.equals(receivers, other.receivers);
+      return Objects.equals(declaration, other.declaration) && Objects.equals(nodeDesc, other.nodeDesc);
     }
   }
 

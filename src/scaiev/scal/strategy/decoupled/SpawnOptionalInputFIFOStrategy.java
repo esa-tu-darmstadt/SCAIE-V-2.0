@@ -14,6 +14,7 @@ import scaiev.coreconstr.Core;
 import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
+import scaiev.frontend.SCAIEVNode.NodeTypeTag;
 import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
 import scaiev.scal.NodeInstanceDesc;
@@ -25,6 +26,8 @@ import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.NodeRegistryRO;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.decoupled.DecoupledStandardModulesStrategy.FIFOFeature;
+import scaiev.ui.SCAIEVConfig;
+import scaiev.util.Log2;
 import scaiev.util.Verilog;
 
 /**
@@ -42,6 +45,7 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
   HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr;
   HashMap<String, SCAIEVInstr> allISAXes;
   boolean SETTINGwithInputFIFO;
+  SCAIEVConfig cfg;
   /**
    * @param language The (Verilog) language object
    * @param bNodes The BNode object for the node instantiation
@@ -49,16 +53,19 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
    * @param op_stage_instr The Node-Stage-ISAX mapping
    * @param allISAXes The ISAX descriptions
    * @param SETTINGwithInputFIFO Flag if a FIFO should be created rather than a plain assignment
+   * @param cfg The SCAIE-V global config
    */
   public SpawnOptionalInputFIFOStrategy(Verilog language, BNode bNodes, Core core,
                                         HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
-                                        HashMap<String, SCAIEVInstr> allISAXes, boolean SETTINGwithInputFIFO) {
+                                        HashMap<String, SCAIEVInstr> allISAXes, boolean SETTINGwithInputFIFO,
+                                        SCAIEVConfig cfg) {
     this.language = language;
     this.bNodes = bNodes;
     this.core = core;
     this.op_stage_instr = op_stage_instr;
     this.allISAXes = allISAXes;
     this.SETTINGwithInputFIFO = SETTINGwithInputFIFO;
+    this.cfg = cfg;
   }
 
   @Override
@@ -83,9 +90,7 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
    * For registry lookups, fifoDepth should be set to 0. The node from the lookup will have the correct {@link SCAIEVNode#size} value.
    */
   public static SCAIEVNode makeLevelNode(BNode bNodes, SCAIEVNode spawnNode, int fifoDepth) {
-    int width = 0;
-    for (int tmp = fifoDepth; tmp > 1; ++width, tmp >>= 1)
-      ;
+    int width = (fifoDepth == 0) ? 0 : Log2.clog2(fifoDepth);
     return makeSpawnInputFIFOSubNode(bNodes, spawnNode, "level", width);
   }
   /**
@@ -176,7 +181,7 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
                             -> registry.lookupExpressionRequired(
                                 new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN_NONLATCH, cancelReq, spawnStage, ISAX)));
 
-      int fifoDepth = 4;
+      int fifoDepth = cfg.spawn_input_fifo_depth;
 
       boolean mustBeInorder = false;
       for (var nodeInst :
@@ -355,7 +360,7 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
       readLogic += tab + "end\n";
       readLogic += tab + String.format("if (%s && %s != %d'd1) begin\n", validRespVal, fifo_level_wireName, fifoLevelNode.size);
       if (mustBeInorder) {
-        // TODO: If there is another FIFO element, output it directly; else, pass through the new input.
+        // If there is another FIFO element, output it directly; else, pass through the new input.
         //  -> Needs SimpleFIFO support: read at wrap(read_ptr+1)
         //     (maybe a shiftreg over the two next FIFO elements would do)
 
@@ -370,7 +375,7 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
           if (cancelFifoIO.isPresent())
             readLogic += tab + tab + String.format("%s = 0;\n", cancelFifoIO.get().outDest);
         } else {
-          readLogic += tab + tab + "//Readahead ensures the next request from the FIFO will be used (preserving ordering).\n";
+          readLogic += tab + tab + "//Readahead already ensures the next request from the FIFO will be used (preserving ordering).\n";
         }
       } else {
         readLogic += tab + tab + "//Still pass through the new request immediately (if present), but write it to the front\n";
@@ -418,6 +423,19 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
       if (!nodeKey.getPurpose().matches(Purpose.REGULAR_LATCHING) || !nodeKey.getNode().isSpawn() || nodeKey.getISAX().isEmpty() ||
           !(nodeKey.getStage().getKind() == StageKind.Decoupled || nodeKey.getStage().getKind() == StageKind.Core) || nodeKey.getAux() != 0)
         continue;
+      SCAIEVNode nodeNonadj = bNodes.GetNonAdjNode(nodeKey.getNode());
+      if (nodeNonadj.name.isEmpty()) {
+        logger.error("SpawnOptionalInputFIFOStrategy: Not handling node {} with non-existing base", nodeKey.getNode().name);
+        continue;
+      }
+      if (nodeNonadj.tags.contains(NodeTypeTag.supportsPortNodes) && !nodeNonadj.tags.contains(NodeTypeTag.isPortNode)
+          && op_stage_instr.keySet().stream()
+             .filter(op->op.tags.contains(NodeTypeTag.isPortNode) && op.nameParentNode.equals(nodeNonadj.name))
+             .anyMatch(op->op_stage_instr.get(op).getOrDefault(nodeKey.getStage(), new HashSet<>())
+                 .contains(nodeKey.getISAX()))
+          ) {
+        continue;
+      }
       //			if (nodeKey.getNode().isAdj()
       //				&&
       //! allISAXes.get(nodeKey.getISAX()).GetFirstNode(bNodes.GetSCAIEVNode(nodeKey.getNode().nameParentNode))

@@ -31,6 +31,7 @@ import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVInstr.InstrTag;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
+import scaiev.ui.SCAIEVConfig;
 
 public class SCAIEVCmd {
   // logging
@@ -102,8 +103,36 @@ public class SCAIEVCmd {
     options.addOption(Option.builder("q").longOpt("quiet").required(false).desc("Turn off all messages").build());
     options.addOption(Option.builder("v").longOpt("verbose").required(false).desc("Verbose printing").build());
     options.addOption(Option.builder("vv").longOpt("vverbose").required(false).desc("Print debug information and enable -v").build());
+    options.addOption(Option.builder("ctx")
+                          .longOpt("contexts")
+                          .argName("amount")
+                          .hasArg()
+                          .required(false)
+                          .desc("Amount of internally-implemented contexts")
+                          .build());
+    options.addOption(Option.builder("decoupled_without_DH")
+                          .required(false)
+                          .desc("Disable data hazard handling for decoupled instructions")
+                          .build());
+    options.addOption(Option.builder("decoupled_without_input_fifo")
+                          .required(false)
+                          .desc("Do not buffer decoupled instruction results in FIFOs and drop them instead during collisions")
+                          .build());
+    options.addOption(Option.builder("spawn_input_fifo_depth")
+                          .required(false)
+                          .argName("depth")
+                          .hasArg()
+                          .desc("The depth of the FIFO for decoupled instruction results (disabled by -decoupled_without_input_fifo true)")
+                          .build());
+    options.addOption(Option.builder("semicoupled_fifo_depth")
+                          .required(false)
+                          .argName("depth")
+                          .hasArg()
+                          .desc("The depth of the FIFOs tracking each semi-coupled instruction")
+                          .build());
 
     //////////   collect options   //////////
+    var cfg = new SCAIEVConfig();
     Stream<File> isaxYamlFiles = Stream.empty(); // Note: Stream is mostly single-use, then becomes invalid
     String core = "";
     String outputDir = "";
@@ -114,6 +143,36 @@ public class SCAIEVCmd {
       // print help if requested
       if (line.hasOption("h")) {
         printHelpAndExit(options);
+      }
+
+      // set up scaiev cfg
+      if (line.hasOption("ctx")) {
+        cfg.number_of_contexts = parseIntArgOrThrow(line.getOptionValue("ctx"), "ctx");
+        if (cfg.number_of_contexts <= 0) {
+          throw new ParseException("ctx must not be below 1");
+        }
+      }
+
+      if (line.hasOption("decoupled_without_DH")) {
+        cfg.decoupled_data_hazard_handling = false;
+      }
+
+      if (line.hasOption("decoupled_without_input_fifo")) {
+        cfg.decoupled_with_input_fifo = false;
+      }
+
+      if (line.hasOption("spawn_input_fifo_depth")) {
+        cfg.spawn_input_fifo_depth = parseIntArgOrThrow(line.getOptionValue("spawn_input_fifo_depth"), "spawn_input_fifo_depth");
+        if (cfg.spawn_input_fifo_depth <= 0) {
+          throw new ParseException("spawn_input_fifo_depth must not be below 1");
+        }
+      }
+
+      if (line.hasOption("semicoupled_fifo_depth")) {
+        cfg.semicoupled_fifo_depth = parseIntArgOrThrow(line.getOptionValue("semicoupled_fifo_depth"), "semicoupled_fifo_depth");
+        if (cfg.semicoupled_fifo_depth <= 0) {
+          throw new ParseException("semicoupled_fifo_depth must not be below 1");
+        }
       }
 
       core = line.getOptionValue("c");
@@ -166,9 +225,18 @@ public class SCAIEVCmd {
       isaxYamlFiles.forEach((File file) -> { parseYAML(file, core_, shim); });
     }
     shim.DefNewNodes(earliest_operation);
+    shim.setSCAL(cfg);
     boolean success = shim.Generate(core, outputDir);
 
     System.exit(success ? 0 : 1);
+  }
+
+  private static int parseIntArgOrThrow(String str, String optionName) throws ParseException {
+    try {
+      return Integer.valueOf(str);
+    } catch (NumberFormatException e) {
+      throw new ParseException("Cannot parse integer argument '%s'".formatted(optionName));
+    }
   }
 
   // parse yaml and translate the description to scaiev objects

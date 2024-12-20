@@ -365,7 +365,7 @@ public class CoreDatab {
 
             // Add the special decoupled stage to the end of the pipeline.
             PipelineStage decoupledStage =
-                new PipelineStage(StageKind.Decoupled, EnumSet.of(StageTag.InOrder), "decoupled", Optional.of(maxStage + 1), true);
+                new PipelineStage(StageKind.Decoupled, EnumSet.of(StageTag.InOrder, StageTag.Commit), "decoupled", Optional.of(maxStage + 1), true);
             rootStage.getChildrenTails().forEach(tailStage -> {
               assert (tailStage.getKind() == StageKind.Core);
               tailStage.addNext(decoupledStage);

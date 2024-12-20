@@ -15,6 +15,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import scaiev.backend.BNode;
@@ -44,6 +46,8 @@ import scaiev.scal.strategy.SingleNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
 import scaiev.scal.strategy.decoupled.DecoupledDHStrategy;
 import scaiev.scal.strategy.decoupled.SpawnFenceStrategy;
+import scaiev.scal.strategy.state.SCALStateContextStrategy;
+import scaiev.ui.SCAIEVConfig;
 import scaiev.util.FileWriter;
 import scaiev.util.Verilog;
 
@@ -67,6 +71,7 @@ public class SCAL implements SCALBackendAPI {
   private Core core;
   private Verilog myLanguage;
   private ArrayList<NodeLogicBuilder> globalLogicBuilders = new ArrayList<>();
+  private SCAIEVConfig cfg;
   private static class VirtualBackend extends CoreBackend {
     @Override
     public String getCorePathIn() {
@@ -102,7 +107,9 @@ public class SCAL implements SCALBackendAPI {
     /** Cancel all decoupled instructions */
     kill(new SCAIEVInstr("disaxkill", "-------", "110", "0001011", "S")),
     /** Stall pipeline till all decoupled instructions are done */
-    fence(new SCAIEVInstr("disaxfence", "-------", "111", "0001011", "S"));
+    fence(new SCAIEVInstr("disaxfence", "-------", "111", "0001011", "S")),
+    /** Switch context bank for custom registers */
+    ctx(new SCAIEVInstr("isaxctx", "-------", "101", "0001011", "S"));
     public final SCAIEVInstr instr;
 
     private PredefInstr(SCAIEVInstr instr) { this.instr = instr; }
@@ -134,12 +141,10 @@ public class SCAL implements SCALBackendAPI {
   public HashMap<String, SCALPinNet> netlist = new HashMap<>(); // Nets by scal_module_pin
   private HashMap<NodeInstanceDesc.Key, NodeInstanceDesc.Key> renamedISAXInterfacePins = new HashMap<>();
 
-  public void SetSCAL(boolean nonDecWithDH, boolean decWithValid, boolean decWithAddr, boolean decWithInpFIFO) {
-
-    this.SETTINGWithScoreboard = nonDecWithDH;
-    // this.SETTINGWithValid = decWithValid;
-    // this.SETTINGWithAddr = decWithAddr;
-    this.SETTINGwithInputFIFO = decWithInpFIFO;
+  public void SetSCAL(SCAIEVConfig cfg) {
+    this.SETTINGWithScoreboard = cfg.decoupled_data_hazard_handling;
+    this.SETTINGwithInputFIFO = cfg.decoupled_with_input_fifo;
+    this.cfg = cfg;
   }
 
   public void AddISAXInterfacePinRenames(Iterable<Map.Entry<NodeInstanceDesc.Key, NodeInstanceDesc.Key>> renames) {
@@ -459,25 +464,18 @@ public class SCAL implements SCALBackendAPI {
     for (String customRegName : customRegNames) {
       Optional<SCAIEVNode> readNode_opt = BNode.GetSCAIEVNode_opt(FNode.rdPrefix + customRegName);
       Optional<SCAIEVNode> writeNode_opt = BNode.GetSCAIEVNode_opt(FNode.wrPrefix + customRegName);
-
-      if (readNode_opt.isPresent()) {
-        NodeInstanceDesc.Key rdMarkerKey = new NodeInstanceDesc.Key(Purpose.MARKER_CUSTOM_REG, readNode_opt.get(), core.GetRootStage(), "");
-        NodeLogicBuilder rdBuilder = NodeLogicBuilder.fromFunction("customRegBuilder_" + rdMarkerKey.toString(false), registry -> {
+      Optional<SCAIEVNode> writeNode_spawn_opt = writeNode_opt.flatMap(wrNode -> BNode.GetEquivalentSpawnNode(wrNode));
+      for (SCAIEVNode customRegNode : Stream.concat(
+            readNode_opt.stream(),
+            Stream.concat(writeNode_opt.stream(), writeNode_spawn_opt.stream())
+           ).toList()) {
+        NodeInstanceDesc.Key markerKey = new NodeInstanceDesc.Key(Purpose.MARKER_CUSTOM_REG, customRegNode, core.GetRootStage(), "");
+        NodeLogicBuilder markerBuilder = NodeLogicBuilder.fromFunction("customRegBuilder_" + markerKey.toString(false), registry -> {
           // explicitly request output
-          registry.lookupExpressionRequired(rdMarkerKey);
+          registry.lookupExpressionRequired(markerKey);
           return new NodeLogicBlock();
         });
-        globalLogicBuilders.add(rdBuilder);
-      }
-      if (writeNode_opt.isPresent()) {
-        NodeInstanceDesc.Key wrMarkerKey =
-            new NodeInstanceDesc.Key(Purpose.MARKER_CUSTOM_REG, writeNode_opt.get(), core.GetRootStage(), "");
-        NodeLogicBuilder wrBuilder = NodeLogicBuilder.fromFunction("customRegBuilder_" + wrMarkerKey.toString(false), registry -> {
-          // explicitly request output
-          registry.lookupExpressionRequired(wrMarkerKey);
-          return new NodeLogicBlock();
-        });
-        globalLogicBuilders.add(wrBuilder);
+        globalLogicBuilders.add(markerBuilder);
       }
     }
 
@@ -514,8 +512,7 @@ public class SCAL implements SCALBackendAPI {
     // For RdMem, RdRS*, RdInstr, etc.
     MultiNodeStrategy readNodeStrategy_pipelineable = strategyBuilders.buildNodeRegPipelineStrategy(
         this.myLanguage, BNode, generalMinPipelineFront, false, false, false, // No need zeroing non-control data registers
-        key
-        -> {
+        key -> {
           PipelineStage stage = key.getStage();
           while (stage.getKind() == StageKind.Sub) {
             stage = stage.getParent().get();
@@ -554,7 +551,11 @@ public class SCAL implements SCALBackendAPI {
 
     // Step 2: generate Valid bits for all other nodes
 
-    MultiNodeStrategy scalStateStrategy = strategyBuilders.buildSCALStateStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes);
+    MultiNodeStrategy scalStateStrategy = strategyBuilders.buildSCALStateStrategy(myLanguage, BNode, core, op_stage_instr,
+                                                                                  spawn_instr_stage, ISAXes, cfg);
+
+    MultiNodeStrategy scalStateContextStrategy =
+        strategyBuilders.buildSCALStateContextStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes, cfg);
 
     SingleNodeStrategy normalValidBitStrategy = strategyBuilders.buildValidMuxStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes);
 
@@ -588,7 +589,7 @@ public class SCAL implements SCALBackendAPI {
     SingleNodeStrategy pipeoutRegularStrategy = strategyBuilders.buildPipeoutRegularStrategy();
     MultiNodeStrategy defaultMemAdjStrategy = strategyBuilders.buildDefaultMemAdjStrategy(myLanguage, BNode, core);
     SingleNodeStrategy defaultValidCancelReqStrategy = strategyBuilders.buildDefaultValidCancelReqStrategy(myLanguage, BNode, core, ISAXes);
-    SingleNodeStrategy defaultRerunStrategy = strategyBuilders.buildDefaultRerunStrategy(myLanguage, BNode, core);
+    MultiNodeStrategy defaultRerunStrategy = strategyBuilders.buildDefaultRerunStrategy(myLanguage, BNode, core);
 
     //////////////////////////  Spawn/Decoupled //////////////////////////
     Map<SCAIEVNode, Collection<String>> isaxPriorities = new HashMap<>();
@@ -630,15 +631,15 @@ public class SCAL implements SCALBackendAPI {
     MultiNodeStrategy spawnCommittedRdStrategy = strategyBuilders.buildSpawnCommittedRdStrategy(myLanguage, BNode, core);
     MultiNodeStrategy spawnOrderedMuxStrategy = strategyBuilders.buildSpawnOrderedMuxStrategy(
         myLanguage, BNode, core, op_stage_instr, spawn_instr_stage, ISAXes, SETTINGenforceOrdering_Memory_Semicoupled,
-        SETTINGenforceOrdering_Memory_Decoupled, SETTINGenforceOrdering_User_Semicoupled, SETTINGenforceOrdering_User_Decoupled);
+        SETTINGenforceOrdering_Memory_Decoupled, SETTINGenforceOrdering_User_Semicoupled, SETTINGenforceOrdering_User_Decoupled, this.cfg);
     MultiNodeStrategy spawnFireStrategy = strategyBuilders.buildSpawnFireStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes,
                                                                                   isaxPriorities, disableSpawnFireStallNodes);
     SingleNodeStrategy spawnRegisterStrategy =
         strategyBuilders.buildSpawnRegisterStrategy(myLanguage, BNode, core, op_stage_instr, isaxPriorities);
     MultiNodeStrategy spawnOutputSelectStrategy =
         strategyBuilders.buildSpawnOutputSelectStrategy(myLanguage, BNode, core, op_stage_instr, isaxPriorities);
-    MultiNodeStrategy spawnOptionalInputFIFOStrategy =
-        strategyBuilders.buildSpawnOptionalInputFIFOStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes, this.SETTINGwithInputFIFO);
+    MultiNodeStrategy spawnOptionalInputFIFOStrategy = strategyBuilders.buildSpawnOptionalInputFIFOStrategy(
+        myLanguage, BNode, core, op_stage_instr, ISAXes, this.SETTINGwithInputFIFO, this.cfg);
     MultiNodeStrategy spawnFenceStrategy = strategyBuilders.buildSpawnFenceStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes,
                                                                                     SETTINGWithScoreboard || hasCustomWrRDSpawnDH);
 
@@ -649,6 +650,15 @@ public class SCAL implements SCALBackendAPI {
     if (ISAXes.containsKey(SCAL.PredefInstr.fence.instr.GetName())) {
       globalLogicBuilders.add(NodeLogicBuilder.fromFunction("Request disaxfence_stall", registry -> {
         registry.lookupExpressionRequired(new NodeInstanceDesc.Key(SpawnFenceStrategy.disaxfence_stall_node, core.GetRootStage(), ""));
+        return new NodeLogicBlock();
+      }));
+    }
+
+    // Request context switch implementation
+    if (ISAXes.containsKey(SCAL.PredefInstr.ctx.instr.GetName())) {
+      globalLogicBuilders.add(NodeLogicBuilder.fromFunction("Request isaxctx", registry -> {
+        registry.lookupExpressionRequired(
+            new NodeInstanceDesc.Key(Purpose.MARKER_INTERNALIMPL_PIN, SCALStateContextStrategy.isaxctx_node, core.GetRootStage(), ""));
         return new NodeLogicBlock();
       }));
     }
@@ -673,6 +683,9 @@ public class SCAL implements SCALBackendAPI {
           backendPreStrategies.forEach((s) -> s.implement(out, nodeKeys, isLast));
 
         // execute common strategies
+        scalStateStrategy.implement(out, nodeKeys, isLast);
+        scalStateContextStrategy.implement(out, nodeKeys, isLast);
+        
         decoupledDHStrategy.implement(out, nodeKeys, isLast);
         spawnOrderedMuxStrategy.implement(out, nodeKeys, isLast);
         spawnFireStrategy.implement(out, nodeKeys, isLast);
@@ -686,7 +699,6 @@ public class SCAL implements SCALBackendAPI {
         decoupledStandardModulesStrategy.implement(out, nodeKeys, isLast);
         spawnRegisterStrategy.implement(out, nodeKeys, isLast);
         spawnFenceStrategy.implement(out, nodeKeys, isLast);
-        scalStateStrategy.implement(out, nodeKeys, isLast);
         defaultRdwrInStageStrategy.implement(out, nodeKeys, isLast);
         defaultRerunStrategy.implement(out, nodeKeys, isLast);
 
@@ -724,6 +736,45 @@ public class SCAL implements SCALBackendAPI {
         FileOutputStream fos = new FileOutputStream(dotFile, false);
         PrintWriter out = new PrintWriter(fos);
         composer.writeLogAsDot(out);
+        out.close();
+      } catch (IOException e) {
+        e.printStackTrace();
+      }
+
+      // Also write a log with the outputs of all builders.
+      File builderOutputsLogFile = new File(outPath, "CommonLogicModule_builder_outputs_log.txt");
+      try {
+        FileOutputStream fos = new FileOutputStream(builderOutputsLogFile, false);
+        PrintWriter out = new PrintWriter(fos);
+        for (NodeBuilderEntry builderEntry : builtNodes) {
+          if (builderEntry.block.isEmpty())
+            continue; // i.e. continue forEach
+          NodeLogicBlock logicBlock = builderEntry.block.get();
+          out.append("============================\n");
+          out.append(builderEntry.builder.toString() + ":\n");
+          for (var output : logicBlock.outputs) {
+            String outType = "OUT";
+            if (output.getExpressionType() == ExpressionType.ModuleOutput)
+              outType = "OUT[PIN]";
+            out.append(" -%s %s = %s \"%s\"\n".formatted(outType, output.getKey().toString(true), output.getExpressionType().name(),
+                                                           output.getExpression()));
+            out.append(
+                "  requestedFor: " +
+                output.getRequestedFor().getRelevantISAXes().stream().map(a -> "\"" + a + "\"").reduce((a, b) -> a + "," + b).orElse("") +
+                "\n");
+          }
+          for (var interfEntry : logicBlock.interfPins) {
+            NodeLogicBlock.InterfacePin interfPin = interfEntry.getValue();
+            var nodeDesc = interfPin.nodeDesc;
+            out.append(" -PIN %s = %s \"%s\"\n".formatted(nodeDesc.getKey().toString(true), nodeDesc.getExpressionType().name(),
+                                                            nodeDesc.getExpression()));
+            out.append("  declaration: " + interfPin.declaration);
+            out.append(
+                "  requestedFor: " +
+                nodeDesc.getRequestedFor().getRelevantISAXes().stream().map(a -> "\"" + a + "\"").reduce((a, b) -> a + "," + b).orElse("") +
+                "\n");
+          }
+        }
         out.close();
       } catch (IOException e) {
         e.printStackTrace();

@@ -18,13 +18,12 @@ public class PipeoutRegularStrategy extends SingleNodeStrategy {
   @Override
   public Optional<NodeLogicBuilder> implement(Key nodeKey) {
     if (nodeKey.getPurpose().matches(NodeInstanceDesc.Purpose.PIPEOUT)) {
+      var requestedFor = new RequestedForSet();
       return Optional.of(
           NodeLogicBuilder.fromFunction("PipeoutRegularStrategy (" + nodeKey.toString(false) + ")", (NodeRegistryRO registry) -> {
             var fromKey = new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, nodeKey.getNode(),
                                                    nodeKey.getStage(), nodeKey.getISAX(), nodeKey.getAux());
-            var fromKeyNodeInst = registry.lookupRequired(fromKey);
-            var requestedFor = new RequestedForSet();
-            requestedFor.addAll(fromKeyNodeInst.getRequestedFor(), true);
+            var fromKeyNodeInst = registry.lookupRequired(fromKey, requestedFor);
 
             NodeLogicBlock ret = new NodeLogicBlock();
             ret.outputs.add(new NodeInstanceDesc(nodeKey, fromKeyNodeInst.getExpression(), ExpressionType.AnyExpression, requestedFor));

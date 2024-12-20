@@ -308,7 +308,7 @@ public class IDBasedPipelineStrategy extends MultiNodeStrategy {
         int curSize = curNode.size;
         if (bufferedNodeInferredFromIDValid.test(curNode)) {
           assert (curSize == 1);
-          continue;
+          curSize = 0;
         }
         bufferOffsets[iBufferNode + 1] = bufferOffsets[iBufferNode] + curSize;
       }
@@ -744,11 +744,12 @@ public class IDBasedPipelineStrategy extends MultiNodeStrategy {
       makeCountDeclLogic(logicBlock, retireIDStages, retirePipeConditionWires, "retire", retireCountWire);
 
       logicBlock.logic +=
-          "always_comb begin\n" + language.tab.repeat(1) +
+          "`ifndef SYNTHESIS\n"
+          + "always_comb begin\n" + language.tab.repeat(1) +
           String.format("if (%s > (%s - %s)) begin\n", retireCountWire, retireInnerNextIDPlusIRegs[0], assignInnerNextIDPlusIRegs[0]) +
           language.tab.repeat(2) + String.format("$display(\"ERROR: Underflow in IDBasedPipelineStrategy(%d)\");\n", uniqueID) +
           language.tab.repeat(2) + String.format("$stop;\n", uniqueID) + language.tab.repeat(1) + "end\n"
-          + "end\n";
+          + "end\n`endif\n";
 
       logicBlock.declarations += String.format("reg [%d-1:0] %s [%d];\n", innerIDWidth, mappingArray, 1 << node_RdID.size);
       String mappingUpdateLogic = "";

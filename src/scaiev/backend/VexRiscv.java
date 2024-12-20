@@ -2,7 +2,11 @@ package scaiev.backend;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import scaiev.coreconstr.Core;
@@ -15,11 +19,18 @@ import scaiev.frontend.SCAIEVNode.NodeTypeTag;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
+import scaiev.scal.NodeInstanceDesc;
+import scaiev.scal.NodeLogicBuilder;
+import scaiev.scal.NodeRegistryRO;
+import scaiev.scal.strategy.MultiNodeStrategy;
+import scaiev.scal.strategy.StrategyBuilders;
+import scaiev.scal.strategy.pipeline.NodeRegPipelineStrategy;
+import scaiev.scal.strategy.standard.DefaultRerunStrategy;
 import scaiev.util.FileWriter;
 import scaiev.util.GenerateText.DictWords;
-import scaiev.util.Lang;
 import scaiev.util.SpinalHDL;
 import scaiev.util.ToWrite;
+import scaiev.util.Verilog;
 // c524335
 public class VexRiscv extends CoreBackend {
   // logging
@@ -34,21 +45,24 @@ public class VexRiscv extends CoreBackend {
   private HashMap<String, SCAIEVInstr> ISAXes;
   private HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr;
   private PipelineStage[] stages;
+  private PipelineStage stage_pcReg;
   private FileWriter toFile = new FileWriter(pathCore);
   private String filePlugin;
   private String extension_name;
   private SpinalHDL language = null;
   private HashMap<SCAIEVNode, Integer> spawnStages = new HashMap<SCAIEVNode, Integer>();
+  private StrategyBuilders strategyBuilders;
   public FNode FNode = new FNode();
   public BNode BNode = new BNode();
-  private int nrTabs = 0;
   public VexRiscv(Core vex_core) { this.vex_core = vex_core; }
   public void Prepare(HashMap<String, SCAIEVInstr> ISAXes, HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
                       Core core, SCALBackendAPI scalAPI, BNode user_BNode) {
     super.Prepare(ISAXes, op_stage_instr, core, scalAPI, user_BNode);
-    this.stages = core.GetRootStage().getAllChildren().collect(Collectors.toList()).toArray(n -> new PipelineStage[n]);
+    this.vex_core = core;
+    this.stages = core.GetRootStage().getAllChildren().filter(stage -> stage.getKind() != StageKind.CoreInternal).collect(Collectors.toList()).toArray(n -> new PipelineStage[n]);
     for (int i = 0; i < this.stages.length; ++i)
       assert (this.stages[i].getStagePos() == i);
+    this.stage_pcReg = core.GetRootStage().getAllChildren().filter(stage -> stage.getName().equals("fetch_pcreg")).findAny().orElseThrow();
     this.BNode = user_BNode;
     this.language = new SpinalHDL(user_BNode, toFile, this);
     int stage_mem_valid = this.vex_core.GetNodes().get(BNode.RdInstr).GetEarliest().asInt();
@@ -59,12 +73,52 @@ public class VexRiscv extends CoreBackend {
     BNode.WrCommit_spawn_validReq.tags.add(NodeTypeTag.noCoreInterface);
     BNode.WrCommit_spawn_validResp.tags.add(NodeTypeTag.noCoreInterface);
     core.PutNode(BNode.RdInStageValid,
-                 new CoreNode(1, 0, vexInterfaceStageNames.length, vexInterfaceStageNames.length + 1, BNode.RdInStageValid.name));
+                 new CoreNode(1, 0, this.stages.length - 1, this.stages.length, BNode.RdInStageValid.name));
+    this.strategyBuilders = scalAPI.getStrategyBuilders();
+    scalAPI.getStrategyBuilders().put(StrategyBuilders.UUID_NodeRegPipelineStrategy, args -> this.build_vexNodeRegPipelineStrategy(args));
+    //scalAPI.getStrategyBuilders().put(StrategyBuilders.UUID_DefaultRerunStrategy, args -> this.build_vexRerunStrategy(args));
+  }
+  
+//  private MultiNodeStrategy build_vexRerunStrategy(Map<String, Object> args) {
+//    return new DefaultRerunStrategy(strategyBuilders,
+//                                    (Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core")) {
+//      @Override
+//      protected boolean wrFlushPreventsFetch() {
+//        //Override to true: WrFlush during WrPC may skip the fetch from the desired PC.
+//        return true;
+//      }
+//    };
+//  }
+  @SuppressWarnings("unchecked")
+  private MultiNodeStrategy build_vexNodeRegPipelineStrategy(Map<String, Object> args) {
+    // Build a NodeRegPipelineStrategy, tweaked to pipeline Fetch->Decode through the internal fetch_pcreg stage.
+    return new NodeRegPipelineStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (PipelineFront)args.get("minPipeFront"),
+                                       (Boolean)args.get("zeroOnFlushSrc"), (Boolean)args.get("zeroOnFlushDest"),
+                                       (Boolean)args.get("zeroOnBubble"), (Predicate<NodeInstanceDesc.Key>)args.get("can_pipe"),
+                                       (Predicate<NodeInstanceDesc.Key>)args.get("prefer_direct"),
+                                       (MultiNodeStrategy)args.get("strategy_instantiateNew")) {
+      @Override
+      protected NodeLogicBuilder makePipelineBuilder_single(NodeInstanceDesc.Key nodeKey, ImplementedKeyInfo implementation) {
+        PipelineStage stage = nodeKey.getStage();
+        assert (minPipeFront.isAroundOrBefore(stage, false));
+        var stage_prev = stage.getPrev();
+        if (stage_prev.size() == 0) {
+          return NodeLogicBuilder.makeEmpty();
+        }
+        assert(stages[1].getName().equals("decode"));
+        if (stage_prev.size() > 1 && !stage.equals(stages[1])) {
+          logger.error("VexRiscv: Unexpected pipeline layout");
+          return NodeLogicBuilder.makeEmpty();
+        }
+        PipelineStage prevStage = stage.equals(stages[1]) ? stage_pcReg : stage_prev.get(0);
+        return makePipelineBuilder_singleFF(nodeKey, implementation, stage, prevStage);
+      }
+    };
   }
   public boolean Generate(HashMap<String, SCAIEVInstr> ISAXes, HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
                           String extension_name, Core core, String out_path) { // core needed for verification purposes
     // Set variables
-    this.vex_core = vex_core;
+    this.vex_core = core;
     this.ISAXes = ISAXes;
     this.op_stage_instr = op_stage_instr;
     this.extension_name = extension_name;
@@ -90,7 +144,8 @@ public class VexRiscv extends CoreBackend {
     language.CloseBrackets(); // close class
     // Configs
     IntegrateISAX_UpdateConfigFile();      // If everything went well, also update config file
-    IntegrateISAX_UpdateArbitrationFile(); // in case of WrRD spawn, update arbitration
+    IntegrateISAX_UpdateStageFile();
+    IntegrateISAX_UpdatePipelineFile();
     IntegrateISAX_UpdateRegFforSpawn();    // in case of WrRD spawn, update arbitration
     IntegrateISAX_UpdateIFetchFile();
     IntegrateISAX_UpdateDHFile();
@@ -141,7 +196,7 @@ public class VexRiscv extends CoreBackend {
         op_stage_instr.containsKey(BNode.RdMem_spawn) || op_stage_instr.containsKey(BNode.WrMem_spawn))
       toFile.UpdateContent(filePlugin, "var dBusAccess : DBusAccess = null");
 
-    if (ContainsOpInStage(BNode.WrPC, 0) || op_stage_instr.containsKey(BNode.WrPC_spawn) || ContainsOpInStage(BNode.RdPC, 0))
+    if (usesJumpInFetch())
       toFile.UpdateContent(filePlugin, "var  jumpInFetch : JumpInFetch = null");
   }
 
@@ -251,18 +306,15 @@ public class VexRiscv extends CoreBackend {
     // toFile.nrTabs should be 2
     String setupServices = "";
     if (op_stage_instr.containsKey(BNode.WrPC)) {
-      boolean warning_spawn = false;
       for (int i = 1; i <= this.vex_core.maxStage; i++) {
         if (op_stage_instr.get(BNode.WrPC).containsKey(stages[i])) {
-          if (i == 1)
-            warning_spawn = true;
           setupServices += "val flushStage_" + i + " = if (memory != null) memory else execute\n";
           setupServices += "val pcManagerService_" + i + " = pipeline.service(classOf[JumpService])\n";
           setupServices += "jumpInterface_" + i + " = pcManagerService_" + i + ".createJumpInterface(flushStage_" + i + ")\n";
         }
       }
     }
-    if (op_stage_instr.containsKey(BNode.WrPC_spawn) || this.ContainsOpInStage(BNode.WrPC, 0) || this.ContainsOpInStage(BNode.RdPC, 0)) {
+    if (usesJumpInFetch()) {
       setupServices += "jumpInFetch = pipeline.service(classOf[JumpInFetchService]).createJumpInFetchInterface();\n";
     }
     if (op_stage_instr.containsKey(BNode.RdMem) || op_stage_instr.containsKey(BNode.RdMem_spawn) ||
@@ -379,29 +431,41 @@ public class VexRiscv extends CoreBackend {
 
   public void IntegrateISAX_BuilPCNodes() {
     int spawnStage = this.vex_core.maxStage + 1;
-    String declareIO = "";
-    String logic = "";
-    if (this.ContainsOpInStage(BNode.WrPC, 0)) {
-      declareIO += toFile.tab.repeat(2) + language.CreateInterface(BNode.WrPC, stages[0], "") + toFile.tab.repeat(2) +
-                   language.CreateInterface(BNode.WrPC_valid, stages[0], "");
-      logic += toFile.tab.repeat(1) + "jumpInFetch.target_PC := io." + language.CreateNodeName(BNode.WrPC, stages[0], "") + ";\n" +
-               toFile.tab.repeat(1) + "jumpInFetch.update_PC := io." + language.CreateNodeName(BNode.WrPC_valid, stages[0], "") + ";\n";
+    StringBuilder declareIO = new StringBuilder();
+    StringBuilder logic = new StringBuilder();
+    Stream.of(new NodeInstanceDesc.Key(BNode.RdStall, stages[0], ""),
+              new NodeInstanceDesc.Key(BNode.RdStall, stage_pcReg, ""),
+              new NodeInstanceDesc.Key(BNode.RdFlush, stages[0], ""),
+              new NodeInstanceDesc.Key(BNode.RdFlush, stage_pcReg, ""),
+              new NodeInstanceDesc.Key(BNode.RdPC, stages[0], ""))
+          .filter(key -> ContainsOpInStage(key.getNode(), key.getStage()))
+          .forEach(key -> {
+            declareIO.append(toFile.tab.repeat(2) + language.CreateInterface(key.getNode(), key.getStage(), ""));
+            String assignVal = NodeAssign(key.getNode(), key.getStage());
+            logic.append(toFile.tab.repeat(1) + "io." + language.CreateNodeName(key.getNode(), key.getStage(), "") + " := " + assignVal + ";\n");
+          });
+    if (this.ContainsOpInStage(BNode.WrStall, 0)) {
+      declareIO.append(toFile.tab.repeat(2) + language.CreateInterface(BNode.WrStall, stages[0], ""));
+      logic.append(toFile.tab.repeat(1) + "when (io." + language.CreateNodeName(BNode.WrStall, stages[0], "") + ") { jumpInFetch.stall := True; };\n");
     }
-    if (this.ContainsOpInStage(BNode.RdPC, 0)) {
-      declareIO += toFile.tab.repeat(2) + language.CreateInterface(BNode.RdPC, stages[0], "");
-      logic += toFile.tab.repeat(1) + "io." + language.CreateNodeName(BNode.RdPC, stages[0], "") + " := jumpInFetch.current_pc;\n";
+    if (this.ContainsOpInStage(BNode.WrPC, 0)) {
+      declareIO.append(toFile.tab.repeat(2) + language.CreateInterface(BNode.WrPC, stages[0], "") + toFile.tab.repeat(2) +
+                       language.CreateInterface(BNode.WrPC_valid, stages[0], ""));
+      logic.append(toFile.tab.repeat(1) + "jumpInFetch.target_PC := io." + language.CreateNodeName(BNode.WrPC, stages[0], "") + ";\n" +
+                   toFile.tab.repeat(1) + "jumpInFetch.update_PC := io." + language.CreateNodeName(BNode.WrPC_valid, stages[0], "") + ";\n");
     }
     if (this.op_stage_instr.containsKey(BNode.WrPC_spawn)) {
-      declareIO += toFile.tab.repeat(2) + language.CreateInterface(BNode.WrPC_spawn, stages[spawnStage], "") + toFile.tab.repeat(2) +
-                   language.CreateInterface(BNode.WrPC_spawn_valid, stages[spawnStage], "");
-      logic += toFile.tab.repeat(1) + "jumpInFetch.target_PC := io." + language.CreateNodeName(BNode.WrPC_spawn, stages[spawnStage], "") +
-               ";\n" + toFile.tab.repeat(1) + "jumpInFetch.update_PC := io." +
-               language.CreateNodeName(BNode.WrPC_spawn_valid, stages[spawnStage], "") + ";\n";
+      declareIO.append(toFile.tab.repeat(2) + language.CreateInterface(BNode.WrPC_spawn, stages[spawnStage], "") + toFile.tab.repeat(2) +
+                       language.CreateInterface(BNode.WrPC_spawn_valid, stages[spawnStage], ""));
+      logic.append(toFile.tab.repeat(1) + "jumpInFetch.target_PC := io." + language.CreateNodeName(BNode.WrPC_spawn, stages[spawnStage], "") +
+                   ";\n" + toFile.tab.repeat(1) + "jumpInFetch.update_PC := io." +
+                   language.CreateNodeName(BNode.WrPC_spawn_valid, stages[spawnStage], "") + ";\n");
     }
-    if (this.op_stage_instr.containsKey(BNode.WrPC_spawn) | this.ContainsOpInStage(BNode.WrPC, 0))
-      logic += toFile.tab.repeat(1) + "decode.arbitration.flushNext setWhen jumpInFetch.update_PC;\n";
+    //if (this.op_stage_instr.containsKey(BNode.WrPC_spawn) | this.ContainsOpInStage(BNode.WrPC, 0))
+    //  logic += toFile.tab.repeat(1) + "decode.arbitration.flushNext setWhen jumpInFetch.update_PC;\n";
+    if (this.op_stage_instr.containsKey(BNode.WrPC_spawn) | this.ContainsOpInStage(BNode.WrPC, 0)) {}
     else if (this.ContainsOpInStage(BNode.RdPC, 0))
-      logic += toFile.tab.repeat(1) + "jumpInFetch.update_PC := False;\n";
+      logic.append(toFile.tab.repeat(1) + "jumpInFetch.update_PC := False;\n");
     String text = "pipeline plug new Area {\n" + toFile.tab.repeat(1) + "import pipeline._\n" + toFile.tab.repeat(1) +
                   "val io = new Bundle {\n" + declareIO + toFile.tab.repeat(1) + "}\n" + logic + "}\n";
     if (!logic.isEmpty())
@@ -413,7 +477,6 @@ public class VexRiscv extends CoreBackend {
    *************************************/
   public void IntegrateISAX_BuildBody(PipelineStage stage) {
     String thisStagebuild = "";
-    String clause = "";
 
     // Simple assigns
     for (SCAIEVNode operation : op_stage_instr.keySet())
@@ -785,19 +848,49 @@ public class VexRiscv extends CoreBackend {
     }
   }
 
-  /**
-   * Function for updating RegF for  WrRD Spawn
-   *
-   */
-  private void IntegrateISAX_UpdateArbitrationFile() {
+  private void IntegrateISAX_UpdateStageFile() {
     String filePath = pathRISCV + "/Stage.scala";
     toFile.AddFile(filePath, false);
     if (this.op_stage_instr.containsKey(BNode.WrRD_spawn)) {
+      //-> UpdateRegFforSpawn
       logger.debug("INTEGRATE. Updating " + filePath);
       String lineToBeInserted = " val isRegFSpawn     = False    //Inform if an instruction using the spawn construction is ready to "
                                 + "write its result in the RegFile\n";
 
       toFile.UpdateContent(filePath, "val arbitration =", new ToWrite(lineToBeInserted, false, true, ""));
+    }
+    if (Stream.of(stages).skip(1).anyMatch(stage -> ContainsOpInStage(BNode.WrFlush, stage))) {
+      String lineToBeInserted = "val flushItSV = False";
+      toFile.UpdateContent(filePath, "val flushIt", new ToWrite(lineToBeInserted, false, true, ""));
+    }
+    if (Stream.of(stages).skip(1).anyMatch(stage -> ContainsOpInStage(BNode.RdFlush, stage))) {
+      String lineToBeInserted = "val isFlushedNonSV = Bool";
+      toFile.UpdateContent(filePath, "val isFlushed", new ToWrite(lineToBeInserted, false, true, ""));
+    }
+  }
+
+  private void IntegrateISAX_UpdatePipelineFile() {
+    String filePath = pathRISCV + "/Pipeline.scala";
+    toFile.AddFile(filePath, false);
+    String isFlushedStandardLine = "stage.arbitration.isFlushed := stages.drop(stageIndex+1).map(_.arbitration.flushNext).orR || stages.drop(stageIndex).map(_.arbitration.flushIt).orR";
+    boolean hasWrFlush = Stream.of(stages).skip(1).anyMatch(stage -> ContainsOpInStage(BNode.WrFlush, stage));
+    boolean hasRdFlush = Stream.of(stages).skip(1).anyMatch(stage -> ContainsOpInStage(BNode.RdFlush, stage));
+    //WrFlush: isFlushed also depends on flushItSV
+    if (hasWrFlush) {
+      String replacedLine = isFlushedStandardLine + " || stages.drop(stageIndex).map(_.arbitration.flushItSV).orR";
+      toFile.ReplaceContent(filePath, isFlushedStandardLine, new ToWrite(replacedLine, false, true, ""));
+    }
+    //Assign isFlushedNonSV for RdFlush, based on whether WrFlush is present
+    if (hasRdFlush) {
+      String lineToBeInserted;
+      if (hasWrFlush) {
+        lineToBeInserted = isFlushedStandardLine.replaceFirst("^stage\\.arbitration\\.isFlushed", "stage.arbitration.isFlushedNonSV");
+        lineToBeInserted += " || stages.drop(stageIndex+1).map(_.arbitration.flushItSV).orR";
+      }
+      else {
+        lineToBeInserted = "stage.arbitration.isFlushedNonSV := stage.arbitration.isFlushed";
+      }
+      toFile.UpdateContent(filePath, isFlushedStandardLine, new ToWrite(lineToBeInserted, false, true, ""));
     }
   }
 
@@ -813,12 +906,11 @@ public class VexRiscv extends CoreBackend {
     toFile.AddFile(filePath, false);
     logger.debug("INTEGRATE. Updating " + filePath);
     String lineToBeInserted = "";
-    if (this.op_stage_instr.containsKey(BNode.WrPC_spawn) ||
-        (this.op_stage_instr.containsKey(BNode.WrPC) && this.op_stage_instr.get(BNode.WrPC).containsKey(0)) ||
-        (this.op_stage_instr.containsKey(BNode.RdPC) && this.op_stage_instr.get(BNode.RdPC).containsKey(0))) {
+    if (usesJumpInFetch()) {
       lineToBeInserted = "var jumpInFetch: JumpInFetch = null\n"
-                         + "override def createJumpInFetchInterface(): JumpInFetch = {\n" + tab + "assert(jumpInFetch == null)\n" + tab +
-                         "jumpInFetch = JumpInFetch()\n" + tab + "jumpInFetch\n"
+                         + "override def createJumpInFetchInterface(): JumpInFetch = {\n"
+                         + tab + "assert(jumpInFetch == null)\n"
+                         + tab +  "jumpInFetch = JumpInFetch()\n" + tab + "jumpInFetch\n"
                          + "}";
       toFile.UpdateContent(filePath, "class FetchArea", new ToWrite(lineToBeInserted, false, true, "", true));
 
@@ -827,19 +919,91 @@ public class VexRiscv extends CoreBackend {
       toFile.ReplaceContent(filePath, "val predictionBuffer : Boolean = true) extends Plugin[VexRiscv] with JumpService with IBusFetcher{",
                             new ToWrite(lineToBeInserted, false, true, ""));
     }
-    if (this.op_stage_instr.containsKey(BNode.WrPC_spawn) ||
-        (this.op_stage_instr.containsKey(BNode.WrPC) && this.op_stage_instr.get(BNode.WrPC).containsKey(0))) {
-      lineToBeInserted = "when (jumpInFetch.update_PC){\n" + tab + "correction := True\n" + tab + "pc := jumpInFetch.target_PC\n" + tab +
-                         "flushed := False\n"
-                         + "}\n";
-      toFile.UpdateContent(filePath, "when(booted && (output.ready || correction || pcRegPropagate)){",
+    String grepFetchPcArea = "val fetchPc = new Area";
+    String grepPcRegUpdate = "when(booted && (output.ready || correction || pcRegPropagate)){";
+    if (ContainsOpInStage(BNode.RdStall, 0)) {
+      //lineToBeInserted = "jumpInFetch.isStalling := fetcherHalt || !output.ready";
+      //toFile.UpdateContent(filePath, "if(redo != null) when(redo.valid){", new ToWrite(lineToBeInserted, false, true, "", true));
+      //lineToBeInserted = "jumpInFetch.isStalling := !(booted && (output.ready || pcRegPropagate))"; //|| correction
+
+      lineToBeInserted = "jumpInFetch.isStalling := True";
+      toFile.UpdateContent(filePath, grepPcRegUpdate, new ToWrite(lineToBeInserted, false, true, "", true));
+      lineToBeInserted = "jumpInFetch.isStalling := False";
+      toFile.UpdateContent(filePath, grepPcRegUpdate, new ToWrite(lineToBeInserted, false, true, "", false));
+    }
+    String fetchPc_overriddenPC = "pc";
+    if (this.op_stage_instr.containsKey(BNode.WrPC_spawn) || ContainsOpInStage(BNode.WrPC, 0)) {
+      fetchPc_overriddenPC = "pcSV";
+      lineToBeInserted = "val pcSV = UInt(32 bits)";
+      toFile.UpdateContent(filePath, "val pc =", new ToWrite(lineToBeInserted, true, false, grepFetchPcArea, true));
+
+      toFile.ReplaceContent(filePath, "pc(0) := False",
+          new ToWrite("pcSV(0) := False", true, false, grepFetchPcArea, true));
+      toFile.ReplaceContent(filePath, "if(!compressedGen) pc(1) := False",
+          new ToWrite("if(!compressedGen) pcSV(1) := False", true, false, grepFetchPcArea, true));
+      toFile.ReplaceContent(filePath, "output.payload := pc",
+          new ToWrite("output.payload := pcSV", true, false, grepFetchPcArea, true));
+      
+      //lineToBeInserted = "val correctionSV = False";
+      //toFile.UpdateContent(filePath, "val correction =", new ToWrite(lineToBeInserted, true, false, grepFetchPcArea, false));
+      //String correctedDecl = "val corrected = correction || correctionReg";
+      //toFile.ReplaceContent(filePath, correctedDecl,
+      //    new ToWrite(correctedDecl + " || correctionSV", true, false, grepFetchPcArea));
+      //String correctionRegDecl = "val correctionReg = RegInit(False) setWhen(correction) clearWhen(output.fire)";
+      //toFile.ReplaceContent(filePath, correctionRegDecl,
+      //    new ToWrite(correctionRegDecl.replace("(correction)", "(correction || correctionSV)"), true, false, grepFetchPcArea));
+      //toFile.ReplaceContent(filePath, grepPcRegUpdate,
+      //    new ToWrite(grepPcRegUpdate.replace(" correction ", " correction || correctionSV "), false, true, ""));
+      
+      lineToBeInserted = "pcSV := pc\n" +
+                         "when (jumpInFetch.update_PC){\n" + // && !fetcherHalt && (output.ready || correction || pcRegPropagate)
+                         tab + "correction := True\n" +
+                         tab + "pcSV := jumpInFetch.target_PC\n" +
+                         //tab + "flushed := True\n" +
+                         "}\n";
+      //toFile.UpdateContent(filePath, "if(redo != null) when(redo.valid){",
+      //                               new ToWrite(lineToBeInserted, false, true, "", true));
+      toFile.UpdateContent(filePath, grepPcRegUpdate,
                            new ToWrite(lineToBeInserted, false, true, "", true));
+      //String grepPCRegPropagation = "sNext.input.payload := fetchPc.pcReg";
+      //String replacePCRegPropagation = "sNext.input.payload := jumpInFetch.update_PC ? jumpInFetch.target_PC | fetchPc.pcReg";
+      //toFile.ReplaceContent(filePath, grepPCRegPropagation, new ToWrite(replacePCRegPropagation, false, true, ""));
+      
+      //lineToBeInserted = "when (jumpInFetch.update_PC){\n" + tab + "correction := True\n" + tab + "pc := jumpInFetch.target_PC\n" + tab +
+      //                   "flushed := False\n"
+      //                   + "}\n";
+      //toFile.UpdateContent(filePath, "when(booted && (output.ready || correction || pcRegPropagate)){",
+      //                     new ToWrite(lineToBeInserted, false, true, "", true));
+    }
+    if (usesJumpInFetch()) { //if (ContainsOpInStage(BNode.WrStall, 0)) 
+      String validCondLineStock = "output.valid := !fetcherHalt && booted";
+      String validCondLineWithStall = validCondLineStock + " && !jumpInFetch.stall";
+      toFile.ReplaceContent(filePath, validCondLineStock, new ToWrite(validCondLineWithStall, false, true, ""));
+      
+      String conditionalPcRegUpdate = "when(!jumpInFetch.stall) { pcReg := " + fetchPc_overriddenPC + "; }";
+      toFile.ReplaceContent(filePath, "pcReg := pc", new ToWrite(conditionalPcRegUpdate, true, false, grepPcRegUpdate));
+    }
+    if (ContainsOpInStage(BNode.RdFlush, 0) || ContainsOpInStage(BNode.RdFlush, stage_pcReg)) {
+      lineToBeInserted = "jumpInFetch.isFlushed := jumpInFetch.pcreg_isFlushed"; // || flushed
+      toFile.UpdateContent(filePath, "if(redo != null) when(redo.valid){", new ToWrite(lineToBeInserted, false, true, "", true));
+      
+      lineToBeInserted = "jumpInFetch.pcreg_isFlushed := flushStage";
+      toFile.UpdateContent(filePath, "val flushStage = getFlushAt(INJECTOR_M2S)", new ToWrite(lineToBeInserted, false, true, "", false));
+    }
+    if (ContainsOpInStage(BNode.RdStall, stage_pcReg)) {
+      lineToBeInserted = "jumpInFetch.pcreg_isStalling := True;" +
+                         "when(inputBeforeStage.ready && inputBeforeStage.valid){ jumpInFetch.pcreg_isStalling := False; }";
+      toFile.UpdateContent(filePath, "val decodeInput = (if (injectorStage) {", new ToWrite(lineToBeInserted, false, true, "", false));
+    }
+    if (this.op_stage_instr.containsKey(BNode.RdPC) && this.op_stage_instr.get(BNode.RdPC).containsKey(stages[0])) {
+      lineToBeInserted = "jumpInFetch.current_pc := pcReg\n" +
+                         //"jumpInFetch.next_pc := pcReg + (inc ## B\"00\").asUInt\n";
+                         "jumpInFetch.next_pc := pc\n";
+      toFile.UpdateContent(filePath, "if(redo != null) when(redo.valid){", new ToWrite(lineToBeInserted, false, true, "", true));
+      //lineToBeInserted = "jumpInFetch.current_pc := pcReg;";
+      //toFile.UpdateContent(filePath, "output.payload := pc", new ToWrite(lineToBeInserted, false, true, ""));
     }
 
-    if (this.op_stage_instr.containsKey(BNode.RdPC) && this.op_stage_instr.get(BNode.RdPC).containsKey(0)) {
-      lineToBeInserted = "jumpInFetch.current_pc := pcReg;";
-      toFile.UpdateContent(filePath, "output.payload := pc", new ToWrite(lineToBeInserted, false, true, ""));
-    }
   }
 
   /**
@@ -856,6 +1020,14 @@ public class VexRiscv extends CoreBackend {
       toFile.ReplaceContent(filePath, "when(stage.arbitration.isValid && stage.input(REGFILE_WRITE_VALID))",
                             new ToWrite("when(stage.arbitration.isValid && stage.output(REGFILE_WRITE_VALID)) {", false, true, ""));
   }
+  
+  private boolean usesJumpInFetch() {
+    return this.op_stage_instr.containsKey(BNode.WrPC_spawn) ||
+        ContainsOpInStage(BNode.WrPC,stages[0]) || ContainsOpInStage(BNode.RdPC,stages[0]) ||
+        ContainsOpInStage(BNode.WrStall,stages[0]) ||
+        ContainsOpInStage(BNode.RdStall,stages[0]) || ContainsOpInStage(BNode.RdFlush,stages[0]) ||
+        ContainsOpInStage(BNode.RdStall,stage_pcReg) || ContainsOpInStage(BNode.RdFlush,stage_pcReg);
+  }
 
   /**
    * Function for updating Services
@@ -868,13 +1040,20 @@ public class VexRiscv extends CoreBackend {
     logger.debug("INTEGRATE. Updating " + filePath);
     String lineToBeInserted = "";
 
-    if (this.op_stage_instr.containsKey(BNode.WrPC_spawn) ||
-        (this.op_stage_instr.containsKey(BNode.WrPC) && this.op_stage_instr.get(BNode.WrPC).containsKey(0)) ||
-        (this.op_stage_instr.containsKey(BNode.RdPC) && this.op_stage_instr.get(BNode.RdPC).containsKey(0))) {
-      lineToBeInserted = "case class JumpInFetch() extends Bundle {\n" + tab + "val update_PC  = Bool\n" + tab +
-                         "val target_PC =  UInt(32 bits)\n" + tab + "val current_pc = UInt(32 bits)\n"
+    if (this.usesJumpInFetch()) {
+      lineToBeInserted = "case class JumpInFetch() extends Bundle {\n"
+                         + tab + "val update_PC  = Bool\n"
+                         + tab + "val target_PC =  UInt(32 bits)\n"
+                         + tab + "val current_pc = UInt(32 bits)\n"
+                         + tab + "val next_pc = UInt(32 bits)\n"
+                         + tab + "val stall = False\n" //Spinal False: Bool with specified default value false
+                         + tab + "val isStalling = Bool\n"
+                         + tab + "val isFlushed = Bool\n"
+                         + tab + "val pcreg_isStalling = Bool\n"
+                         + tab + "val pcreg_isFlushed = Bool\n"
                          + "}\n"
-                         + "trait JumpInFetchService {\n" + tab + "def createJumpInFetchInterface() : JumpInFetch\n"
+                         + "trait JumpInFetchService {\n"
+                         + tab + "def createJumpInFetchInterface() : JumpInFetch\n"
                          + "}\n";
       toFile.UpdateContent(filePath, "trait JumpService{", new ToWrite(lineToBeInserted, false, true, "", true));
     }
@@ -900,9 +1079,20 @@ public class VexRiscv extends CoreBackend {
 
     this.PutNode("UInt", "jumpInFetch.target_PC", "", BNode.WrPC, stages[0]);
     this.PutNode("Bool", "jumpInFetch.update_PC", "", BNode.WrPC_valid, stages[0]);
-    this.PutNode("UInt", "jumpInFetch.current_pc", "", BNode.RdPC, stages[0]);
+    //this.PutNode("UInt", "jumpInFetch.current_pc", "", BNode.RdPC, stages[0]);
+    String anyFlushNextOR = Stream.of(vexInterfaceStageNames).skip(1).map(name->name+".arbitration.flushNext").reduce((a,b)->a+" || "+b).get();
+    //this.PutNode("Bool", "jumpInFetch.isStalling || " + anyFlushNextOR, "", BNode.RdStall, stages[0]);
+    this.PutNode("Bool", "jumpInFetch.isStalling", "", BNode.RdStall, stages[0]);
+    this.PutNode("Bool", "jumpInFetch.isFlushed", "", BNode.RdFlush, stages[0]);
+    this.PutNode("Bool", "jumpInFetch.stall", "", BNode.WrStall, stages[0]);
+    //this.PutNode("UInt", "jumpInFetch.current_pc", "", BNode.RdPC, stages[0]);
+    //this.PutNode("UInt", "jumpInFetch.next_pc", "", BNode.RdPC, stages[0]);
+    this.PutNode("UInt", "jumpInFetch.next_pc", "", BNode.RdPC, stages[0]);
     this.PutNode("UInt", "jumpInFetch.target_PC", "", BNode.WrPC_spawn, stages[spawnStage]);
     this.PutNode("Bool", "jumpInFetch.update_PC", "", BNode.WrPC_spawn_valid, stages[spawnStage]);
+    
+    this.PutNode("Bool", "jumpInFetch.pcreg_isStalling", "", BNode.RdStall, stage_pcReg);
+    this.PutNode("Bool", "jumpInFetch.pcreg_isFlushed || " + anyFlushNextOR, "", BNode.RdFlush, stage_pcReg);
     for (int stageNum = 1; stageNum < vexInterfaceStageNames.length; ++stageNum) {
       String stageName = vexInterfaceStageNames[stageNum];
       // assign rdInstr = vexInterfaceStageNames[stage]+".input(INSTRUCTION)";
@@ -911,11 +1101,10 @@ public class VexRiscv extends CoreBackend {
       this.PutNode("Bool", stageName + ".arbitration.isStuck || (!" + stageName + ".arbitration.isValid)", stageName, BNode.RdStall,
                    stages[stageNum]);
       this.PutNode("Bool", stageName + ".arbitration.isValid", stageName, BNode.RdInStageValid, stages[stageNum]);
-      this.PutNode("Bool", stageName + ".arbitration.isFlushed", stageName, BNode.RdFlush,
+      this.PutNode("Bool", stageName + ".arbitration.isFlushedNonSV", stageName, BNode.RdFlush,
                    stages[stageNum]); //|| (!"+vexInterfaceStageNames[stage]+".arbitration.isValid)"
       this.PutNode("Bool", stageName + ".arbitration.haltByOther", stageName, BNode.WrStall, stages[stageNum]);
-      if (stageNum > 0)
-        this.PutNode("Bool", stageName + ".arbitration.flushIt", stageName, BNode.WrFlush, stages[stageNum]);
+      this.PutNode("Bool", stageName + ".arbitration.flushItSV", stageName, BNode.WrFlush, stages[stageNum]);
       if (this.vex_core.GetNodes().get(BNode.WrRD).GetLatest().asInt() >= stageNum &&
           this.vex_core.GetNodes().get(BNode.WrRD).GetEarliest().asInt() <= stageNum) {
         this.PutNode("Bits", stageName + ".output(REGFILE_WRITE_DATA)", stageName, BNode.WrRD, stages[stageNum]);
@@ -1008,3 +1197,4 @@ public class VexRiscv extends CoreBackend {
                  vexInterfaceStageNames[startSpawnStage.getStagePos()], BNode.ISAX_spawnAllowed, startSpawnStage);
   }
 }
+

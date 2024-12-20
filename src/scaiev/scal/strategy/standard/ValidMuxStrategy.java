@@ -243,7 +243,7 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
         String assignSignal;
         // if(checkAdj.getAdj() == AdjacentNode.addrReq || checkAdj.getAdj() == AdjacentNode.cancelReq || isValidAdj) // for
         // wrmem_addr_valid. It is simply 1 in case of an instr using addr bits
-        if (!assignProvidedByISAX && !defaultGeneratedBySCAL)
+        if (!assignProvidedByISAX && !defaultGeneratedBySCAL && orderEntry.aux == 0)
           assignSignal = "1"; //'addrReq = 1'
         else {
           // e.g. 'WrRD_<stage>_s = WrRD_<isax>_i;'

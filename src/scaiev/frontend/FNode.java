@@ -120,12 +120,6 @@ public class FNode {
       return allFrontendNodes;
     allFrontendNodes = new HashSet<SCAIEVNode>();
 
-    allFrontendNodes.add(ISAX_isReady);
-    allFrontendNodes.add(BranchTaken);
-    allFrontendNodes.add(RdReg);
-    allFrontendNodes.add(WrReg);
-    allFrontendNodes.add(WrJump);
-
     allFrontendNodes.add(WrRD);
     allFrontendNodes.add(WrMem);
     allFrontendNodes.add(RdMem);

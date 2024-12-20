@@ -98,34 +98,20 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
   }
 
   /**
-   * Constructs a NodeLogicBuilder that optionally builds the node by pipelining from the previous stage.
-   *   The default implementation builds a simple register implementation using RdStall.
-   *   Additionally, if baseBuilder is empty, it will mark the node in stage N-1 as required.
-   * @param nodeKey
-   * @param implementation the requiresPipelining field indicates whether the node should be marked as required in the previous stage,
-   *                             so it will be built to finally enable building this pipeline.
+   * Constructs a NodeLogicBuilder that builds a simple register implementation using RdStall.
+   *   Additionally, if baseBuilders is empty, it will mark the node in stageFrom as required.
+   * See {@link NodeRegPipelineStrategy#makePipelineBuilder_single(scaiev.scal.NodeInstanceDesc.Key, ImplementedKeyInfo)}.
    * @return a valid NodeLogicBuilder
    */
-  protected NodeLogicBuilder makePipelineBuilder_single(NodeInstanceDesc.Key nodeKey, ImplementedKeyInfo implementation) {
-    PipelineStage stage = nodeKey.getStage();
-    assert (minPipeFront.isAroundOrBefore(stage, false));
-    var stage_prev = stage.getPrev();
-    if (stage_prev.size() == 0) {
-      return NodeLogicBuilder.makeEmpty();
-    }
-    if (stage_prev.size() > 1) {
-      // Could be fixable by adding a 'TOPIPEIN' Purpose or something that does all the MUXing.
-      logger.error("Unsupported: Cannot select from several predecessor stages");
-      return NodeLogicBuilder.makeEmpty();
-    }
-    PipelineStage prevStage = stage_prev.get(0);
+  protected NodeLogicBuilder makePipelineBuilder_singleFF(NodeInstanceDesc.Key nodeKey, ImplementedKeyInfo implementation,
+      PipelineStage stage, PipelineStage stageFrom) {
     var requestedFor = new RequestedForSet(nodeKey.getISAX());
     boolean zeroOnFlushSrc = this.zeroOnFlushSrc;
     boolean zeroOnFlushDest = this.zeroOnFlushDest;
     boolean zeroOnBubble = this.zeroOnBubble;
     return NodeLogicBuilder.fromFunction("pipelineBuilder_single (" + nodeKey.toString(false) + ")", (NodeRegistryRO registry) -> {
       NodeInstanceDesc.Key nodeKey_prevStage =
-          new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.PIPEOUT, nodeKey.getNode(), prevStage, nodeKey.getISAX(), nodeKey.getAux());
+          new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.PIPEOUT, nodeKey.getNode(), stageFrom, nodeKey.getISAX(), nodeKey.getAux());
       Optional<NodeInstanceDesc> prevStageNodeInstance = registry.lookupOptionalUnique(nodeKey_prevStage, requestedFor);
       if (implementation.pipeliningIsRequired)
         registry.lookupExpressionRequired(nodeKey_prevStage);
@@ -141,20 +127,20 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
         if (zeroOnFlushSrc) {
           // If the previous stage is being flushed and not stalling, register a zero instead of the current value.
           String rdflushPrevStage =
-              registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, prevStage, ""), requestedFor);
+              registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, stageFrom, ""), requestedFor);
           Optional<NodeInstanceDesc> wrflushPrevStage =
-              registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrFlush, prevStage, ""));
+              registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrFlush, stageFrom, ""));
           value = "(" + flushstallCombineRdWrCondition(rdflushPrevStage, wrflushPrevStage) + ") ? 0 : " + value;
         }
         // Add the declaration for the register.
         ret.declarations += language.CreateDeclSig(nodeKey.getNode(), stage, nodeKey.getISAX(), true, nameReg);
 
         // The conditions for whether a new value is being pipelined.
-        String rdstallPrevStage = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, prevStage, ""), requestedFor);
+        String rdstallPrevStage = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, stageFrom, ""), requestedFor);
         Optional<NodeInstanceDesc> wrstallPrevStage =
-            registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrStall, prevStage, ""));
+            registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrStall, stageFrom, ""));
         var pipeintoCondInst_opt =
-            registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.RdPipeInto, prevStage, "stage_" + stage.getName()));
+            registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.RdPipeInto, stageFrom, "stage_" + stage.getName()));
         String pipeintoCond = pipeintoCondInst_opt.isPresent() ? String.format(" && %s", pipeintoCondInst_opt.get().getExpression()) : "";
 
         // Add the register logic.
@@ -199,6 +185,31 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
 
       return ret;
     });
+  }
+
+  /**
+   * Constructs a NodeLogicBuilder that optionally builds the node by pipelining from the previous stage.
+   *   The default implementation builds a simple register implementation using RdStall.
+   *   Additionally, if baseBuilder is empty, it will mark the node in stage N-1 as required.
+   * @param nodeKey
+   * @param implementation the requiresPipelining field indicates whether the node should be marked as required in the previous stage,
+   *                             so it will be built to finally enable building this pipeline.
+   * @return a valid NodeLogicBuilder
+   */
+  protected NodeLogicBuilder makePipelineBuilder_single(NodeInstanceDesc.Key nodeKey, ImplementedKeyInfo implementation) {
+    PipelineStage stage = nodeKey.getStage();
+    assert (minPipeFront.isAroundOrBefore(stage, false));
+    var stage_prev = stage.getPrev();
+    if (stage_prev.size() == 0) {
+      return NodeLogicBuilder.makeEmpty();
+    }
+    if (stage_prev.size() > 1) {
+      // Could be fixable by adding a 'TOPIPEIN' Purpose or something that does all the MUXing.
+      logger.error("Unsupported: Cannot select from several predecessor stages");
+      return NodeLogicBuilder.makeEmpty();
+    }
+    PipelineStage prevStage = stage_prev.get(0);
+    return makePipelineBuilder_singleFF(nodeKey, implementation, stage, prevStage);
   }
 
   protected boolean implementSingle(NodeInstanceDesc.Key nodeKey, Consumer<NodeLogicBuilder> out) {

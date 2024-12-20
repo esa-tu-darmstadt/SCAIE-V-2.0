@@ -2,6 +2,7 @@ package scaiev.backend;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -80,6 +81,7 @@ public class Orca extends CoreBackend {
     this.ISAXes = ISAXes;
     this.op_stage_instr = op_stage_instr;
     this.extension_name = extension_name;
+    this.localSignals.clear();
     ConfigOrca();
     language.clk = "clk";
     language.reset = "reset";
@@ -102,6 +104,56 @@ public class Orca extends CoreBackend {
   }
 
   private void IntegrateISAX_IOs(String topModule) { language.GenerateAllInterfaces(topModule, op_stage_instr, ISAXes, orca_core, null); }
+  
+  private static class LocalSignalLocation {
+    String module;
+    String signalName;
+    public LocalSignalLocation(String module, String signalName) {
+      this.module = module;
+      this.signalName = signalName;
+    }
+    @Override
+    public int hashCode() {
+      return Objects.hash(module, signalName);
+    }
+    @Override
+    public boolean equals(Object obj) {
+      if (this == obj)
+        return true;
+      if (obj == null)
+        return false;
+      if (getClass() != obj.getClass())
+        return false;
+      LocalSignalLocation other = (LocalSignalLocation) obj;
+      return Objects.equals(module, other.module) && Objects.equals(signalName, other.signalName);
+    }
+  }
+  
+  private HashSet<LocalSignalLocation> localSignals = new HashSet<>();
+  
+  //For WrFlush, WrStall
+  /**
+   * Create a module-local declaration for WrFlush or WrStall in the given stage,
+   *  assigning from the module's input but defaulting to '0' if the SCAIE-V node is not present.
+   * @param module the HDL module to add the local declaration and assign to
+   * @param wrNode BNode.WrFlush or BNode.WrStall
+   * @param stage the stage to look at
+   */
+  private void addLocalWrSignal(String module, SCAIEVNode wrNode, PipelineStage stage) {
+    //Note: location.signalName also identifies the stage.
+    LocalSignalLocation localWrSignal = new LocalSignalLocation(module,
+        language.CreateLocalNodeName(wrNode, stage, ""));
+    if (!localSignals.add(localWrSignal))
+      return;
+    toFile.UpdateContent(this.ModFile(localWrSignal.module), Parse.declare,
+        new ToWrite(language.CreateDeclSig(wrNode, stage, ""), false, true, ""));
+    String assignVal = this.ContainsOpInStage(wrNode, stage)
+        ? language.CreateNodeName(wrNode, stage, "")
+        : "'0'";
+    toFile.UpdateContent(this.ModFile(localWrSignal.module), Parse.behav,
+                         new ToWrite(localWrSignal.signalName + " <= " + assignVal + ";\n", false, true, ""));
+    
+  }
 
   private void IntegrateISAX_RdStall() {
     Stream<PipelineStage> rdStallStages = Stream.empty();
@@ -111,19 +163,7 @@ public class Orca extends CoreBackend {
       rdStallStages = Stream.concat(rdStallStages, Stream.of(stages[3]));
     rdStallStages.distinct().forEach(stage -> {
       if (stage.getStagePos() < 3) {
-        if (!this.ContainsOpInStage(BNode.WrStall, stage)) {
-          toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, stage)), Parse.declare,
-                               new ToWrite(language.CreateDeclSig(BNode.WrStall, stage, ""), false, true, ""));
-          toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, stage)), Parse.behav,
-                               new ToWrite(language.CreateLocalNodeName(BNode.WrStall, stage, "") + " <= '0';\n", false, true, ""));
-        } else {
-          toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, stage)), Parse.behav,
-                               new ToWrite(language.CreateLocalNodeName(BNode.WrStall, stage, "") +
-                                               " <= " + language.CreateNodeName(BNode.WrStall, stage, "") + ";\n",
-                                           false, true, ""));
-          toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdStall, stage)), Parse.declare,
-                               new ToWrite(language.CreateDeclSig(BNode.WrStall, stage, ""), false, true, ""));
-        }
+        addLocalWrSignal(NodeAssignM(BNode.RdStall, stage), BNode.WrStall, stage);
       }
       if (stage.getStagePos() == 2) {
         language.UpdateInterface(NodeAssignM(BNode.RdStall, stage), ISAX_frwrd_to_stage1_ready, "", stage, false, false);
@@ -134,21 +174,7 @@ public class Orca extends CoreBackend {
   private void IntegrateISAX_RdFlush() {
     if (op_stage_instr.containsKey(BNode.RdFlush)) {
       for (PipelineStage stage : op_stage_instr.get(BNode.RdFlush).keySet()) {
-        if (!this.ContainsOpInStage(BNode.WrFlush, stage)) {
-          toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdFlush, stage)), Parse.declare,
-                               new ToWrite(language.CreateDeclSig(BNode.WrFlush, stage, ""), false, true, ""));
-          toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdFlush, stage)), Parse.behav,
-                               new ToWrite(language.CreateLocalNodeName(BNode.WrFlush, stage, "") + " <= '0';\n", false, true, ""));
-        } else {
-          if (stage.getStagePos() == 1)
-            toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdFlush, stage)), Parse.declare,
-                                 new ToWrite(language.CreateDeclSig(BNode.WrFlush, stage, ""), false, true, ""));
-
-          toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.RdFlush, stage)), Parse.behav,
-                               new ToWrite(language.CreateLocalNodeName(BNode.WrFlush, stage, "") +
-                                               " <= " + language.CreateNodeName(BNode.WrFlush, stage, "") + ";\n",
-                                           false, true, ""));
-        }
+        addLocalWrSignal(NodeAssignM(BNode.RdFlush, stage), BNode.WrFlush, stage);
       }
     }
   }
@@ -157,14 +183,13 @@ public class Orca extends CoreBackend {
     for (int stagePos = 3; stagePos >= 1; --stagePos) {
       PipelineStage stage = stages[stagePos];
       if (ContainsOpInStage(BNode.WrFlush, stagePos)) {
-        toFile.UpdateContent(this.ModFile("orca_core"), Parse.declare,
-                             new ToWrite(language.CreateDeclSig(BNode.WrFlush, stage, ""), false, true, ""));
-        combinedFlushCond += (combinedFlushCond.isEmpty() ? "" : " or ") + language.CreateLocalNodeName(BNode.WrFlush, stage, "");
+        addLocalWrSignal(NodeAssignM(BNode.WrFlush, stage), BNode.WrFlush, stage);
+        combinedFlushCond += (combinedFlushCond.isEmpty() ? "" : " or ") + language.CreateNodeName(BNode.WrFlush, stage, "");
       }
       if (stagePos == 1 && !combinedFlushCond.isEmpty()) {
         toFile.ReplaceContent(
             this.ModFile("orca_core"), "to_decode_valid                    => ",
-            new ToWrite("to_decode_valid                    => to_decode_valid or " + combinedFlushCond + ",", false, true, ""));
+            new ToWrite("to_decode_valid                    => to_decode_valid and not (" + combinedFlushCond + "),", false, true, ""));
       }
       if (stagePos == 2 && !combinedFlushCond.isEmpty()) {
         toFile.ReplaceContent(this.ModFile("orca_core"), "quash_decode => ",
@@ -173,8 +198,15 @@ public class Orca extends CoreBackend {
       if (stagePos == 3 && !combinedFlushCond.isEmpty()) {
         toFile.ReplaceContent(
             this.ModFile("orca_core"), " to_execute_valid            => to_execute_valid,",
-            new ToWrite(" to_execute_valid            => to_execute_valid or " + combinedFlushCond + ",", false, true, ""));
+            new ToWrite(" to_execute_valid            => to_execute_valid and not (" + combinedFlushCond + "),", false, true, ""));
       }
+    }
+    if (ContainsOpInStage(BNode.WrFlush, 1)) {
+      String flushCond = language.CreateNodeName(BNode.WrFlush, stages[1], "") + " = '1'";
+      toFile.ReplaceContent(
+          this.ModFile("decode"), "if reset = '1' or quash_decode = '1' then",
+          new ToWrite("if reset = '1' or quash_decode = '1' or " + flushCond + " then", true, false,
+              "if from_decode_ready = '1' then"));
     }
   }
   private void IntegrateISAX_NoIllegalInstr() {
@@ -255,11 +287,28 @@ public class Orca extends CoreBackend {
     if (this.ContainsOpInStage(BNode.WrStall, 1) || this.ContainsOpInStage(BNode.WrFlush, 1)) {
       String noStallCond = "";
       if (this.ContainsOpInStage(BNode.WrStall, 1))
-        noStallCond += "not (" + language.CreateNodeName(BNode.WrStall, stages[1], "") + ") and ";
+        noStallCond += "not (" + language.CreateNodeName(BNode.WrStall, stages[1], "") + ")";
       if (this.ContainsOpInStage(BNode.WrFlush, 1))
-        noStallCond += "not (" + language.CreateNodeName(BNode.WrFlush, stages[1], "") + ") and ";
-      String addtext = "from_decode_ready <= " + noStallCond + "(to_stage1_ready or (not from_stage1_valid) );";
-      toFile.ReplaceContent(this.ModFile("decode"), "from_decode_ready <=", new ToWrite(addtext, false, true, "", true));
+        noStallCond += (noStallCond.isEmpty()?"":" and ") + "not (" + language.CreateNodeName(BNode.WrFlush, stages[1], "") + ")";
+      //String addtext_ready = "from_decode_ready <= " + noStallCond + " and (to_stage1_ready or (not from_stage1_valid) );";
+      //toFile.ReplaceContent(this.ModFile("decode"), "from_decode_ready <=", new ToWrite(addtext_ready, false, true, "", true));
+      toFile.UpdateContent(this.ModFile("decode"), Parse.declare, new ToWrite("signal from_decode_ready_prescaiev: std_logic;\n", false, true, ""));
+      
+      String replace_orig_ready = "from_decode_ready_prescaiev <= to_stage1_ready or (not from_stage1_valid);";
+      toFile.ReplaceContent(this.ModFile("decode"), "from_decode_ready <=", new ToWrite(replace_orig_ready, false, true, "", true));
+      
+      String decode_ready_assign = "from_decode_ready <= from_decode_ready_prescaiev and " + noStallCond + ";";
+      toFile.UpdateContent(this.ModFile("decode"), Parse.behav, new ToWrite(decode_ready_assign, false, true, ""));
+      
+      String grep_stage1_pipe_cond = "if from_decode_ready = '1' then";
+      String pretext_stage1_pipe_cond = "from_stage1_valid                  <= '1';";
+      String replace_stage1_pipe_cond = "if from_decode_ready_prescaiev = '1' then";
+      toFile.ReplaceContent(this.ModFile("decode"), grep_stage1_pipe_cond,
+                            new ToWrite(replace_stage1_pipe_cond, true, false, pretext_stage1_pipe_cond, true));
+      
+      String grep_valid = "from_stage1_valid                                    <= to_decode_valid and (not to_decode_sixty_four_bit_instruction)";
+      String addtext_valid = grep_valid + " and " + noStallCond + ";";
+      toFile.ReplaceContent(this.ModFile("decode"), grep_valid, new ToWrite(addtext_valid, false, true, "", true));
     }
 
     if (this.ContainsOpInStage(BNode.WrStall, 2) || this.ContainsOpInStage(BNode.WrFlush, 2)) {
@@ -591,10 +640,37 @@ public class Orca extends CoreBackend {
     String sub_top_file = this.ModFile("orca_core");
     HashMap<Integer, String> array_PC_clause = new HashMap<Integer, String>();
     int max_stage = this.orca_core.maxStage;
-    for (int stagePos = 0; stagePos <= max_stage; stagePos++) {
+    for (int stagePos = 1; stagePos <= max_stage; stagePos++) {
       PipelineStage stage = stages[stagePos];
       if (this.ContainsOpInStage(BNode.WrPC, stage))
         array_PC_clause.put(stagePos, language.CreateNodeName(BNode.WrPC_valid, stage, ""));
+    }
+    
+    if (this.ContainsOpInStage(BNode.WrPC, stages[0])) {
+      String addDecl = "signal program_counter_prescaiev : unsigned(REGISTER_SIZE-1 downto 0);\n";
+      toFile.UpdateContent(this.ModFile("instruction_fetch"), Parse.declare, new ToWrite(addDecl, false, true, ""));
+      
+      String[] program_counter_seqassigns = new String[] {
+          "program_counter  <= to_pc_correction_data;",
+          "program_counter <= predicted_program_counter;",
+          "program_counter  <= unsigned(RESET_VECTOR(REGISTER_SIZE-1 downto 0));"
+      };
+      for (String assign : program_counter_seqassigns) {
+        toFile.ReplaceContent(this.ModFile("instruction_fetch"), assign,
+                              new ToWrite("program_counter_prescaiev" + assign.substring("program_counter".length()),
+                                          false, true, ""));
+        
+      }
+      String wrpc0_valid_signal = language.CreateNodeName(BNode.WrPC_valid, stages[0], "");
+      String wrpc0_signal = language.CreateNodeName(BNode.WrPC, stages[0], "");
+      String addText = "process(all) begin \n"
+          + "    if( " + wrpc0_valid_signal + " ) then\n"
+          + "        program_counter <= " + wrpc0_signal + "; \n"
+          + "    else \n"
+          + "        program_counter <= program_counter_prescaiev;\n"
+          + "    end if;\n"
+          + "end process;\n";
+      toFile.UpdateContent(this.ModFile("instruction_fetch"), Parse.behav, new ToWrite(addText, false, true, ""));
     }
 
     if (!array_PC_clause.isEmpty() || op_stage_instr.containsKey(BNode.WrPC_spawn)) {
@@ -723,12 +799,17 @@ public class Orca extends CoreBackend {
 
     int spawnStage = this.orca_core.maxStage + 1;
     for (int i = 0; i < spawnStage; i++) {
-      this.PutNode("unsigned", "", "orca_core", BNode.WrPC, stages[i]);        // was to_pc_correction_data
-      this.PutNode("std_logic", "", "orca_core", BNode.WrPC_valid, stages[i]); // was to_pc_correction_valid
+      //Pass WrPC_0 to instruction_fetch.
+      String moduleInto = (i==0)?"instruction_fetch":"orca_core";
+      this.PutNode("unsigned", "", moduleInto, BNode.WrPC, stages[i]);        // was to_pc_correction_data
+      this.PutNode("std_logic", "", moduleInto, BNode.WrPC_valid, stages[i]); // was to_pc_correction_valid
     }
     this.PutNode("unsigned", "", "orca_core", BNode.WrPC_spawn, stages[5]);
     this.PutNode("std_logic", "", "orca_core", BNode.WrPC_spawn_valid, stages[5]);
-    this.PutNode("unsigned", "program_counter", "orca_core", BNode.RdPC, stages[0]);
+    if (this.ContainsOpInStage(BNode.WrPC, stages[0]))
+      this.PutNode("unsigned", "program_counter_prescaiev", "instruction_fetch", BNode.RdPC, stages[0]);
+    else
+      this.PutNode("unsigned", "program_counter", "orca_core", BNode.RdPC, stages[0]);
     this.PutNode("unsigned", "ifetch_to_decode_program_counter", "orca_core", BNode.RdPC, stages[1]);
     this.PutNode("unsigned", "from_stage1_program_counter", "decode", BNode.RdPC, stages[2]);
     this.PutNode("unsigned", "decode_to_execute_program_counter", "orca_core", BNode.RdPC, stages[3]);
@@ -797,8 +878,9 @@ public class Orca extends CoreBackend {
       //		 	op_stage_instr.computeIfAbsent(BNode.RdFlush, node_ -> new HashMap<>()).computeIfAbsent(stages[2], stage_ ->
       // new HashSet<>()).add(""); 	 		toExecuteValidNoflushCond += " and not " +
       // language.CreateNodeName(BNode.RdFlush,stages[2], "");
-      String inStageValidCond = "to_execute_valid" + toExecuteValidNoflushCond;
-      this.PutNode("std_logic", inStageValidCond, "orca_core", BNode.RdInStageValid, stages[3]);
+      //String inStageValidCond = "to_execute_valid" + toExecuteValidNoflushCond;
+      //this.PutNode("std_logic", inStageValidCond, "orca_core", BNode.RdInStageValid, stages[3]);
+      this.PutNode("std_logic", "to_execute_valid", "execute", BNode.RdInStageValid, stages[3]);
     }
     // TODO: May want to make this equal to RdStall_4 once from_writeback_ready (or its replacement) is decoupled from WrStall_4
     this.PutNode("std_logic",

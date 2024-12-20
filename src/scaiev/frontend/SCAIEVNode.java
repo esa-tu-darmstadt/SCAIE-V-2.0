@@ -222,7 +222,7 @@ public class SCAIEVNode {
       throw new IllegalArgumentException("The given port name does not match the pattern '" + portnamePattern.toString() + "'");
     }
     String baseNodeNonadjName = baseNodeWithAdj.isAdj() ? baseNodeWithAdj.nameParentNode : baseNodeWithAdj.name;
-    String portBaseNodeName = baseNodeNonadjName + "_port" + portName;
+    String portBaseNodeName = baseNodeNonadjName + portbaseSuffix + portName;
     String adjPortNodeName = portBaseNodeName + baseNodeWithAdj.getAdj().suffix;
     SCAIEVNode ret = CloneNode(baseNodeWithAdj, Optional.of(adjPortNodeName), true);
     ret.nameParentNode = ret.isAdj() ? portBaseNodeName : baseNodeNonadjName;
