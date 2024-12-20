@@ -14,14 +14,15 @@ public class InterfaceRequestBuilder extends NodeLogicBuilder {
 	
 	private static final NodeInstanceDesc.Purpose AnyIOMarkerPurpose = new Purpose("AnyIOMarkerPurpose", false, Optional.empty(), List.of(
 			Map.entry(Purpose.MARKER_FROMCORE_PIN, 1), Map.entry(Purpose.MARKER_FROMISAX_PIN, 1),
-			Map.entry(Purpose.MARKER_TOCORE_PIN, 1), Map.entry(Purpose.MARKER_TOISAX_PIN, 1)
+			Map.entry(Purpose.MARKER_TOCORE_PIN, 1), Map.entry(Purpose.MARKER_TOISAX_PIN, 1),
+			Map.entry(Purpose.MARKER_INTERNALIMPL_PIN, 1)
 		)
 	);
 	
 	NodeInstanceDesc.Purpose markerPurpose;
 	NodeInstanceDesc.Key nodeKey;
 	/**
-	 * @param markerPurpose one of the supported IO marker purposes, see {@link scaiev.scal.NodeInstanceDesc.Purpose}.MARKER_(FROM|TO)(CORE|ISAX)_PIN.
+	 * @param markerPurpose one of the supported IO marker purposes, see {@link scaiev.scal.NodeInstanceDesc.Purpose}.MARKER_(FROM|TO)(CORE|ISAX)_PIN and MARKER_INTERNALIMPL_PIN.
 	 * @param nodeKey the node key (purpose is ignored)
 	 */
 	public InterfaceRequestBuilder(NodeInstanceDesc.Purpose markerPurpose, NodeInstanceDesc.Key nodeKey) {

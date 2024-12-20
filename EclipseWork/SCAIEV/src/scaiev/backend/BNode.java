@@ -1,9 +1,13 @@
 package scaiev.backend;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -42,11 +46,11 @@ public class BNode extends FNode{
 	public SCAIEVNode RdMem_addr        = new SCAIEVNode(RdMem      , AdjacentNode.addr       , datawidth, true, false) {{validBy = AdjacentNode.addrReq;}};
 
 	public SCAIEVNode RdMem_size        = new SCAIEVNode(RdMem      , AdjacentNode.size       , 3, true, false) {{validBy = AdjacentNode.addrReq; mustToCore = true;}}; //funct3 value
-	public SCAIEVNode RdMem_addr_valid  = new SCAIEVNode(RdMem      , AdjacentNode.addrReq    , 1, true, false) {{attachedNode = RdMem_addr.name;}};
+	public SCAIEVNode RdMem_addr_valid  = new SCAIEVNode(RdMem      , AdjacentNode.addrReq    , 1, true, false);
 	public SCAIEVNode WrMem_defaultAddr = new SCAIEVNode(WrMem      , AdjacentNode.defaultAddr, datawidth, false, false) {{noInterfToISAX = true; tags.add(NodeTypeTag.staticReadResult);}}; //If the core provides RdMem_defaultAddr, this must also be provided.
 	public SCAIEVNode WrMem_addr        = new SCAIEVNode(WrMem      , AdjacentNode.addr       , datawidth, true, false) {{validBy = AdjacentNode.addrReq;}};
 	public SCAIEVNode WrMem_size        = new SCAIEVNode(WrMem      , AdjacentNode.size       , 3, true, false) {{validBy = AdjacentNode.addrReq; mustToCore = true;}}; //funct3 value
-	public SCAIEVNode WrMem_addr_valid  = new SCAIEVNode(WrMem      , AdjacentNode.addrReq    , 1, true, false) {{attachedNode = WrMem_addr.name;}};
+	public SCAIEVNode WrMem_addr_valid  = new SCAIEVNode(WrMem      , AdjacentNode.addrReq    , 1, true, false);
 	//public static SCAIEVNode RdMem_validResp   = new SCAIEVNode(RdMem      , AdjacentNode.validResp, 1 , false, false) ; // valdir read data
 	public SCAIEVNode WrPC_valid        = new SCAIEVNode(WrPC       , AdjacentNode.validReq   , 1 , true, false);
 	public SCAIEVNode WrPC_spawn        = new SCAIEVNode(WrPC       , AdjacentNode.none       , datawidth, true, true) {{oneInterfToISAX = true; allowMultipleSpawn = false; validBy = AdjacentNode.addrReq;}};
@@ -117,6 +121,30 @@ public class BNode extends FNode{
 	 */
 	public SCAIEVNode RdPipeInto = new SCAIEVNode("RdPipeInto", 1, false);
 	
+//	/**
+//	 * Flush the pipeline up until the current instruction in the given stage, rerunning the instruction from scratch.
+//	 * For most in-order cores, this is equivalent to WrFlush with accompanying WrPC(RdPC)
+//	 */
+//	public SCAIEVNode WrRerunCurrent = new SCAIEVNode("WrRerunCurrent", 1, true);
+	/**
+	 * Flush the pipeline up until the instruction after the given stage's current instruction, rerunning the instructions from scratch.
+	 * For most in-order cores, this is equivalent to WrFlush in the previous stage with accompanying WrPC(RdPC_next).
+	 *  If RdPC_next is not known, the implementation could instead wait for the next instruction (with its PC) to materialize and then flush.
+	 */
+	public SCAIEVNode WrRerunNext = new SCAIEVNode("WrRerunNext", 1, true);
+	
+//	/**
+//	 * Sets the wait count for the current instruction entering the scoreboard.
+//	 * The core ensures that the instruction is not issued as long as the value is not zero.
+//	 * The node size is defined by SCAL.
+//	 */
+//	public SCAIEVNode WrInitScoreboardWaitCount = new SCAIEVNode("WrInitScoreboardWaitCount", 0, true);
+//	/**
+//	 * Reduces the wait count for the instruction given by the corresponding .
+//	 * The node is generally multi-ported. The node size is defined by SCAL.
+//	 */
+//	public SCAIEVNode WrReduceScoreboardWaitCount = new SCAIEVNode("WrReduceScoreboardWaitCount", 0, true);
+	
 	// Pipelined Execution Unit support
 	/** SCAL->core: The current ISAX instruction is entering the ISAX-pipeline, and the core is allowed to get the next instruction in the current stage
 	 *               _without_ moving the current instruction further. Always comes with a WrStall.
@@ -156,6 +184,13 @@ public class BNode extends FNode{
 	/** ISAX->SCAL: 'validReq' for ISAX commit marker */
 	public SCAIEVNode WrCommit_spawn_validResp = new SCAIEVNode(WrCommit_spawn, AdjacentNode.validResp, 1, false, true);
 	
+	/** Pseudo-node for custom register read core constraints. */
+	public SCAIEVNode RdCustReg_data_constraint = new SCAIEVNode("RdCustReg.data_constraint", 0, false) {{ tags.add(NodeTypeTag.constraintMarkerOnlyNode); }};
+	/** Pseudo-node for custom register read&write addr constraints. */
+	public SCAIEVNode CustReg_addr_constraint = new SCAIEVNode("CustReg.addr_constraint", 0, true) {{ tags.add(NodeTypeTag.constraintMarkerOnlyNode); }};
+	/** Pseudo-node for custom register write data constraints. */
+	public SCAIEVNode WrCustReg_data_constraint = new SCAIEVNode("WrCustReg.data_constraint", 0, true) {{ tags.add(NodeTypeTag.constraintMarkerOnlyNode); }};
+	
 	public  HashSet<SCAIEVNode> user_BNode = new  HashSet<SCAIEVNode>();
 	protected List<SCAIEVNode> core_BNode = new ArrayList<SCAIEVNode>();
 	
@@ -172,11 +207,14 @@ public class BNode extends FNode{
 	 */
 	@Override
 	public void AddUserNode (String name, int width, int elements) {
-		SCAIEVNode RdNode = new SCAIEVNode(rdName+name, width, false);
+		SCAIEVNode RdNode = new SCAIEVNode(rdPrefix+name, width, false);
 		RdNode.elements  = elements;
 		RdNode.tags.add(NodeTypeTag.staticReadResult); //Assuming there is only one global read stage/front.
-		SCAIEVNode WrNode = new SCAIEVNode(wrName+name, width, true) {{this.validBy = AdjacentNode.validData;}};
+		RdNode.tags.add(NodeTypeTag.supportsPortNodes);
+		SCAIEVNode WrNode = new SCAIEVNode(wrPrefix+name, width, true) {{this.validBy = AdjacentNode.validReq;}};
 		WrNode.elements  = elements;
+		WrNode.tags.add(NodeTypeTag.supportsPortNodes);
+		WrNode.tags.add(NodeTypeTag.accumulatesUntilCommit);
 		user_FNode.add(RdNode); 
 		user_FNode.add(WrNode);
 		user_BNode.add(RdNode); 
@@ -187,14 +225,14 @@ public class BNode extends FNode{
 		user_BNode.add(new SCAIEVNode(WrNode,AdjacentNode.cancelReq , 1, true, false));
 		user_BNode.add(new SCAIEVNode(RdNode,AdjacentNode.validReq  , 1, true, false) {{noInterfToISAX = true;}});
 		user_BNode.add(new SCAIEVNode(RdNode,AdjacentNode.validReq  , 1, true, false) {{noInterfToISAX = true;}});
-		user_BNode.add(new SCAIEVNode(WrNode,AdjacentNode.validData , 1, true, false) {{noInterfToISAX = true;}});
+		//user_BNode.add(new SCAIEVNode(WrNode,AdjacentNode.validData , 1, true, false) {{noInterfToISAX = true;}});
 		SCAIEVNode RdNode_Addr = new SCAIEVNode(RdNode,AdjacentNode.addr	, addr_size, true, false) {{validBy = AdjacentNode.addrReq; }};
 		user_BNode.add(RdNode_Addr);
 		SCAIEVNode WrNode_Addr = new SCAIEVNode(WrNode,AdjacentNode.addr	, addr_size, true, false) {{validBy = AdjacentNode.addrReq; }};
 		user_BNode.add(WrNode_Addr);
-		SCAIEVNode RdNode_AddrValid = new SCAIEVNode(RdNode,AdjacentNode.addrReq	, 1, true, false) {{attachedNode = RdNode_Addr.name;}};
+		SCAIEVNode RdNode_AddrValid = new SCAIEVNode(RdNode,AdjacentNode.addrReq	, 1, true, false);
 		RdNode_AddrValid.elements = elements;
-		SCAIEVNode WrNode_AddrValid = new SCAIEVNode(WrNode,AdjacentNode.addrReq	, 1, true, false) {{attachedNode = WrNode_Addr.name;}};
+		SCAIEVNode WrNode_AddrValid = new SCAIEVNode(WrNode,AdjacentNode.addrReq	, 1, true, false);
 		WrNode_AddrValid.elements = elements;	
 		user_BNode.add(WrNode_AddrValid);	
 		user_BNode.add(RdNode_AddrValid);
@@ -202,6 +240,7 @@ public class BNode extends FNode{
 		// Spawn just for write 
 		// Set allowMultipleSpawn COULD BE SET HERE to false, and in AddUserNodesToCore(..) we check how many isaxes need spawn and update this param. For the moment by default true to generate in SCAL the fire logic
 		SCAIEVNode  WrNode_spawn = new SCAIEVNode(WrNode ,       AdjacentNode.none		, width, true, true) {{oneInterfToISAX = false; allowMultipleSpawn = true; validBy = AdjacentNode.validReq;}};
+		WrNode_spawn.tags.add(NodeTypeTag.supportsPortNodes);
 		//removed 'DH = true;' in WrNode, WrNode_spawn and WrNode_validData
 		user_BNode.add(WrNode_spawn);
 		user_BNode.add(new SCAIEVNode(WrNode_spawn  , AdjacentNode.validReq	, 1, true, true){{oneInterfToISAX = false; allowMultipleSpawn = true;}});
@@ -216,22 +255,53 @@ public class BNode extends FNode{
 		//user_BNode.add(RdNode_spawn);
 		
 		refreshAllNodesSet();
-	} 
+	}
+	
+	/**
+	 * Adds a user-defined register node additional port.
+	 */
+	@Override
+	public SCAIEVNode AddUserNodePort(SCAIEVNode userNode, String portName) {
+		if (!user_BNode.contains(userNode)) {
+			logger.error("AddUserNodePort called on a non-registered user node {}", userNode.name);
+			return null;
+		}
+		SCAIEVNode portNode = SCAIEVNode.makePortNodeOf(userNode, portName);
+		var existingPorts = GetAllPortsByBaseName().get(userNode.name);
+		if (existingPorts != null) {
+			Optional<SCAIEVNode> existingPortNode = existingPorts.stream().filter(existingPortNode_ -> existingPortNode_.name.equals(portNode.name)).findAny();
+			if (existingPortNode.isPresent())
+				return existingPortNode.get();
+		}
+		
+		if (user_FNode.contains(userNode))
+			user_FNode.add(portNode);
+		user_BNode.add(portNode);
+		for (SCAIEVNode adjNode : this.GetAdjSCAIEVNodes(userNode)) {
+			user_BNode.add(SCAIEVNode.makePortNodeOf(adjNode, portName));
+		}
+		
+		refreshAllNodesSet();
+		return portNode;
+	}
 	
 	public boolean IsUserBNode(SCAIEVNode node) {
 		return user_BNode.contains(node);
 	}
-	private HashSet<SCAIEVNode> allBackNodes = null;
+	private ArrayList<SCAIEVNode> allBackNodes = null;
+	private HashMap<String,SCAIEVNode> allBackNodesByName = null;
+	private HashMap<String,List<SCAIEVNode>> allPortsByBaseName = null;
 	@Override
 	protected void refreshAllNodesSet() {
 		super.refreshAllNodesSet();
 		allBackNodes = null;
+		allBackNodesByName = null;
+		allPortsByBaseName = null;
 	}
-	public  HashSet<SCAIEVNode>  GetAllBackNodes(){
+	public List<SCAIEVNode> GetAllBackNodes(){
 		if (allBackNodes != null)
 			return allBackNodes;
 		HashSet<SCAIEVNode> bnodes = new HashSet<>(GetAllFrontendNodes());
-		allBackNodes = bnodes;
 		if(!this.user_BNode.isEmpty()) bnodes.addAll(this.user_BNode);
 		bnodes.add(WrRD_valid);
 		bnodes.add(WrRD_validData);
@@ -287,6 +357,9 @@ public class BNode extends FNode{
 		
 		bnodes.add(RdPipeInto);
 		
+		//bnodes.add(WrRerunCurrent);
+		bnodes.add(WrRerunNext);
+		
 		bnodes.add(WrDeqInstr);
 		bnodes.add(RdInStageID);
 		bnodes.add(RdInStageValid);
@@ -299,31 +372,63 @@ public class BNode extends FNode{
 		bnodes.add(WrCommit_spawn_validResp);
 
 		bnodes.add(RdStallLegacy);
+		bnodes.add(RdCustReg_data_constraint);
+		bnodes.add(CustReg_addr_constraint);
+		bnodes.add(WrCustReg_data_constraint);
 		
 		bnodes.addAll(core_BNode);
-		return bnodes;
+		allBackNodes = new ArrayList<>(bnodes);
+		allBackNodesByName = new HashMap<>();
+		allPortsByBaseName = new HashMap<>();
+		
+		allBackNodes.stream().forEach(bnode -> {
+			if (allBackNodesByName.put(bnode.name, bnode) != null) {
+				//Assumption broken - Another node with that name exists.
+				//Nodes should have equals and hashCode determined by name only.
+				assert(false);
+			}
+			if (bnode.tags.contains(NodeTypeTag.isPortNode) && !bnode.isAdj()) {
+				//Name should look like <node name>_port<port name>
+				assert(bnode.name.startsWith(bnode.nameParentNode + SCAIEVNode.portbaseSuffix)
+						&& SCAIEVNode.portnamePattern.matcher(bnode.name.substring(bnode.nameParentNode.length() + SCAIEVNode.portbaseSuffix.length())).matches() );
+				allPortsByBaseName.computeIfAbsent(bnode.nameParentNode, _name -> new ArrayList<>())
+					.add(bnode);
+			}
+		});
+		return Collections.unmodifiableList(allBackNodes);
+	}
+	public Map<String,SCAIEVNode> GetAllBackNodesByName() {
+		if (allBackNodesByName == null)
+			GetAllBackNodes();
+		assert(allBackNodesByName != null);
+		return Collections.unmodifiableMap(allBackNodesByName);
+	}
+	/** Returns the map from the base node name (e.g. WrCustomReg) to its port base nodes (e.g. WrCustomReg_port0) */
+	public Map<String,List<SCAIEVNode>> GetAllPortsByBaseName() {
+		if (allPortsByBaseName == null)
+			GetAllBackNodes();
+		assert(allPortsByBaseName != null);
+		return Collections.unmodifiableMap(allPortsByBaseName);
 	}
 	
-	
-
+	/** Searches a SCAIEVNode with the given name. As default, returns a SCAIEVNode with an empty name. */
 	public SCAIEVNode GetSCAIEVNode(String nodeName) {
-		HashSet<SCAIEVNode> bnodes = GetAllBackNodes();
-		for(SCAIEVNode node : bnodes)
-			if(node.name.equals(nodeName))		 		
-				return node;
- 		
-		return new SCAIEVNode("",0,false);
+		SCAIEVNode ret = GetAllBackNodesByName().get(nodeName);
+ 		if (ret == null)
+ 			return new SCAIEVNode("",0,false);
+ 		return ret;
+	}
+	/** Searches a SCAIEVNode with the given name. Returns Optional.empty() if no such node exists. */
+	public Optional<SCAIEVNode> GetSCAIEVNode_opt(String nodeName) {
+		SCAIEVNode ret = GetAllBackNodesByName().get(nodeName);
+ 		if (ret == null)
+ 			return Optional.empty();
+ 		return Optional.of(ret);
 	}
 	
-
-
-	public  boolean HasSCAIEVBNode(String nodeName) {
-		HashSet<SCAIEVNode> bnodes = GetAllBackNodes();
-		for(SCAIEVNode node : bnodes)
-			if(node.name.contains(nodeName))
-				return true;
-		logger.warn("Requested Node " + nodeName + " not found in BNode.");
-		return false;
+	/** Tests if a SCAIEVNode exists with the given name under BNode. */
+	public boolean HasSCAIEVBNode(String nodeName) {
+		return GetAllBackNodesByName().containsKey(nodeName);
 	}
 	@Override
 	public boolean HasSCAIEVNode(String nodeName) {
@@ -331,17 +436,30 @@ public class BNode extends FNode{
 	}
 	
 	/**
-	 * Returns adjacent nodes of given SCAIEVNode. For exp. in case of WrPC: validReq (valid request bit). Returns a SCAIEVNode
+	 * Returns AdjacentNodes present for given SCAIEVNode. For exp. in case of WrPC: validReq (valid request bit)
 	 * @return
 	 */
-	public  HashSet<SCAIEVNode> GetAdjSCAIEVNodes(SCAIEVNode look4Node){
-		 HashSet<SCAIEVNode> returnSet = new  HashSet<SCAIEVNode>(); 
-		 for(SCAIEVNode checkNode : GetAllBackNodes()) {
-			 if(checkNode.HasParentNode(look4Node))
-				 returnSet.add(checkNode);
-		 }
-		 
-		 return returnSet;		 
+	public ArrayList<AdjacentNode> GetAdj(SCAIEVNode look4Node){
+		ArrayList<AdjacentNode> returnList = new ArrayList<>(); 
+		for (AdjacentNode possibleAdj : AdjacentNode.values()) if (possibleAdj != AdjacentNode.none) {
+			if (GetAdjSCAIEVNode(look4Node, possibleAdj).isPresent())
+				returnList.add(possibleAdj);
+		}
+		return returnList;
+	}
+	
+	/**
+	 * Returns adjacent SCAIEVNodes of given SCAIEVNode. For exp. in case of WrPC: WrPC_validReq
+	 * @return
+	 */
+	public ArrayList<SCAIEVNode> GetAdjSCAIEVNodes(SCAIEVNode look4Node) {
+		ArrayList<SCAIEVNode> returnList = new ArrayList<>(); 
+		for (AdjacentNode possibleAdj : AdjacentNode.values()) if (possibleAdj != AdjacentNode.none) {
+			Optional<SCAIEVNode> adjSCAIEVNode_opt = GetAdjSCAIEVNode(look4Node, possibleAdj);
+			if (adjSCAIEVNode_opt.isPresent())
+				returnList.add(adjSCAIEVNode_opt.get());
+		}
+		return returnList;
 	}
 	
 	/**
@@ -349,11 +467,10 @@ public class BNode extends FNode{
 	 * @return
 	 */
 	public Optional<SCAIEVNode> GetAdjSCAIEVNode(SCAIEVNode parentNode, AdjacentNode adj){
-		for(SCAIEVNode checkNode : GetAllBackNodes()) {
-			if(checkNode.HasParentNode(parentNode) && checkNode.getAdj().equals(adj))
-				 return Optional.of(checkNode);
-		 }
-		 return Optional.empty();
+		var ret = GetSCAIEVNode_opt(parentNode.name + adj.suffix);
+		if (ret.isPresent() && adj != AdjacentNode.none)
+			assert(ret.get().nameParentNode.equals(parentNode.name));
+		return ret;
 	}
 
 	/**
@@ -384,47 +501,40 @@ public class BNode extends FNode{
 		return node.isAdj() ? GetAdjSCAIEVNode(nodeNonspawnNonadj, node.getAdj()) : Optional.of(nodeNonspawnNonadj);
 	}
 	
-	/**
-	 * Returns adjacent nodes of given SCAIEVNode. For exp. in case of WrPC: validReq (valid request bit)
-	 * @return
-	 */
-	public  HashSet<AdjacentNode> GetAdj(SCAIEVNode look4Node){
-		 HashSet<AdjacentNode> returnSet = new  HashSet<AdjacentNode>(); 
-		 for(SCAIEVNode checkNode : GetAllBackNodes()) {
-			 if(checkNode.HasParentNode(look4Node))
-				 returnSet.add(checkNode.getAdj());
-		 }		 
-		 return returnSet;		 
-	}
-	
 	
 	/** Function to get a list of spawn nodes. For exp for WrRD, it would be WrRD_spawn, WrRD_spawn_valid and WrRd_spawn_addr
 	 * 
 	 * @param look4Node
-	 * @return
+	 * @return null if no adjacent spawn node was found, otherwise an ArrayList of the spawn node and its adjacents.
 	 */
-	public  HashSet<SCAIEVNode> GetMySpawnNodes(SCAIEVNode look4Node){
-		 HashSet<SCAIEVNode> returnSet = new  HashSet<SCAIEVNode>(); 
-		 SCAIEVNode mainSpawnNode = look4Node;
-		 for(SCAIEVNode checkNode : GetAllBackNodes()) {
-			 if(checkNode.HasParentNode(look4Node) && checkNode.isSpawnOf(look4Node)) {
-				 mainSpawnNode = checkNode;
-				 break;
-			 }
-		 }
-		 
-		 // Node not found
-		 if(mainSpawnNode.equals(look4Node))
-			 return null;
-		 
-		 for(SCAIEVNode checkNode : GetAllBackNodes()) {
-			 if(checkNode.HasParentNode(mainSpawnNode)) {
-				 returnSet.add(checkNode);
-			 }
-		 }
-		 returnSet.add(mainSpawnNode);
-		 
-		 return returnSet;		 
+	public ArrayList<SCAIEVNode> GetMySpawnNodes(SCAIEVNode look4Node){
+		Optional<SCAIEVNode> spawnBaseNode = GetMySpawnNode(look4Node);
+		if (spawnBaseNode.isEmpty())
+			return null;
+		ArrayList<SCAIEVNode> ret = GetAdjSCAIEVNodes(spawnBaseNode.get());
+		ret.add(0, spawnBaseNode.get());
+		return ret;
+//		 HashSet<SCAIEVNode> returnSet = new  HashSet<SCAIEVNode>(); 
+//		 SCAIEVNode mainSpawnNode = look4Node;
+//		 for(SCAIEVNode checkNode : GetAllBackNodes()) {
+//			 if(checkNode.HasParentNode(look4Node) && checkNode.isSpawnOf(look4Node)) {
+//				 mainSpawnNode = checkNode;
+//				 break;
+//			 }
+//		 }
+//		 
+//		 // Node not found
+//		 if(mainSpawnNode.equals(look4Node))
+//			 return null;
+//		 
+//		 for(SCAIEVNode checkNode : GetAllBackNodes()) {
+//			 if(checkNode.HasParentNode(mainSpawnNode)) {
+//				 returnSet.add(checkNode);
+//			 }
+//		 }
+//		 returnSet.add(mainSpawnNode);
+//		 
+//		 return returnSet;		 
 	}
 	
 	
@@ -434,11 +544,28 @@ public class BNode extends FNode{
 	 * @return
 	 */
 	public Optional<SCAIEVNode> GetMySpawnNode(SCAIEVNode look4Node){
-		for(SCAIEVNode checkNode : GetAllBackNodes()) {
-			if(checkNode.HasParentNode(look4Node) && checkNode.isSpawnOf(look4Node) && !checkNode.isAdj()) {
-				return Optional.of(checkNode);
-			}
+		if (look4Node.isAdj())
+			return Optional.empty();
+		String baseName = look4Node.name;
+		if (look4Node.tags.contains(NodeTypeTag.isPortNode)) {
+			//Not likely to be intended, as spawn ports are allocated separately from non-spawn ports.
+			logger.warn("BNode.GetMySpawnNode called on a port node");
+			return Optional.empty();
+//			//Name should look like <node name>_port<n>
+//			assert(look4Node.name.startsWith(look4Node.nameParentNode + SCAIEVNode.portbaseSuffix)
+//					&& Pattern.matches("^\\d+$", look4Node.name.substring(look4Node.nameParentNode.length() + SCAIEVNode.portbaseSuffix.length())) );
+//			baseName = look4Node.nameParentNode;
 		}
-		return Optional.empty();
+		Optional<SCAIEVNode> spawnBaseNode = GetSCAIEVNode_opt(baseName + SCAIEVNode.spawnSuffix);
+		if (spawnBaseNode.isPresent()) {
+			assert(!spawnBaseNode.get().isAdj() && spawnBaseNode.get().nameParentNode.equals(baseName));
+		}
+		return spawnBaseNode;
+//		for(SCAIEVNode checkNode : GetAllBackNodes()) {
+//			if(checkNode.HasParentNode(look4Node) && checkNode.isSpawnOf(look4Node) && !checkNode.isAdj()) {
+//				return Optional.of(checkNode);
+//			}
+//		}
+//		return Optional.empty();
 	}
 }

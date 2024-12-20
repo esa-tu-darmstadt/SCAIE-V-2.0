@@ -18,6 +18,8 @@ import scaiev.coreconstr.Core;
 import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
+import scaiev.frontend.SCAIEVNode.NodeTypeTag;
+import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
 import scaiev.util.Lang;
@@ -110,11 +112,21 @@ public class DRC {
 				hasFatalError = true;
 				continue;				
 			}
+			if (operation.tags.contains(NodeTypeTag.isPortNode)) {
+				SCAIEVNode nonadj = BNodes.GetNonAdjNode(operation);
+				assert(!nonadj.name.isEmpty());
+				SCAIEVNode nonport = BNodes.GetSCAIEVNode(nonadj.nameParentNode);
+				assert(!nonport.name.isEmpty());
+				if (!nonport.tags.contains(NodeTypeTag.supportsPortNodes)) {
+					logger.fatal("A port node was instantiated for the unsupported node {}", operation.name);
+					hasFatalError = true;
+				}
+			}
 			for (var stage_instr_entry : op_stage_instr_entry.getValue().entrySet()) {
 				PipelineStage stage = stage_instr_entry.getKey();
 				if( !operation.isSpawn() && !(stage.getKind() == StageKind.Sub && operation.equals(BNodes.RdAnyValid))) {
 					var end_constrain_cycle = core.TranslateStageScheduleNumber(core.GetNodes().get(operation).GetLatest());
-					var start_constrain_cycle = core.TranslateStageScheduleNumber(core.GetNodes().get(operation).GetEarliest());
+					var start_constrain_cycle = BNodes.IsUserBNode(operation) ? new PipelineFront(core.GetRootStage().getChildren()) : core.TranslateStageScheduleNumber(core.GetNodes().get(operation).GetEarliest());
 					if ((!operation.isInput && !start_constrain_cycle.isAroundOrBefore(stage, false))
 							|| (operation.isInput && !end_constrain_cycle.isAroundOrAfter(stage, false))) {
 						String message = "For instruction(s) "+stage_instr_entry.getValue()+", node "+operation+" was scheduled in the wrong cycle: ";

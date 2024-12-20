@@ -52,7 +52,7 @@ public class DirectReadNodeStrategy extends SingleNodeStrategy {
 		    || node.isSpawn()
 		    || node.equals(bNodes.RdIValid) /* Handled separately (check not needed assuming the RdIValid strategy is always called first) */) 
 			return false;
-		return core.TranslateStageScheduleNumber(coreNode.GetEarliest()).isAroundOrBefore(stage, false)
+		return (bNodes.IsUserBNode(node) || core.TranslateStageScheduleNumber(coreNode.GetEarliest()).isAroundOrBefore(stage, false))
 		       && core.TranslateStageScheduleNumber(coreNode.GetExpensive()).isAfter(stage, false)
 		       && core.TranslateStageScheduleNumber(coreNode.GetLatest()).isAroundOrAfter(stage, false);
 	}

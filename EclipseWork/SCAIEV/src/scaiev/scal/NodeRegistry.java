@@ -35,22 +35,23 @@ public class NodeRegistry implements NodeRegistryRO {
 	
 	Set<NodeInstanceDesc.Key> missingDependencySet = null;
 	Set<NodeInstanceDesc.Key> weakDependencySet = null;
+	Set<NodeInstanceDesc> resolvedSet = null;
 	
 	AtomicInteger auxCounter;
 	
 	public NodeRegistry() {
-		this(null, null, null);
+		this(null, null, null, null);
 	}
 	public NodeRegistry(NodeRegistry other) {
-		this(null, null, other);
+		this(null, null, null, other);
 	}
 	/**
 	 * Constructs a NodeRegistry with an attached set of missing nodes.
 	 * @param missingDependencySet the set to be filled with encountered missing nodes from required expression lookups
 	 * @param weakDependencySet the set to be filled with encountered weak or already fulfilled dependencies
 	 */
-	public NodeRegistry(Set<NodeInstanceDesc.Key> missingDependencySet, Set<NodeInstanceDesc.Key> weakDependencySet) {
-		this(missingDependencySet, weakDependencySet, null);
+	public NodeRegistry(Set<NodeInstanceDesc.Key> missingDependencySet, Set<NodeInstanceDesc.Key> weakDependencySet, Set<NodeInstanceDesc> resolvedSet) {
+		this(missingDependencySet, weakDependencySet, resolvedSet, null);
 	}
 	/**
 	 * Constructs a NodeRegistry with an attached set of missing nodes.
@@ -58,9 +59,10 @@ public class NodeRegistry implements NodeRegistryRO {
 	 * @param weakDependencySet the set to be filled with encountered weak or already fulfilled dependencies, or null
 	 * @param other an existing NodeRegistry whose nodes will be added to the new object, or null
 	 */
-	public NodeRegistry(Set<NodeInstanceDesc.Key> missingDependencySet, Set<NodeInstanceDesc.Key> weakDependencySet, NodeRegistry other) {
+	public NodeRegistry(Set<NodeInstanceDesc.Key> missingDependencySet, Set<NodeInstanceDesc.Key> weakDependencySet, Set<NodeInstanceDesc> resolvedSet, NodeRegistry other) {
 		this.missingDependencySet = missingDependencySet;
 		this.weakDependencySet = weakDependencySet;
+		this.resolvedSet = resolvedSet;
 		if (other != null) {
 			other.map.forEach((NodeInstanceDesc.Key key, ArrayList<NodeInstanceDesc> val) ->
 			                  this.map.put(key, new ArrayList<NodeInstanceDesc>(val)));
@@ -137,7 +139,11 @@ public class NodeRegistry implements NodeRegistryRO {
 		if (weakDependencySet != null) {
 			weakDependencySet.add(fullMatch ? key : anonymizeKey(key, false));
 		}
-		return lookupAllIndep(key, fullMatch);
+		Iterable<NodeInstanceDesc> ret = lookupAllIndep(key, fullMatch);
+		if (resolvedSet != null) {
+			ret.forEach(nodeInst -> {resolvedSet.add(nodeInst);});
+		}
+		return ret;
 	}
 	/**
 	 * Looks up the unique node instance associated with a key. Additionally outputs an error message if it is not unique.
@@ -145,13 +151,23 @@ public class NodeRegistry implements NodeRegistryRO {
 	 * @return the node instance wrapped in Optional (if unique), or an empty Optional
 	 */
 	public Optional<NodeInstanceDesc> lookupOptionalUnique(NodeInstanceDesc.Key key) {
-		Iterator<NodeInstanceDesc> iter = lookupAll(key, true).iterator();
+		if ((key.isax == null) ^ (key.aux == Integer.MIN_VALUE)) {
+			//Relevant for use of keys as triggers in ModuleComposer.
+			throw new IllegalArgumentException("key must not be partially anonymized");
+		}
+		if (weakDependencySet != null) {
+			weakDependencySet.add(key);
+		}
+		Iterator<NodeInstanceDesc> iter = lookupAllIndep(key, true).iterator();
 		if (!iter.hasNext())
 			return Optional.empty();
 		NodeInstanceDesc ret = iter.next();
 		if (iter.hasNext()) {
 			logger.error("lookupOptionalUnique: Not returning unexpected duplicate node " + ret.getKey().toString());
 			return Optional.empty();
+		}
+		if (resolvedSet != null) {
+			resolvedSet.add(ret);
 		}
 		return Optional.of(ret);
 	}
@@ -161,8 +177,19 @@ public class NodeRegistry implements NodeRegistryRO {
 	 * @return the node instance wrapped in Optional, or an empty Optional
 	 */
 	public Optional<NodeInstanceDesc> lookupOptional(NodeInstanceDesc.Key key) {
-		for (NodeInstanceDesc entry : lookupAll(key, true))
+		if ((key.isax == null) ^ (key.aux == Integer.MIN_VALUE)) {
+			//Relevant for use of keys as triggers in ModuleComposer.
+			throw new IllegalArgumentException("key must not be partially anonymized");
+		}
+		if (weakDependencySet != null) {
+			weakDependencySet.add(key);
+		}
+		for (NodeInstanceDesc entry : lookupAllIndep(key, true)) {
+			if (resolvedSet != null) {
+				resolvedSet.add(entry);
+			}
 			return Optional.of(entry);
+		}
 		return Optional.empty();
 	}
 	
@@ -172,12 +199,16 @@ public class NodeRegistry implements NodeRegistryRO {
 	 * @return the resolved node instance, or a placeholder with expression value starting with "MISSING_"
 	 */
 	public NodeInstanceDesc lookupRequired(NodeInstanceDesc.Key key) {
+		if ((key.isax == null) ^ (key.aux == Integer.MIN_VALUE)) {
+			//Relevant for use of keys as triggers in ModuleComposer.
+			throw new IllegalArgumentException("key must not be partially anonymized");
+		}
 		NodeInstanceDesc retEntry = null;
 		NodeInstanceDesc prevEntry = null;
 		NodeInstanceDesc duplicatePseudoEntry = null;
 		boolean logged = false;
+		weakDependencySet.add(key);
 		for (NodeInstanceDesc entry : lookupAllIndep(key, true)) {
-			weakDependencySet.add(key);
 			if (prevEntry != null) {
 				// Detect duplicate matches.
 				if (prevEntry.key.getPurpose().equals(entry.getKey().getPurpose())) {
@@ -204,8 +235,11 @@ public class NodeRegistry implements NodeRegistryRO {
 			prevEntry = entry;
 		}
 		if (retEntry != null) {
+			if (resolvedSet != null) {
+				resolvedSet.add(retEntry);
+			}
 			int matchPriority = key.getPurpose().matchPriority(retEntry.getKey().getPurpose());
-			if (!key.getPurpose().equals(retEntry.getKey()) && matchPriority < key.getPurpose().getMaxPriority()) {
+			if (!key.getPurpose().equals(retEntry.getKey().getPurpose()) && matchPriority < key.getPurpose().getMaxPriority()) {
 				//Use the given match, but still try creating a better one.
 				missingDependencySet.add(new NodeInstanceDesc.Key(
 					Purpose.withMinPriority(key.getPurpose(), matchPriority + 1),
@@ -366,5 +400,12 @@ public class NodeRegistry implements NodeRegistryRO {
 	 */
 	public Key deduplicateNodeKeyAux(Key key) {
 		return new Key(key.getPurpose(), key.getNode(), key.getStage(), key.getISAX(), auxCounter.incrementAndGet());
+	}
+	
+	/**
+	 * Returns a new unique non-zero aux value.
+	 */
+	public int newUniqueAux() {
+		return auxCounter.incrementAndGet();
 	}
 }

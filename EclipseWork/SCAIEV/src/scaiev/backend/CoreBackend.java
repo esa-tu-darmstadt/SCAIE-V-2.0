@@ -72,8 +72,7 @@ public class CoreBackend {
 	
 	
 	public void PopulateNodesMap() {
-		Set<SCAIEVNode> backendNodes = BNode.GetAllBackNodes();
-		for(SCAIEVNode node:  backendNodes ) {
+		for(SCAIEVNode node:  BNode.GetAllBackNodes()) {
 			HashMap<PipelineStage, NodePropBackend> newStageNode = new HashMap<PipelineStage, NodePropBackend>();
 			core.GetRootStage().getAllChildren().forEach(stage -> {
 				NodePropBackend prop = new NodePropBackend();

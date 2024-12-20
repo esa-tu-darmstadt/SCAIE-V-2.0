@@ -50,7 +50,7 @@ public class SCAIEVInstr {
 	public enum InstrTag {
 		/** The ISAX interface has the ISAX name in its RdStall, RdFlush pins */
 		PerISAXRdStallFlush("RdStallFlush-Is-Per-ISAX"),
-		/** The ISAX interface has the ISAX name all read node pins (RdRS1/2, RdRD, RdMem, RdInstr, RdCustomReg, etc.) */
+		/** The ISAX interface has the ISAX name in all read node pins (RdRS1/2, RdRD, RdMem, RdInstr, RdCustomReg, etc.) */
 		PerISAXReadResults("ReadResults-Are-Per-ISAX");
 		
 		public final String serialName;
@@ -385,7 +385,7 @@ public class SCAIEVInstr {
 	
 	
 	public String GetEncodingConstRD(Lang language) {
-		if(this.constRd.isEmpty())
+		if(this.constRd.isEmpty() || this.constRd.equals("-----"))
 			return "-----";
 		if(language == Lang.VHDL)
 			return "\""+this.constRd+"\"";	

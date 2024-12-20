@@ -34,16 +34,20 @@ public class StallFlushDeqStrategy extends SingleNodeStrategy {
 
 	@Override
 	public Optional<NodeLogicBuilder> implement(NodeInstanceDesc.Key nodeKey) {
-		boolean opNeedsCoreSupport = !nodeKey.getNode().equals(bNodes.WrDeqInstr);
-		if ((nodeKey.getNode().equals(bNodes.WrStall) || nodeKey.getNode().equals(bNodes.WrFlush) || nodeKey.getNode().equals(bNodes.WrDeqInstr))
+		boolean opNeedsCoreSupport = !nodeKey.getNode().equals(bNodes.WrDeqInstr) && !nodeKey.getNode().equals(bNodes.WrRerunNext);
+		if ((nodeKey.getNode().equals(bNodes.WrStall) || nodeKey.getNode().equals(bNodes.WrFlush)
+					|| nodeKey.getNode().equals(bNodes.WrDeqInstr) || nodeKey.getNode().equals(bNodes.WrRerunNext))
 				&& nodeKey.getPurpose().matches(NodeInstanceDesc.Purpose.REGULAR)
 				&& nodeKey.getISAX().isEmpty()
 				&& nodeKey.getAux() == 0
 				&& (!opNeedsCoreSupport || nodeKey.getStage().getKind() == StageKind.Decoupled
-					|| core.GetNodes().containsKey(nodeKey.getNode())
-					&& core.TranslateStageScheduleNumber(core.GetNodes().get(nodeKey.getNode()).GetEarliest()).isAroundOrBefore(nodeKey.getStage(),false))
+					|| (core.GetNodes().containsKey(nodeKey.getNode())
+					&& core.TranslateStageScheduleNumber(core.GetNodes().get(nodeKey.getNode()).GetEarliest()).isAroundOrBefore(nodeKey.getStage(),false)))
 				) {
-			InterfaceRequestBuilder interfBuilder = new InterfaceRequestBuilder(NodeInstanceDesc.Purpose.MARKER_TOCORE_PIN, nodeKey);
+			InterfaceRequestBuilder interfBuilder = new InterfaceRequestBuilder(
+				opNeedsCoreSupport ? NodeInstanceDesc.Purpose.MARKER_TOCORE_PIN : NodeInstanceDesc.Purpose.MARKER_INTERNALIMPL_PIN, 
+				nodeKey
+			);
 			return Optional.of(NodeLogicBuilder.fromFunction("StallFlushDeqStrategy ("+nodeKey.toString()+")", (NodeRegistryRO registry, Integer aux) -> {
 				NodeLogicBlock ret = new NodeLogicBlock();
 				
@@ -64,8 +68,7 @@ public class StallFlushDeqStrategy extends SingleNodeStrategy {
 				}
 				if (newValue.isEmpty())
 					newValue = "1'b0";
-				else if (opNeedsCoreSupport
-						&& (nodeKey.getStage().getKind() == StageKind.Core || nodeKey.getStage().getKind() == StageKind.CoreInternal)) {
+				else if (!opNeedsCoreSupport || (nodeKey.getStage().getKind() == StageKind.Core || nodeKey.getStage().getKind() == StageKind.CoreInternal)) {
 					// Explicitly request instantiation of the SCAL->core output pin
 					ret.addOther(interfBuilder.apply(registry, aux));
 				}
@@ -112,6 +115,7 @@ public class StallFlushDeqStrategy extends SingleNodeStrategy {
 				&& !nodeKey.getISAX().isEmpty()
 				&& nodeKey.getAux() == 0
 				&& core.TranslateStageScheduleNumber(core.GetNodes().get(nodeKey.getNode()).GetEarliest()).isAroundOrBefore(nodeKey.getStage(),false)) {
+			//Construct per-ISAX RdStall/RdFlush that includes all WrStalls/WrFlushes from other ISAXes or from SCAL internally
 			NodeInstanceDesc.Key generalKey = new NodeInstanceDesc.Key(nodeKey.getNode(), nodeKey.getStage(), ""); //RdStall (e.g. from core) without any added conditions
 			SCAIEVNode wrNode = bNodes.GetSCAIEVNode(bNodes.GetNameWrNode(nodeKey.getNode()));
 			

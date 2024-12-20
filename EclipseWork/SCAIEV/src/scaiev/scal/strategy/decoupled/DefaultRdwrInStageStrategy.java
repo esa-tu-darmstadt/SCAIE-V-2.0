@@ -46,15 +46,22 @@ public class DefaultRdwrInStageStrategy extends MultiNodeStrategy {
 		SCAIEVNode node = nodeKey.getNode();
 		PipelineStage stage = nodeKey.getStage();
 		//Early node check
-		if (!(node.equals(bNodes.RdInStageID) || (node.equals(bNodes.RdInStageValid) && stage.getTags().contains(StageTag.Execute)) || node.equals(bNodes.WrInStageID_validResp)))
+		if (node.equals(bNodes.RdInStageID)
+				|| (node.equals(bNodes.RdInStageValid) && stage.getTags().contains(StageTag.Execute))
+				|| node.equals(bNodes.WrInStageID_validResp)) {}
+		else if (node.equals(bNodes.WrDeqInstr) && nodeKey.getPurpose().matches(Purpose.MARKER_INTERNALIMPL_PIN)) {}
+		else return false;
+		
+		if (!nodeKey.getISAX().isEmpty() || nodeKey.getAux() != 0)
 			return false;
+		
 		var outFallbackNodeKey = new NodeInstanceDesc.Key(Purpose.WIREDIN_FALLBACK, node, stage, "");
 		SCAIEVNode baseNode = node.isAdj() ? bNodes.GetSCAIEVNode(node.nameParentNode) : node;
 		
 		boolean coreSupportsNodeInStage = Optional.ofNullable(core.GetNodes().get(baseNode))
 				.map(coreNode -> core.StageIsInRange(coreNode, stage)).orElse(false);
-		boolean coreSupportsDeqInstrInStage = Optional.ofNullable(core.GetNodes().get(bNodes.WrDeqInstr))
-				.map(coreNode -> core.StageIsInRange(coreNode, stage)).orElse(false);
+//		boolean coreSupportsDeqInstrInStage = Optional.ofNullable(core.GetNodes().get(bNodes.WrDeqInstr))
+//				.map(coreNode -> core.StageIsInRange(coreNode, stage)).orElse(false);
 		
 		//Check if the core already supports this node.
 		if (coreSupportsNodeInStage && nodeKey.getPurpose().matches(Purpose.WIREDIN_FALLBACK)) {
@@ -62,16 +69,35 @@ public class DefaultRdwrInStageStrategy extends MultiNodeStrategy {
 				return false; //Create only one interface builder per key.
 			//Request the relevant core interfaces.
 			out.accept(new InterfaceRequestBuilder(Purpose.MARKER_FROMCORE_PIN, new NodeInstanceDesc.Key(node, stage, "")));
-			if (node.equals(bNodes.WrInStageID_validResp) && coreSupportsDeqInstrInStage) {
-				out.accept(new InterfaceRequestBuilder(Purpose.MARKER_TOCORE_PIN, new NodeInstanceDesc.Key(bNodes.WrDeqInstr, stage, "")));
-			}
+//			if (node.equals(bNodes.WrInStageID_validResp) && coreSupportsDeqInstrInStage) {
+//				out.accept(new InterfaceRequestBuilder(Purpose.MARKER_TOCORE_PIN, new NodeInstanceDesc.Key(bNodes.WrDeqInstr, stage, "")));
+//			}
+		}
+		if (coreSupportsNodeInStage && nodeKey.getPurpose().matches(Purpose.MARKER_INTERNALIMPL_PIN) && node.equals(bNodes.WrDeqInstr)) {
+			if (!implementedKeys.add(new NodeInstanceDesc.Key(Purpose.MARKER_TOCORE_PIN, baseNode, stage, "")))
+				return false; //Create only one interface builder per key.
+			//Request the relevant core interfaces.
+			var requestBuilder = new InterfaceRequestBuilder(Purpose.MARKER_TOCORE_PIN, new NodeInstanceDesc.Key(node, stage, ""));
+			out.accept(NodeLogicBuilder.fromFunction("DefaultRdwrInStageStrategy_RequestStandard_"+nodeKey.toString(false), (registry, aux) -> {
+				var ret = new NodeLogicBlock();
+				ret.outputs.add(new NodeInstanceDesc(
+					NodeInstanceDesc.Key.keyWithPurpose(nodeKey, Purpose.MARKER_INTERNALIMPL_PIN),
+					"", ExpressionType.AnyExpression,
+					requestBuilder.requestedFor
+				));
+				ret.addOther(requestBuilder.apply(registry, aux));
+				return ret;
+			}));
 		}
 
 		NodeInstanceDesc.Key wrDeqInstrKey = new NodeInstanceDesc.Key(bNodes.WrDeqInstr, stage, "");
-		if (!coreSupportsDeqInstrInStage && implementedKeys.add(wrDeqInstrKey)) {
+		//if (!coreSupportsDeqInstrInStage && implementedKeys.add(wrDeqInstrKey)) {
+		if (!coreSupportsNodeInStage && nodeKey.getPurpose().matches(Purpose.MARKER_INTERNALIMPL_PIN) && node.equals(bNodes.WrDeqInstr)) {
+			if (!implementedKeys.add(wrDeqInstrKey))
+				return true;
 			String instrHiddenReg = wrDeqInstrKey.toString(false) + "_r";
 			String pendingInstrStallWire = wrDeqInstrKey.toString(false) + "_stallcondition";
-			//Hook here to handle WrDeqInstr
+
 			var wrDeqRequestedFor = new RequestedForSet();
 			//WrDeqInstr: Assign instrHiddenReg accordingly, and also do WrStall while hiding the instruction.
 			out.accept(NodeLogicBuilder.fromFunction("DefaultRdwrInStageStrategy_WrDeqInstr_"+stage.getName(), (registry, aux) -> {
@@ -130,6 +156,7 @@ public class DefaultRdwrInStageStrategy extends MultiNodeStrategy {
 				ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.RdInStageValid, stage, "", aux), "!"+instrHiddenReg, ExpressionType.AnyExpression, wrDeqRequestedFor));
 				return ret;
 			}));
+			return true;
 		}
 		if (node.equals(bNodes.RdInStageID) && !coreSupportsNodeInStage && nodeKey.getPurpose().matches(Purpose.WIREDIN_FALLBACK)) {
 			if (implementedKeys.add(outFallbackNodeKey)) {

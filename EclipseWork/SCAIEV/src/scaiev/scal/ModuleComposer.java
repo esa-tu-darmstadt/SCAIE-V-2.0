@@ -2,20 +2,25 @@ package scaiev.scal;
 
 import java.io.IOException;
 import java.io.Writer;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.HashMap;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import scaiev.scal.NodeInstanceDesc.ExpressionType;
@@ -45,6 +50,8 @@ public class ModuleComposer {
 		public ArrayList<NodeInstanceDesc.Key> missingDependencySet = new ArrayList<>();
 		/** The last reported optional or present dependencies of this builder */
 		public ArrayList<NodeInstanceDesc.Key> weakDependencySet = new ArrayList<>();
+		/** The last reported resolved dependencies of this builder */
+		public ArrayList<Map.Entry<NodeBuilderEntry,NodeInstanceDesc>> resolvedDependencySet = new ArrayList<>();
 		NodeBuilderEntry(int i, AtomicInteger aux, NodeLogicBuilder builder) {
 			this.i = i;
 			this.aux = aux.incrementAndGet();
@@ -93,6 +100,28 @@ public class ModuleComposer {
 	
 	private static final Purpose MAPPURPOSE = new Purpose("MAPPURPOSE", false, Optional.empty(), List.of());
 	
+	/** Utility: Object wrapper to compare objects with overridden equals method by instance equality. */
+	private static class ObjInstanceComparatorWrapper<T> {
+		public T val;
+		public ObjInstanceComparatorWrapper(T val) { this.val = val; }
+		@Override
+		public int hashCode() {
+			return Objects.hash(val);
+		}
+		@Override
+		public boolean equals(Object obj) {
+			if (this == obj)
+				return true;
+			if (obj == null)
+				return false;
+			if (getClass() != obj.getClass())
+				return false;
+			@SuppressWarnings("rawtypes")
+			ObjInstanceComparatorWrapper other = (ObjInstanceComparatorWrapper) obj;
+			return val == other.val;
+		}
+	}
+	
 	/**
 	 * Builds the given nodes and all dependencies iteratively, using a strategy.
 	 * The strategy is expected to ensure that only one builder will be instantiated per node,
@@ -112,9 +141,11 @@ public class ModuleComposer {
 		
 		HashSet<NodeInstanceDesc.Key> lastRecordedMissingDependencies = new HashSet<>();
 		HashSet<NodeInstanceDesc.Key> lastRecordedWeakDependencies = new HashSet<>();
+		HashSet<NodeInstanceDesc> lastRecordedResolvedDependencies = new HashSet<>();
 		NodeRegistry composerNodeRegistry = new NodeRegistry(
 				lastRecordedMissingDependencies,
 				lastRecordedWeakDependencies,
+				lastRecordedResolvedDependencies,
 				initialNodeRegistry);
 		ArrayList<NodeBuilderEntry> globalLogic = new ArrayList<>(initialLogicBuilders.size());
 		initialLogicBuilders.forEach(builder -> globalLogic.add(new NodeBuilderEntry(globalLogic.size(), composerNodeRegistry.auxCounter, builder)));
@@ -122,8 +153,11 @@ public class ModuleComposer {
 		//Map to identify node builders to rerun after a node changes
 		HashMap<NodeInstanceDesc.Key, ArrayList<NodeBuilderEntry>> nodeUpdateTriggers = new HashMap<>();
 		final ArrayList<NodeBuilderEntry> updateList_empty = new ArrayList<>(0);
+
+		//Record a mapping of NodeInstanceDesc to NodeBuilderEntry.
+		HashMap<ObjInstanceComparatorWrapper<NodeInstanceDesc>,NodeBuilderEntry> builderEntryByNodeInstance = new HashMap<>();
 		
-		//Put all node builders in the update list.
+		//For the first iteration, put all node builders in the update list.
 		ArrayList<NodeBuilderEntry> updateList = new ArrayList<NodeBuilderEntry>(globalLogic);
 		
 		int i_iter = 0;
@@ -218,6 +252,7 @@ public class ModuleComposer {
 					for (NodeInstanceDesc output : entry.block.get().outputs) {
 						if (output.expressionType != ExpressionType.ModuleOutput)
 							composerNodeRegistry.unregister(output.key);
+						builderEntryByNodeInstance.remove(new ObjInstanceComparatorWrapper<>(output));
 					}
 					//Remove builder from all relevant trigger sets
 					Consumer<NodeInstanceDesc.Key> removeTrigger = depKey -> getRelevantTriggerKeys(depKey).forEach(curKey -> {
@@ -240,6 +275,7 @@ public class ModuleComposer {
 
 				lastRecordedMissingDependencies.clear();
 				lastRecordedWeakDependencies.clear();
+				lastRecordedResolvedDependencies.clear();
 				NodeLogicBlock newBlock = entry.builder.apply(composerNodeRegistry, entry.aux);
 				//Immediately replace the Purposes of all output keys with their 'register as' values.
 				//This prevents mis-detections of changed outputs.
@@ -263,6 +299,12 @@ public class ModuleComposer {
 				entry.missingDependencySet.addAll(lastRecordedMissingDependencies);
 				entry.weakDependencySet.clear();
 				entry.weakDependencySet.addAll(lastRecordedWeakDependencies);
+				entry.resolvedDependencySet.clear();
+				for (NodeInstanceDesc outputInstanceDesc : lastRecordedResolvedDependencies) {
+					var builderEntry = builderEntryByNodeInstance.get(new ObjInstanceComparatorWrapper<>(outputInstanceDesc));
+					assert(builderEntry != null);
+					entry.resolvedDependencySet.add(Map.entry(builderEntry, outputInstanceDesc));
+				}
 				
 				//Create a log entry if requested.
 				BuildLogEntry logEntry = null;
@@ -294,6 +336,12 @@ public class ModuleComposer {
 						continue;
 					enqueueRebuild.accept(nodeUpdateTriggers.getOrDefault(newOutput.key, updateList_empty));
 					enqueueRebuild.accept(nodeUpdateTriggers.getOrDefault(NodeRegistry.anonymizeKey(newOutput.key), updateList_empty));
+				}
+				
+				// Add the new outputs to builderEntryByNodeInstance.
+				for (NodeInstanceDesc newOutput : newBlock.outputs) {
+					var oldVal = builderEntryByNodeInstance.put(new ObjInstanceComparatorWrapper<>(newOutput), entry);
+					assert(oldVal == null); //Each NodeInstanceDesc should only be used once.
 				}
 				
 				//Add all dependencies to the update trigger map (for each matching Purpose).
@@ -430,6 +478,28 @@ public class ModuleComposer {
 			++i_iter;
 		}
 		
+		BiFunction<List<NodeBuilderEntry>,Integer,Stream<Integer>> getLogicDependencies = (logicList, globalLogicIdx) -> {
+			return logicList.get(globalLogicIdx).resolvedDependencySet.stream().map(logicAndOutputPair -> {
+				assert(logicAndOutputPair.getKey() == logicList.get(logicAndOutputPair.getKey().i));
+				return logicAndOutputPair.getKey().i;
+			});
+		};
+//			return globalLogic.get(globalLogicIdx).weakDependencySet.stream()
+//				.flatMap(weakDep -> getRelevantTriggerKeys(weakDep))
+//				.flatMap(curKey -> {
+//					return Stream.concat(
+//						nodeUpdateTriggers.getOrDefault(curKey, updateList_empty).stream().map(entry -> {
+//							assert(entry == globalLogic.get(entry.i));
+//							return entry.i;
+//						}),
+//						nodeUpdateTriggers.getOrDefault(NodeRegistry.anonymizeKey(curKey), updateList_empty).stream().map(entry -> {
+//							assert(entry == globalLogic.get(entry.i));
+//							return entry.i;
+//						})
+//					);
+//				});
+//		};
+		
 		//Trim unused blocks
 		if (trim)
 		{
@@ -440,22 +510,8 @@ public class ModuleComposer {
 			dfsVisit.fn = i -> {
 				if (visitList[i]) return;
 				visitList[i] = true;
-				for (NodeInstanceDesc.Key depKey : globalLogic.get(i).weakDependencySet) getRelevantTriggerKeys(depKey).forEach(curKey -> {
-					for (NodeBuilderEntry entry : nodeUpdateTriggers.getOrDefault(curKey, updateList_empty)) {
-						assert(entry == globalLogic.get(entry.i));
-						dfsVisit.fn.accept(entry.i);
-					}
-					for (NodeBuilderEntry entry : nodeUpdateTriggers.getOrDefault(NodeRegistry.anonymizeKey(curKey), updateList_empty)) {
-						assert(entry == globalLogic.get(entry.i));
-						dfsVisit.fn.accept(entry.i);
-					}
-				});
+				getLogicDependencies.apply(globalLogic, i).forEach(depIdx -> dfsVisit.fn.accept(depIdx));
 			};
-//			for (int i = 0; i < initialLogicBuilders.size(); ++i) {
-//				assert(globalLogic.size() > i && globalLogic.get(i).builder == initialLogicBuilders.get(i));
-//				if (globalLogic.size() > i)
-//					dfsVisit.fn.accept(i);
-//			}
 			for (int i = 0; i < globalLogic.size(); ++i) {
 				//Treat all output ports as relevant, regardless of whether they are linked to the initial builders.
 				//This should also capture all relevant logic hooks that are not in the dependency chain of the initial builders,
@@ -467,12 +523,52 @@ public class ModuleComposer {
 			}
 			for (int i = globalLogic.size()-1; i >= 0; --i) {
 				if (!visitList[i]) {
+					globalLogic.get(i).i = -1;
 					globalLogic.remove(i);
 				}
 			}
+			for (int i = 0; i < globalLogic.size(); ++i) {
+				//Repair the index field.
+				globalLogic.get(i).i = i;
+			}
+		}
+
+		ArrayList<NodeBuilderEntry> dependencySortedLogic = new ArrayList<>();
+		{
+			boolean[] visitList = new boolean[globalLogic.size()]; //(implicit init to false)
+			boolean[] alreadyAddedList = new boolean[globalLogic.size()];
+			Deque<Integer> processingStack = new ArrayDeque<>(globalLogic.size());
+			for (int i = 0; i < globalLogic.size(); ++i) {
+				//Add all included logic to the stack.
+				//Keep visitList[i] false, as we don't know the correct order yet.
+				processingStack.add(i);
+			}
+			while (!processingStack.isEmpty()) {
+				Integer i = processingStack.peekFirst();
+				int sizeLast = processingStack.size();
+				getLogicDependencies.apply(globalLogic, i).forEach(depIdx -> {
+					if (!visitList[depIdx]) {
+						visitList[depIdx] = true;
+						processingStack.addFirst(depIdx);
+					}
+				});
+				if (processingStack.size() == sizeLast) { //No unprocessed dependencies.
+					//Since visitList is not set for the initial entries, check the additional 'already added' flag.
+					if (!alreadyAddedList[i]) {
+						alreadyAddedList[i] = true;
+						dependencySortedLogic.add(globalLogic.get(i));
+					}
+					processingStack.removeFirst();
+				}
+			}
+			for (int i = 0; i < dependencySortedLogic.size(); ++i) {
+				//Repair the index field.
+				dependencySortedLogic.get(i).i = i;
+			}
+			//NOTE: At this point, the index fields are valid only w.r.t. dependencySortedLogic
 		}
 		
-		return globalLogic;
+		return dependencySortedLogic;
 	}
 
 	

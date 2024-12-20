@@ -41,6 +41,16 @@ public class PipelineStage {
 	}
 	
 	/**
+	 * Returns a value unique across all PipelineStage objects (in the same class loader), which can be used as a sort key,
+	 * e.g. if two PipelineStage lists need to be in the same order.
+	 * The order is based on object construction and may change between subsequent runs;
+	 * no guarantee is made to how stages with different keys relate to another.
+	 */
+	public long getSortKey() {
+		return instanceID;
+	}
+	
+	/**
 	 * Constructs a linear, continuous in-order pipeline with simple index names.
 	 * Appropriate for most single-issue in-order cores.
 	 * @param depth number of stages that are in a row
@@ -344,7 +354,12 @@ public class PipelineStage {
 		/**
 		 * Commit stage marker: Any operation that enters this stage can be considered committable (if not committed already), as it cannot be flushed anymore.
 		 */
-		Commit("commit");
+		Commit("commit"),
+		/** 
+		 * No ISAXes pass through this stage, intended for issues to other execution units.
+		 * Marker used to track custom register commit for 'always' ISAXes while ignoring regular ISAXes.
+		 */
+		NoISAX("noisax");
 		
 		public final String serialName;
 		

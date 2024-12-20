@@ -65,7 +65,6 @@ public class SCAIEVCmd {
 		builder.add(builder.newRootLogger(Level.OFF).add(builder.newAppenderRef("Stdout")));
 		//initialize logging and generate logger for current class
 		Configurator.initialize(builder.build());
-		Configurator.setAllLevels(LogManager.getRootLogger().getName(), Level.INFO);
 		logger = LogManager.getLogger();
 
 		CommandLineParser parser = new DefaultParser();
@@ -75,8 +74,8 @@ public class SCAIEVCmd {
 		try {
 			coreDatab.ReadAvailCores("./Cores");
 		} catch(Exception e) {
-			logger.error("Couldn't parse the core descriptions");
-			System.exit(-1);
+			System.out.println("Cannot read core descriptions!");
+			printHelpAndExit(options);
 		}
 
 		options.addOption(Option.builder("c").longOpt("core")
@@ -89,13 +88,13 @@ public class SCAIEVCmd {
 			.argName("ISAX.yaml")
 			.hasArg()
 			.required(false)
-			.desc("Single YAML-file describing the ISAX interface (optional)")
+			.desc("YAML-file describing the ISAX interface as created by Longnail")
 			.build());
 		options.addOption(Option.builder("o").longOpt("outdir")
 			.argName("directory")
 			.hasArg()
 			.required(false)
-			.desc("Directory to generate output files, default value \"target\". A <core> subdirectory will be created by default; trail the path with / to not create the subdirectory.")
+			.desc("Directory to generate output-files; isaxes subdirectory will be scanned unless isax parameter is set; will use <core> subdirectory by default, trail path with / to disable")
 			.build());
 		options.addOption(Option.builder("h").longOpt("help")
 			.required(false)

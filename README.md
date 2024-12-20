@@ -265,10 +265,12 @@ The WrMyreg interface must provide the address in the earliest stage in which a 
 ## What do I have to consider when extending SCAIE-V for new cores? 
 Here are some examples that must be considered when adding SCAIE-V to a core: 
 - Generate SCAIE-V IOs
+- Create a core datasheet for use by SCAIE-V. For complex cores (multiple execution units, multi-issue, etc.), a pipeline description has to be provided.
 - make sure no illegal instruction is generated when an ISAX is in the pipeline
 - make sure no result is commited when user valid bit is not set & ensure that core's data hazard mechanism does not take the result if valid = 0
 - make sure no illegal addr exception is generated when memory transfer uses user addr 
 - make sure WrPC in later stages does not happen while Rd/WrMem results in prev stages were commited
+- if needed, override the SCAL NodeRegPipelineStrategy for stage transitions that are not plain registers. IDBasedPipelineStrategy can be used to represent circular buffers (e.g., FIFOs).
 - no RdIValid required on core's side. This is handled by SCAL 
 - no RdInstr/RdRS/RdPC required in stages where not present (within core). This is handled by SCAL 
 
@@ -290,7 +292,7 @@ docker run -it -t   -v $(pwd):/src   -w /src    hdlc/ghdl:yosys   yosys -m ghdl 
 - **AdjacentNode** - while WrRD is a main node for writing register file, signals like address and valid are considered adjacent nodes (adjacent to WrRD). WrRD is considered to be a parent of WrRD_addr and WrRd_valid
 - **FNode/BNode**: SCAIE-V is made of multiple interfaces between ISAX and core. One such interface is for writing data to RegFile. Another one is for writing the memory, and so on. Only for writing the memory, the interface is actually made of multiple signals: data, addr, valid. FNode in this case is WrMem. BNode also includes the adjacent signals (addr, valid). BNode may also include signals required between SCAL and core, that are not visible to user. 
 - **frontend/backend**: frontend is used by all cores, backend is more core-specific 
-- **op_stage_instr**: hash map containing all operations required by user, with their stage number in which they were required and the instructions for each they were required. This is used across the entire tool to generate logic 
+- **op_stage_instr**: hash map containing all operations required by user, with their stage number in which they were required and the instructions for each they were required. This is used across the entire tool to generate logic. Initially set just from the ISAX schedule without adjacent nodes, then regenerated after SCAL elaboration, based on the required core-SCAL interfaces (now including adjacent nodes).
 - **instrSet/ISAXes** - while op_stage_instr has as value only a string of the instruction name, this hashmap contains all metadata for each instruction. It has as key a String with the instruction name, and as value a SCAIEVInstr object. This is also an important hash map used across the tool. It's a database which stores all requirements for each instruction. For exp, op_stage_instr does not contain info like: for instr ISAX_new, does the user require a valid signal for WrRd? 
 - **file parsing**: currently, the tool greps for certain words and can replace the line before/after the grep-ed text. It's also able to replace the line with grep. 
 
@@ -310,10 +312,13 @@ Clas BNode contains all adjacent nodes of FNode. It also contains nodes that rep
 Classes Piccolo/ORCA/picorv32/VexRiscv - each of this class updates the design files of the core to support the new instructions. 
 
 **Package: scaiev.util** - package containing classes able to generate text/update files 
-Class GenerateText - extended by all language classes. It contains "schelet" for all languages. It uses a dictionary that is then defined in each specific language class. Based on this dictionary it creates text which is required by all languages, like signal name for a node.
-Class FileWriter - this class is able to parse/update files. For exp. function "UpdateContent" is useful to update a file. It has 3 parameters: name of file to be updated, the "grep" text which must be searched in order to make the update. An object of type ToWrite which contains the information about the text to be added. 
+Class GenerateText - extended by all language classes. It contains basic functionality for all languages. It uses a dictionary that is then defined in each specific language class. Based on this dictionary it creates text which is required by all languages, like signal name for a node.
+Class FileWriter - this class is able to parse/update files. For example, function "UpdateContent" is useful to update a file. It has 3 parameters: name of file to be updated, the "grep" text which must be searched in order to make the update. An object of type ToWrite which contains the information about the text to be added. 
 Class ToWrite - this stores information about the new text to be added within the file. "text" is the new String to be added; "prereq" is a boolean and if it's set to true it implies that the tool is not allowed to add "text", unless "prereq_text" was already seen once during parsing; "before" is a boolean saying that "text" must be added before "grep"; "replace" is a boolean which states that "text" will replace "grep". 
-Package: scaiev.coreconstr - this package contains metadata of cores. This metadata is stored in yaml files in folder "Cores". CoreDatab class reads all these yaml files and parses this info so that each core becomes an object of "Core" class. Hence, "Core" class stores the metadata for one core.
+
+**Package: scaiev.coreconstr** - this package contains metadata of cores. This metadata is stored in yaml datasheets in folder "Cores". CoreDatab class reads all these yaml files and parses this info so that each core becomes an object of "Core" class.
+
+**Package: scaiev.scal** - this package contains the SCAL logic generator implementation. The strategy sub-packages comprises all logic-generating strategy objects for the different SCAL features.
 
 
 ## What is the current status of the project? 
@@ -325,4 +330,4 @@ Mihaela Damian, Julian Oppermann, Christoph Spang, Andreas Koch, "SCAIE-V: An Op
 for RISC-V Processors"
 
 ## Do you have further questions?
-For any questions, remarks or complaints, you can reach me at  damian@esa.tu-darmstadt.de. :) 
+For any questions, remarks or complaints, you can reach us at {damian,meisel}@esa.tu-darmstadt.de. :) 

@@ -36,8 +36,11 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
 	protected Verilog language;
 	protected BNode bNodes;
 	protected PipelineFront minPipeFront;
+	/** See constructor for details. Can be changed before makePipelineBuilder_single, won't apply to previously created builders. */
 	protected boolean zeroOnFlushSrc;
+	/** See constructor for details. Can be changed before makePipelineBuilder_single, won't apply to previously created builders. */
 	protected boolean zeroOnFlushDest;
+	/** See constructor for details. Can be changed before makePipelineBuilder_single, won't apply to previously created builders. */
 	protected boolean zeroOnBubble;
 	
 	protected Predicate<NodeInstanceDesc.Key> can_pipe;
@@ -119,6 +122,9 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
 		}
 		PipelineStage prevStage = stage_prev.get(0);
 		var requestedFor = new RequestedForSet(nodeKey.getISAX());
+		boolean zeroOnFlushSrc = this.zeroOnFlushSrc;
+		boolean zeroOnFlushDest = this.zeroOnFlushDest;
+		boolean zeroOnBubble = this.zeroOnBubble;
 		return NodeLogicBuilder.fromFunction("pipelineBuilder_single (" + nodeKey.toString(false) + ")", (NodeRegistryRO registry) -> {
 			
 			NodeInstanceDesc.Key nodeKey_prevStage = new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.PIPEOUT, nodeKey.getNode(), prevStage, nodeKey.getISAX(), nodeKey.getAux());
@@ -134,6 +140,7 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
 					+ "_regpipein";
 				//The expression that defines the updated register value.
 				String value = prevStageNodeInstance.get().getExpression();
+				boolean value_missing = prevStageNodeInstance.get().getExpression().startsWith("MISSING_");
 				if (zeroOnFlushSrc) {
 					//If the previous stage is being flushed and not stalling, register a zero instead of the current value.
 					String rdflushPrevStage = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, prevStage, ""), requestedFor);
@@ -177,7 +184,16 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
 				ret.logic += regLogic;
 				
 				NodeInstanceDesc.Key generatedNodeKey = new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.PIPEDIN, nodeKey.getNode(), nodeKey.getStage(), nodeKey.getISAX(), nodeKey.getAux());
-				ret.outputs.add(new NodeInstanceDesc(generatedNodeKey, nameReg, ExpressionType.WireName, requestedFor));
+				if (value_missing) {
+					//Output "MISSING_<..>" in case a rule polls for NodeRegPipelineStrategy validity.
+					//Also clear the logic for the same reason, while still keeping the dependencies,
+					// in case downstream node construction just needs a couple more iterations.
+					ret.logic = "";
+					ret.declarations = "";
+					ret.outputs.add(new NodeInstanceDesc(generatedNodeKey, "MISSING_"+nameReg+"~from_previous", ExpressionType.AnyExpression, requestedFor));
+				}
+				else
+					ret.outputs.add(new NodeInstanceDesc(generatedNodeKey, nameReg, ExpressionType.WireName, requestedFor));
 			}
 			
 				

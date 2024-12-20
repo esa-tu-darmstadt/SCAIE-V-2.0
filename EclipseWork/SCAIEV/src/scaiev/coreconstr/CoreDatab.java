@@ -294,6 +294,20 @@ public class CoreDatab {
 			this.operations = operations;
 		}
 	}
+	
+	/** Translate legacy operation names to match BNode. */
+	private String translateLegacyOperationName(String nameIn) {
+		switch (nameIn) {
+		case "RdCustReg":
+			return "RdCustReg.data_constraint";
+		case "WrCustReg.addr":
+			return "CustReg.addr_constraint";
+		case "WrCustReg.data":
+			return "WrCustReg.data_constraint";
+		default:
+			return nameIn;
+		}
+	}
 
 	//private PipelineStage parsePipeline()
 	
@@ -346,19 +360,26 @@ public class CoreDatab {
 						logger.error("CoreDatab. Unable to parse core description yaml file {}", coreFile.getName());
 						continue;
 					}
+
+					for (SerialCoreDescription.OperationDesc opDesc : coreDescr.operations) {
+						//Fix legacy operation names.
+						opDesc.operation = translateLegacyOperationName(opDesc.operation);
+					}
 					
 					var unsupportedNodeOps = coreDescr.operations.stream()
-							.filter(opDesc -> !opDesc.operation.contains("CustReg") /* explicitly ignored below */)
 							.filter(opDesc -> !BNode.HasSCAIEVNode(opDesc.operation)
-									|| (!BNode.HasSCAIEVFNode(opDesc.operation) && !BNode.GetSCAIEVNode(opDesc.operation).tags.contains(NodeTypeTag.defaultNotprovidedByCore)))
+									|| (!BNode.HasSCAIEVFNode(opDesc.operation) && !BNode.GetSCAIEVNode(opDesc.operation).tags.contains(NodeTypeTag.defaultNotprovidedByCore)
+											 && !BNode.GetSCAIEVNode(opDesc.operation).tags.contains(NodeTypeTag.constraintMarkerOnlyNode)))
 							.map(opDesc -> opDesc.operation)
 							.collect(Collectors.toList());
 					if (unsupportedNodeOps.size() > 0) {
 						logger.error("CoreDatab. Nodes {} not supported while processing {}. Supported nodes are Node_* : {}",
 								unsupportedNodeOps.stream().reduce((a,b) -> a+", "+b).get(),
 								coreFile.getName(),
-								Stream.concat(BNode.GetAllFrontendNodes().stream(), BNode.GetAllBackNodes().stream().filter(op -> op.tags.contains(NodeTypeTag.defaultNotprovidedByCore)))
-									.distinct().toList().toString());
+								Stream.concat(BNode.GetAllFrontendNodes().stream(), BNode.GetAllBackNodes().stream().filter(op ->
+										op.tags.contains(NodeTypeTag.defaultNotprovidedByCore)
+										|| op.tags.contains(NodeTypeTag.constraintMarkerOnlyNode))
+									).distinct().toList().toString());
 						continue;
 					}
 					int maxStage = 0;
@@ -370,9 +391,6 @@ public class CoreDatab {
 					HashMap<SCAIEVNode, CoreNode> nodes_of1_core = new HashMap<SCAIEVNode, CoreNode>();
 
 					for (SerialCoreDescription.OperationDesc opDesc : coreDescr.operations) {
-						if (opDesc.operation.contains("CustReg"))
-							continue;
-
 						SCAIEVNode addNode = BNode.GetSCAIEVNode(opDesc.operation);
 						if (addNode.equals(BNode.WrMem) || addNode.equals(BNode.RdMem)) {
 							//TODO: Is this necessary? Could it be moved to an error message during RdMem/WrMem implementation?
@@ -405,6 +423,10 @@ public class CoreDatab {
 						//If no explicit pipeline is given, construct a simple one from the known stage number range. 
 						PipelineStage corePipelineFront = PipelineStage.constructLinearContinuous(StageKind.Core, maxStage + 1, Optional.of(0));
 						rootStage.addChild(corePipelineFront);
+						int lastRdFlushStage = Optional.ofNullable(nodes_of1_core.get(BNode.RdFlush)).map(node -> node.GetLatest().asInt()).orElse(-1);
+						if (lastRdFlushStage == -1)
+							lastRdFlushStage = maxStage;
+						rootStage.getChildrenByStagePos(lastRdFlushStage).forEach(commitStage -> commitStage.addTag(StageTag.Commit));
 						
 						//Add the special decoupled stage to the end of the pipeline.
 						PipelineStage decoupledStage = new PipelineStage(

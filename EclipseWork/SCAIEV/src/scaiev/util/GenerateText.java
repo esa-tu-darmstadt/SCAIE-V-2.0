@@ -274,7 +274,7 @@ public abstract class GenerateText {
 		if(lookAtISAX ==null)
 			return this.dictionary.get(DictWords.False);
 		for (String ISAX  :  lookAtISAX) {
-			if(!ISAX.contains(allISAXes.get(ISAX).noEncodingInstr) &&  !allISAXes.get(ISAX).HasNoOp()) { // DUMMYInstr should not be decoded
+			if(!ISAX.isEmpty() &&  !allISAXes.get(ISAX).HasNoOp()) { // Ignore non-instr operations (SCAL-internal: ISAX empty, always: NoOp) 
 				if(!body.isEmpty())
 					body +=  " "+dictionary.get(DictWords.logical_or)+" ";
 				body += CreateValidEncodingOneInstr(ISAX, allISAXes, rdInstr);;

@@ -46,6 +46,36 @@ public abstract class TriggerableNodeLogicBuilder extends NodeLogicBuilder {
 		};
 	}
 	
+	public class RepeatingTrigger {
+		int lastVal = 0; boolean didInitialTrigger = false;
+		RepeatingTrigger() {}
+		/**
+		 * Function that should be called for each invocation of the calling builder.
+		 * Note that repeated invocations with refresh==false will not refresh the triggered builder, as the output does not change.
+		 * Similarly, not calling the trigger method in builder invocation N+1 after having called it in invocation N also forces a refresh.
+		 * @param aux the aux value for the trigger key, usually the aux value passed to the calling builder. The same value should be used for all invocations.
+		 * @param refresh whether the trigger value should be changed from the previous invocation;
+		 *        if true, this will cause reinvocation of the triggerable builder even if the previous trigger was processed already
+		 * @return a NodeLogicBlock with the trigger output to integrate in the result of the caller
+		 */
+		public NodeLogicBlock trigger(int aux, boolean refresh) {
+			if (triggerPending)
+				refresh = false; //no need
+			triggerPending = triggerPending || refresh || !didInitialTrigger;
+			if (refresh)
+				++lastVal;
+			var ret = new NodeLogicBlock();
+			var curTriggerKey = new NodeInstanceDesc.Key(triggerKey.getPurpose(), triggerKey.getNode(), triggerKey.getStage(), triggerKey.getISAX(), aux);
+			ret.outputs.add(new NodeInstanceDesc(curTriggerKey, Integer.toString(lastVal), ExpressionType.AnyExpression));
+			didInitialTrigger = true;
+			return ret;
+		}
+	}
+	/** Constructs a new RepeatingTrigger to use from within a NodeLogicBuilder. */
+	public RepeatingTrigger makeRepeatingTrigger() {
+		return new RepeatingTrigger();
+	}
+	
 	/**
 	 * Activates the trigger if not active already.
 	 * If out is non-null, adds a trigger builder if necessary.
@@ -57,11 +87,9 @@ public abstract class TriggerableNodeLogicBuilder extends NodeLogicBuilder {
 			return;
 		triggerPending = true;
 		if (out != null) {
+			RepeatingTrigger trigger = new RepeatingTrigger();
 			out.accept(NodeLogicBuilder.fromFunction("Trigger:"+this.name, (registry, aux) -> {
-				var ret = new NodeLogicBlock();
-				var curTriggerKey = new NodeInstanceDesc.Key(triggerKey.getPurpose(), triggerKey.getNode(), triggerKey.getStage(), triggerKey.getISAX(), aux);
-				ret.outputs.add(new NodeInstanceDesc(curTriggerKey, "1", ExpressionType.AnyExpression));
-				return ret;
+				return trigger.trigger(aux, false);
 			}));
 		}
 	}

@@ -4,7 +4,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -122,8 +121,8 @@ public class SCAL implements SCALBackendAPI {
 	// SCAL Settings 
 	//!!!!!!!!!!!!!!
 	public boolean SETTINGWithScoreboard = true;  // true = Scoreboard instantiated within SCAL,  false = scoreboard implemented within ISAX by user   
-	public boolean SETTINGWithValid = true;       // true = generate shift register for user valid bit within SCAL. False is a setting used by old SCAIEV version, possibly not stable. If false, user generates valid trigger 
-	public boolean SETTINGWithAddr = true;		  // true = FIFO for storing dest addr instantiated within SCAL, If false, user must store this info and provide it toghether with result. 
+	//public boolean SETTINGWithValid = true;       // true = generate shift register for user valid bit within SCAL. False is a setting used by old SCAIEV version, possibly not stable. If false, user generates valid trigger 
+	//public boolean SETTINGWithAddr = true;		  // true = FIFO for storing dest addr instantiated within SCAL, If false, user must store this info and provide it toghether with result. 
 	public boolean SETTINGwithInputFIFO = true;   // true =  it may happen that multiple ISAXes commit result, input FIFO to store them instantiated within SCAL. false = no input FIFOs instantiated
 	private boolean hasCustomWrRDSpawnDH = false; // true = if scoreboard instantiation within SCAL is disabled, we can still assume correct data hazard handling due to some core-specific implementation
 
@@ -140,8 +139,8 @@ public class SCAL implements SCALBackendAPI {
 	public void SetSCAL (boolean nonDecWithDH, boolean decWithValid, boolean decWithAddr, boolean decWithInpFIFO) {
 
 		this.SETTINGWithScoreboard = nonDecWithDH;
-		this.SETTINGWithValid = decWithValid;
-		this.SETTINGWithAddr = decWithAddr;
+		//this.SETTINGWithValid = decWithValid;
+		//this.SETTINGWithAddr = decWithAddr;
 		this.SETTINGwithInputFIFO = decWithInpFIFO;
 
 	}
@@ -399,8 +398,12 @@ public class SCAL implements SCALBackendAPI {
 	    	    //The ISAX may contain certain operations before the earliest allowed core stage (generally writes) / after the latest allowed one (generally reads).
 	    	    // After having processed the ISAX interfaces, move those operations to the earliest/latest allowed stage,
 	    	    // which will in turn force pipeline instantiation.
-	    		PipelineFront coreOpEarliestFront = core.TranslateStageScheduleNumber(core.GetNodes().get(operation).GetEarliest());
-	    		PipelineFront coreOpLatestFront = core.TranslateStageScheduleNumber(core.GetNodes().get(operation).GetLatest());
+	    		PipelineFront coreOpEarliestFront = BNode.IsUserBNode(operation)
+    				? new PipelineFront(core.GetRootStage().getChildren())
+    				: core.TranslateStageScheduleNumber(core.GetNodes().get(operation).GetEarliest());
+	    		PipelineFront coreOpLatestFront = BNode.IsUserBNode(operation)
+    				? new PipelineFront(core.GetRootStage().getChildrenTails())
+    				: core.TranslateStageScheduleNumber(core.GetNodes().get(operation).GetLatest());
 	    	    stages = new ArrayList<>(this.op_stage_instr.get(operation).keySet());
 	    	    var stagesIter = stages.iterator();
 	    	    while (stagesIter.hasNext()) {
@@ -450,29 +453,27 @@ public class SCAL implements SCALBackendAPI {
 			.distinct()
 			.toList();
 		for (String customRegName : customRegNames) {
-			SCAIEVNode readNode = BNode.GetSCAIEVNode(FNode.rdName + customRegName);
-			SCAIEVNode writeNode = BNode.GetSCAIEVNode(FNode.wrName + customRegName);
+			Optional<SCAIEVNode> readNode_opt = BNode.GetSCAIEVNode_opt(FNode.rdPrefix + customRegName);
+			Optional<SCAIEVNode> writeNode_opt = BNode.GetSCAIEVNode_opt(FNode.wrPrefix + customRegName);
 
-			NodeInstanceDesc.Key rdkey = new NodeInstanceDesc.Key(readNode, core.GetRootStage(), "");
-			NodeInstanceDesc.Key wrkey = new NodeInstanceDesc.Key(writeNode, core.GetRootStage(), "");
-			NodeLogicBuilder rdBuilder = NodeLogicBuilder.fromFunction("customRegBuilder_"+Purpose.MARKER_CUSTOM_REG.getName()+"_"+rdkey.toString(false), registry -> {
-				// explicitly request output
-				registry.lookupExpressionRequired(
-					new NodeInstanceDesc.Key(Purpose.MARKER_CUSTOM_REG, rdkey.getNode(), rdkey.getStage(), rdkey.getISAX())
-				);
-
-				return new NodeLogicBlock();
-			});
-			NodeLogicBuilder wrBuilder = NodeLogicBuilder.fromFunction("customRegBuilder_"+Purpose.MARKER_CUSTOM_REG.getName()+"_"+wrkey.toString(false), registry -> {
-				// explicitly request output
-				registry.lookupExpressionRequired(
-					new NodeInstanceDesc.Key(Purpose.MARKER_CUSTOM_REG, wrkey.getNode(), wrkey.getStage(), wrkey.getISAX())
-				);
-
-				return new NodeLogicBlock();
-			});
-			globalLogicBuilders.add(rdBuilder);
-			globalLogicBuilders.add(wrBuilder);
+			if (readNode_opt.isPresent()) {
+				NodeInstanceDesc.Key rdMarkerKey = new NodeInstanceDesc.Key(Purpose.MARKER_CUSTOM_REG, readNode_opt.get(), core.GetRootStage(), "");
+				NodeLogicBuilder rdBuilder = NodeLogicBuilder.fromFunction("customRegBuilder_"+rdMarkerKey.toString(false), registry -> {
+					// explicitly request output
+					registry.lookupExpressionRequired(rdMarkerKey);
+					return new NodeLogicBlock();
+				});
+				globalLogicBuilders.add(rdBuilder);
+			}
+			if (writeNode_opt.isPresent()) {
+				NodeInstanceDesc.Key wrMarkerKey = new NodeInstanceDesc.Key(Purpose.MARKER_CUSTOM_REG, writeNode_opt.get(), core.GetRootStage(), "");
+				NodeLogicBuilder wrBuilder = NodeLogicBuilder.fromFunction("customRegBuilder_"+wrMarkerKey.toString(false), registry -> {
+					// explicitly request output
+					registry.lookupExpressionRequired(wrMarkerKey);
+					return new NodeLogicBlock();
+				});
+				globalLogicBuilders.add(wrBuilder);
+			}
 		}
 
 		
@@ -546,7 +547,7 @@ public class SCAL implements SCALBackendAPI {
 	    // Step 2: generate Valid bits for all other nodes
 
 		
-		MultiNodeStrategy scalStateStrategy = strategyBuilders.buildSCALStateStrategy(myLanguage, BNode, core, op_stage_instr);
+		MultiNodeStrategy scalStateStrategy = strategyBuilders.buildSCALStateStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes);
 
 		SingleNodeStrategy normalValidBitStrategy = strategyBuilders.buildValidMuxStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes);
 
@@ -574,7 +575,8 @@ public class SCAL implements SCALBackendAPI {
 		SingleNodeStrategy SCALInputOutputStrategy = strategyBuilders.buildSCALInputOutputStrategy(myLanguage, BNode);
 		SingleNodeStrategy pipeoutRegularStrategy = strategyBuilders.buildPipeoutRegularStrategy();
 		MultiNodeStrategy defaultMemAdjStrategy = strategyBuilders.buildDefaultMemAdjStrategy(myLanguage, BNode, core);
-		SingleNodeStrategy defaultValidCancelReqStrategy = strategyBuilders.buildDefaultValidCancelReqStrategy(myLanguage, BNode, core);
+		SingleNodeStrategy defaultValidCancelReqStrategy = strategyBuilders.buildDefaultValidCancelReqStrategy(myLanguage, BNode, core, ISAXes);
+		SingleNodeStrategy defaultRerunStrategy = strategyBuilders.buildDefaultRerunStrategy(myLanguage, BNode, core);
 
     	//////////////////////////  Spawn/Decoupled //////////////////////////
 		Map<SCAIEVNode, Collection<String>> isaxPriorities = new HashMap<>();
@@ -665,6 +667,7 @@ public class SCAL implements SCALBackendAPI {
 				spawnFenceStrategy.implement(out, nodeKeys, isLast);
 				scalStateStrategy.implement(out, nodeKeys, isLast);
 				defaultRdwrInStageStrategy.implement(out, nodeKeys, isLast);
+				defaultRerunStrategy.implement(out, nodeKeys, isLast);
 				
 				SCALInputOutputStrategy.implement(out, nodeKeys, isLast);
 				ivalidStrategy.implement(out, nodeKeys, isLast);
@@ -689,15 +692,13 @@ public class SCAL implements SCALBackendAPI {
 		};
 		
 		// Generate the SCAL module logic using scalStrategy
-		ArrayList<NodeBuilderEntry> builtNodes = composer.Generate(scalStrategy, globalNodeRegistry, globalLogicBuilders, false);
+		ArrayList<NodeBuilderEntry> builtNodes = composer.Generate(scalStrategy, globalNodeRegistry, globalLogicBuilders, true);
 		
 		// Optionally output the composer log as DOT for debugging.
 		if (composer.hasLog()) {
 			File dotFile = new File(outPath, "CommonLogicModule_log.dot");
 			System.out.println("[SCAL] writing composition log to CommonLogicModule_log.dot");
 			try {
-				// create output path if necessary
-				(new File(dotFile.getParent().toString())).mkdirs();
 				FileOutputStream fos = new FileOutputStream(dotFile, false);
 				PrintWriter out = new PrintWriter(fos);
 				composer.writeLogAsDot(out);
@@ -771,6 +772,11 @@ public class SCAL implements SCALBackendAPI {
 					}
 					
 					//Compatibility with core backends for now (e.g. used for CVA5 to stall Issue if an ISAX will do WrPC) 
+					//TODO: Convert the backends requiring ISAX information from op_stage_instr
+					//      to insert strategies into SCAL instead.
+					
+					//if (!instrName.isEmpty() && !BNode.IsUserBNode(operation))
+					//	AddIn_op_stage_instr(operation, stage, instrName);
 					
 					interfToISAX += pin.getValue().declaration;
 				}
@@ -1033,7 +1039,8 @@ public class SCAL implements SCALBackendAPI {
 				continue;
 			// Generate main FNode interface 
 			String instrName = "";
-			if(!operation.oneInterfToISAX || nodePerISAXOverride.getOrDefault(operation, emptyStrHashSet).contains(instruction))
+			if(!operation.oneInterfToISAX || nodePerISAXOverride.getOrDefault(operation, emptyStrHashSet).contains(instruction)
+					 || operation.tags.contains(NodeTypeTag.supportsPortNodes) && (!ISAXes.containsKey(instruction) || ISAXes.get(instruction).HasNoOp()))
 				instrName = instruction;
 			
 			// Change the interface stage to the decoupled stage for semi-coupled instructions mechanism 

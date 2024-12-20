@@ -1,5 +1,6 @@
 package scaiev.scal.strategy.standard;
 
+import java.util.HashMap;
 import java.util.Optional;
 import java.util.function.Consumer;
 
@@ -8,6 +9,7 @@ import org.apache.logging.log4j.Logger;
 
 import scaiev.backend.BNode;
 import scaiev.coreconstr.Core;
+import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
 import scaiev.scal.NodeInstanceDesc;
@@ -32,6 +34,7 @@ public class DefaultValidCancelReqStrategy extends SingleNodeStrategy {
 	Verilog language;
 	BNode bNodes;
 	Core core;
+	HashMap<String,SCAIEVInstr> allISAXes;
 	
 	protected MultiNodeStrategy pipelinedMemSizeStrategy;
 	protected MultiNodeStrategy regularPipelinedMemAddrStrategy;
@@ -42,15 +45,20 @@ public class DefaultValidCancelReqStrategy extends SingleNodeStrategy {
 	 * @param language The (Verilog) language object
 	 * @param bNodes The BNode object for the node instantiation
 	 * @param core The core node description
+	 * @param allISAXes The ISAX descriptions
 	 */
-	public DefaultValidCancelReqStrategy(StrategyBuilders strategyBuilders, Verilog language, BNode bNodes, Core core) {
+	public DefaultValidCancelReqStrategy(StrategyBuilders strategyBuilders, Verilog language, BNode bNodes, Core core,
+			HashMap<String,SCAIEVInstr> allISAXes) {
 		this.strategyBuilders = strategyBuilders;
 		this.language = language;
 		this.bNodes = bNodes;
 		this.core = core;
+		this.allISAXes = allISAXes;
 	}
 	
 	private Optional<NodeLogicBuilder> implementValidReq(Key nodeKey) {
+		if (allISAXes.containsKey(nodeKey.getISAX()) && allISAXes.get(nodeKey.getISAX()).HasNoOp())
+			return Optional.empty();
 		var requestedFor = new RequestedForSet(nodeKey.getISAX());
 		String wireName = nodeKey.toString(false) + "_default_s";
 		return Optional.of(NodeLogicBuilder.fromFunction("DefaultValidCancelReqStrategy_"+nodeKey.toString(), registry -> {
@@ -81,9 +89,10 @@ public class DefaultValidCancelReqStrategy extends SingleNodeStrategy {
 				new NodeInstanceDesc.Key(Purpose.WIREDIN, validReqNode, nodeKey.getStage(), nodeKey.getISAX()),
 				requestedFor
 			);
-			if (wiredinValidreqInst.getExpression().startsWith("MISSING_")
-					|| wiredinValidreqInst.getKey().getPurpose().equals(Purpose.WIREDIN_FALLBACK)) {
-				//validReq is not given by the ISAX, so it can't cancel this operation
+			if (wiredinValidreqInst.getExpression().startsWith("MISSING_") //validReq is not given by the ISAX, so it can't cancel this operation
+					|| wiredinValidreqInst.getKey().getPurpose().equals(Purpose.WIREDIN_FALLBACK)
+					|| allISAXes.containsKey(nodeKey.getISAX()) && allISAXes.get(nodeKey.getISAX()).HasNoOp() //'always'/NoOpcode ISAXes can't cancel from omission of validReq
+					) {
 				ret.logic += String.format("assign %s = 1'b0;\n", wireName);
 			}
 			else {
@@ -108,6 +117,38 @@ public class DefaultValidCancelReqStrategy extends SingleNodeStrategy {
 		}));
 	}
 	
+	private Optional<NodeLogicBuilder> implementAddrReq(Key nodeKey) {
+		var requestedFor = new RequestedForSet(nodeKey.getISAX());
+		String wireName = nodeKey.toString(false) + "_default_s";
+		SCAIEVNode validReqNode = bNodes.GetAdjSCAIEVNode(bNodes.GetNonAdjNode(nodeKey.getNode()), AdjacentNode.validReq).orElseThrow();
+		boolean isAlwaysISAX = allISAXes.containsKey(nodeKey.getISAX()) && allISAXes.get(nodeKey.getISAX()).HasNoOp();
+		return Optional.of(NodeLogicBuilder.fromFunction("DefaultValidCancelReqStrategy_"+nodeKey.toString(), registry -> {
+			var ret = new NodeLogicBlock();
+			ret.declarations += String.format("wire %s;\n", wireName);
+			var wiredinValidreqInst = validReqNode.noInterfToISAX ? null : registry.lookupRequired(
+				new NodeInstanceDesc.Key(Purpose.WIREDIN, validReqNode, nodeKey.getStage(), nodeKey.getISAX()),
+				requestedFor
+			);
+			if (wiredinValidreqInst == null || wiredinValidreqInst.getExpression().startsWith("MISSING_")) {
+//				String ivalidExpr = isAlwaysISAX
+//					? "1'b1"
+//					: registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdIValid, nodeKey.getStage(), nodeKey.getISAX()));
+				String ivalidExpr = "1'b1";
+				ret.logic += String.format("assign %s = %s;\n", wireName, ivalidExpr);
+			}
+			else {
+				ret.logic += String.format("assign %s = %s;\n", wireName, wiredinValidreqInst.getExpression());
+			}
+			ret.outputs.add(new NodeInstanceDesc(
+				NodeInstanceDesc.Key.keyWithPurpose(nodeKey, Purpose.WIREDIN_FALLBACK),
+				wireName,
+				ExpressionType.WireName,
+				requestedFor
+			));
+			return ret;
+		}));
+	}
+	
 	@Override
 	public Optional<NodeLogicBuilder> implement(Key nodeKey) {
 		if (!nodeKey.getPurpose().matches(Purpose.WIREDIN_FALLBACK)
@@ -118,6 +159,8 @@ public class DefaultValidCancelReqStrategy extends SingleNodeStrategy {
 			return implementCancelReq(nodeKey);
 		if (nodeKey.getNode().getAdj() == AdjacentNode.validReq && !nodeKey.getNode().isSpawn())
 			return implementValidReq(nodeKey);
+		if (nodeKey.getNode().getAdj() == AdjacentNode.addrReq && !nodeKey.getNode().isSpawn())
+			return implementAddrReq(nodeKey);
 		return Optional.empty();
 	}
 }

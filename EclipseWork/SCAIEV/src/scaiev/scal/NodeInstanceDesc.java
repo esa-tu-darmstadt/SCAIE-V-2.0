@@ -223,6 +223,11 @@ public class NodeInstanceDesc {
 		public static final Purpose MARKER_TOISAX_PIN = new Purpose("HASTOISAX", true, Optional.empty(), List.of());
 		/** Marker node to indicate/request presence of a ISAX->SCAL interface node, value to be ignored. */
 		public static final Purpose MARKER_FROMISAX_PIN = new Purpose("HASFROMISAX", true, Optional.empty(), List.of());
+		/**
+		 * Marker node to request the implementation handling an internal SCAL logic output, value to be ignored.
+		 * Intended for default implementations, where a feature is not explicitly provided by a core. In that case, replaces {@link Purpose#MARKER_TOCORE_PIN}.
+		 */
+		public static final Purpose MARKER_INTERNALIMPL_PIN = new Purpose("HASINTERNALIMPL", true, Optional.empty(), List.of());
 		/** Marker node to indicate/request presence of a custom register, value to be ignored. */
 		public static final Purpose MARKER_CUSTOM_REG = new Purpose("CUSTOMREG", true, Optional.empty(), List.of());
 

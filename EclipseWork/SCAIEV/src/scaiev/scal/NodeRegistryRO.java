@@ -47,6 +47,11 @@ public interface NodeRegistryRO {
 	 */
 	NodeInstanceDesc.Key deduplicateNodeKeyAux(NodeInstanceDesc.Key key);
 	
+	/**
+	 * Returns a new unique non-zero aux value.
+	 */
+	int newUniqueAux();
+	
 
 	/**
 	 * Variant of {@link NodeRegistryRO#lookupAll(scaiev.scal.NodeInstanceDesc.Key, boolean)} with the additional requestedFor parameter.

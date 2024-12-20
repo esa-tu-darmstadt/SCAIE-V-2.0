@@ -127,9 +127,6 @@ public class Verilog extends GenerateText {
 	}
 
 	
-
-
-	
 	/**
 	 * 
 	 * Generates a string like "input [31:0] nodeName;". Uses a CoreBackend object to determine whether the signal is input/output, size etc.
@@ -139,6 +136,19 @@ public class Verilog extends GenerateText {
 	 * @return
 	 */
 	public String CreateTextInterface(SCAIEVNode operation, PipelineStage stage, String instr) {
+		String dataT = coreBackend.IsNodeInStage(operation, stage) ? coreBackend.NodeDataT(operation, stage) : "";
+		return CreateTextInterface(operation, stage, instr, dataT);
+	}
+
+	/**
+	 * More general implementation of CreateTextInterface, which does not query dataT from CoreBackend
+	 * @param operation
+	 * @param stage
+	 * @param instr
+	 * @param dataT
+	 * @return
+	 */
+	public String CreateTextInterface(SCAIEVNode operation, PipelineStage stage, String instr, String dataT) {
 		String interf_lineToBeInserted = "";
 		String sig_name = this.CreateNodeName(operation, stage, instr);
 		String sig_in = this.dictionary.get(DictWords.out);
@@ -147,52 +157,25 @@ public class Verilog extends GenerateText {
 		String size = "";
 		if(operation.size> 1 ) 
 			size += "["+operation.size+" -1 : 0]";
+		if (!dataT.isEmpty())
+			dataT += " ";
 		// Add top interface	
-		if(coreBackend.IsNodeInStage(operation, stage))
-			interf_lineToBeInserted = sig_in + " " + coreBackend.NodeDataT(operation, stage) + " "+size +" "+ sig_name+",// ISAX\n";
-		else 
-			interf_lineToBeInserted = sig_in + " " +size +" "+ sig_name+",// ISAX\n";
+		interf_lineToBeInserted = sig_in + " " + dataT + size + " " + sig_name + ",// ISAX\n";
 		return interf_lineToBeInserted;
 	}
-	
 	/**
-	 * More general implementation of CreateTextInterface, which does not require CoreBackend
+	 * Variant of CreateTextInterface with separate parameters for the required SCAIEVNode properties
 	 * @param operation
 	 * @param stage
 	 * @param instr
 	 * @param input
 	 * @param signalSize
+	 * @param dataT
 	 * @return
 	 */
-	public String CreateTextInterface(String operation, PipelineStage stage, String instr, boolean input, int signalSize) {
-		String interf_lineToBeInserted = "";
-		SCAIEVNode node = new SCAIEVNode(operation, signalSize,input);
-		String sig_name = this.CreateNodeName(node, stage, instr);
-		String sig_in = this.dictionary.get(DictWords.out);
-		if(input)
-			sig_in = this.dictionary.get(DictWords.in);
-		String size = "";
-		if(signalSize> 1 ) 
-			size += "["+signalSize+" -1 : 0]";
-		// Add top interface	
-		interf_lineToBeInserted = sig_in + " " +size +" "+ sig_name+",// ISAX\n";
-		return interf_lineToBeInserted;
-	}
-	
-
 	public String CreateTextInterface(String operation, PipelineStage stage, String instr, boolean input, int signalSize, String dataT) {
-		String interf_lineToBeInserted = "";
 		SCAIEVNode node = new SCAIEVNode(operation, signalSize,input);
-		String sig_name = this.CreateNodeName(node, stage, instr);
-		String sig_in = this.dictionary.get(DictWords.out);
-		if(input)
-			sig_in = this.dictionary.get(DictWords.in);
-		String size = "";
-		if(signalSize> 1 ) 
-			size += "["+signalSize+" -1 : 0]";
-		// Add top interface	
-		interf_lineToBeInserted = sig_in + " "+ dataT+" "+size +" "+ sig_name+",// ISAX\n";
-		return interf_lineToBeInserted;
+		return CreateTextInterface(node, stage, instr, dataT);
 	}
 	
 	public TreeMap<Integer,String> OrderISAXOpCode (HashSet<String> lookAtISAX,HashMap<String, SCAIEVInstr> allISAXes  ) {
@@ -228,33 +211,44 @@ public class Verilog extends GenerateText {
 		String current_module = bottom_module;
 		String prev_module = "";
 		while(!prev_module.contentEquals(top_module)) {
-			if(!current_module.contentEquals(top_module) || top_interface) {  // top file should just instantiate signal in module instantiation and not generate top interface
-				this.toFile.UpdateContent(coreBackend.ModFile(current_module),");",new ToWrite(CreateTextInterface(operation,stage,instr),false,true,"module "+current_module+" ",true,current_module));								
-			} else if(current_module.contentEquals(top_module)) {
-				this.toFile.UpdateContent(coreBackend.ModFile(current_module),");",new ToWrite(CreateDeclSig(operation, stage, instr,instReg),false,true,"module "+current_module+" ",current_module));
+			String dataT = coreBackend.NodeDataT(operation, stage);
+			String modFile = coreBackend.ModFile(current_module);
+			if (modFile.endsWith(".v")) {
+				//For Verilog wrappers around SystemVerilog, change the 'logic' type into 'wire'.
+				if (dataT.contentEquals("logic"))
+					dataT = "wire";
+			}
+			String interfaceDataT = (prev_module.isEmpty() && dataT.contentEquals("reg")) ? "wire" : dataT;
+			if(top_interface || !current_module.contentEquals(top_module)) {  // top file should just instantiate signal in module instantiation and not generate top interface
+				String interfaceText = CreateTextInterface(operation,stage,instr,interfaceDataT);
+				this.toFile.UpdateContent(modFile,");",new ToWrite(interfaceText,false,true,"module "+current_module+" ",true,current_module));
+			}
+			else { //.. else if(current_module.contentEquals(top_module))
+				this.toFile.UpdateContent(modFile,");",new ToWrite(CreateDeclSig(operation, stage, instr,instReg),false,true,"module "+current_module+" ",current_module));
 			}
 			
 			if(prev_module.contentEquals("")) {
-				// Connect signals to top interface
+				// Innermost module for this interface. If requested via NodeAssign, assign the port.
 				if(!coreBackend.NodeAssign(operation, stage).contentEquals("")) {
-					if(coreBackend.NodeDataT(operation, stage).contains("reg"))
-						assign_lineToBeInserted += "always@(posedge  "+clk+")\n"+sig_name+" <= "+coreBackend.NodeAssign(operation, stage)+"; \n";
+					if(dataT.contentEquals("reg"))
+						assign_lineToBeInserted += "always@(posedge  "+clk+")\n"+tab+sig_name+" <= "+coreBackend.NodeAssign(operation, stage)+";\n";
 					else 
-						assign_lineToBeInserted += "assign "+sig_name+" = "+coreBackend.NodeAssign(operation, stage)+"; \n";
-					this.toFile.UpdateContent(coreBackend.ModFile(current_module),"endmodule", new ToWrite(assign_lineToBeInserted,false,true,"module "+current_module+" ",true,current_module));	
+						assign_lineToBeInserted += "assign "+sig_name+" = "+coreBackend.NodeAssign(operation, stage)+";\n";
+					this.toFile.UpdateContent(modFile,"endmodule", new ToWrite(assign_lineToBeInserted,false,true,"module "+current_module+" ",true,current_module));
 				} /*
 				else {
 					assign_lineToBeInserted += this.CreateDeclSig(operation, stage, instr,coreBackend.NodeDataT(operation, stage).contains("reg"))+" \n";
 					this.toFile.UpdateContent(coreBackend.ModFile(current_module),");", new ToWrite(assign_lineToBeInserted,true,false,"module "+current_module,current_module));	
 				}*/
 			} else {
+				// Add to the inner module instantiation.
 				String instance_sig = "";
 				
 				if(current_module.contentEquals(top_module) && !top_interface)
 					instance_sig = "."+sig_name+" ( "+this.CreateLocalNodeName(operation, stage, instr)+"),\n";
 				else
 					instance_sig = "."+sig_name+" ( "+sig_name+"),\n";
-				this.toFile.UpdateContent(coreBackend.ModFile(current_module),");", new ToWrite(instance_sig,true,false,prev_module+" ",true,current_module));
+				this.toFile.UpdateContent(modFile,");", new ToWrite(instance_sig,true,false,prev_module+" ",true,current_module));
 			}
 			prev_module = current_module;
 			if(!current_module.contentEquals(top_module) && !coreBackend.ModParentName(current_module).equals(""))

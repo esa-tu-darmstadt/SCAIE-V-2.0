@@ -31,26 +31,6 @@ public abstract class MultiNodeStrategy {
 	public void setLanguage(Verilog lang) {}
 	
 	/**
-	 * Converts singleStrategy into a MultiNodeStrategy.
-	 * If singleStrategy returns a NodeLogicBuilder, the key will be removed from nodeKeys.
-	 */
-	public static MultiNodeStrategy from(SingleNodeStrategy singleStrategy) {
-		return new MultiNodeStrategy() {
-			@Override
-			public void implement(Consumer<NodeLogicBuilder> out, Iterable<NodeInstanceDesc.Key> nodeKeys, boolean isLast) {
-				var iter = nodeKeys.iterator();
-				while (iter.hasNext()) {
-					var builder_opt = singleStrategy.implement(iter.next());
-					if (builder_opt.isPresent()) {
-						out.accept(builder_opt.get());
-						iter.remove();
-					}
-				}
-			}
-		};
-	}
-	
-	/**
 	 * Wraps a strategy, filtering the keys passed to its implement strategy.
 	 * Passes through key removal from the inner strategy to the nodeKeys parameter.
 	 * @param existingStrategy the strategy to wrap

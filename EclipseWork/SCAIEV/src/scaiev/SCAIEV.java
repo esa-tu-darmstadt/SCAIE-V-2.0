@@ -54,7 +54,7 @@ public class SCAIEV {
 	public FNode FNodes = BNodes; 
 	
     // SCAIE-V Adaptive Layer
-    private SCAL scalLayer = new SCAL();
+    private SCAL scal = new SCAL();
 
 	// logging
 	protected static final Logger logger = LogManager.getLogger();
@@ -92,7 +92,7 @@ public class SCAIEV {
 	}
 	
 	public void setSCAL (boolean nonDecWithDH, boolean decWithValid, boolean decWithAddr, boolean decWithDH, boolean decWithStall, boolean decWithInpFIFO) {
-		scalLayer.SetSCAL(nonDecWithDH,decWithValid ,decWithAddr , decWithInpFIFO);
+		scal.SetSCAL(nonDecWithDH,decWithValid ,decWithAddr , decWithInpFIFO);
 	}
 	
 	void FixUserNodeSchedule() {
@@ -136,14 +136,28 @@ public class SCAIEV {
 				if (instr.HasNode(fnodeRd)) {
 					if (!instr.HasNode(fnodeRd_addr))
 						instr.PutSchedNode(fnodeRd_addr, earliestRdwr, new HashSet<>());
-					else
-						instr.GetSchedWithIterator(fnodeRd_addr, sched->true).forEachRemaining(sched -> sched.UpdateStartCycle(earliestRdwr));
+					else {
+						instr.GetSchedWithIterator(fnodeRd_addr, sched->true).forEachRemaining(sched -> {
+							if (sched.GetStartCycle() > earliestRdwr && (sched.HasAdjSig(AdjacentNode.addrReq) || fnodeRd.elements > 1))
+								logger.error("Instruction {}: Provides {} in stage {} although it is required in stage {}; Overriding to required stage.",
+										instr, fnodeRd_addr.name, sched.GetStartCycle(), earliestRdwr);
+							if (sched.GetStartCycle() > earliestRdwr)
+								sched.UpdateStartCycle(earliestRdwr);
+						});
+					}
 				}
 				if (instr.HasNode(fnodeWr)) {
 					if (!instr.HasNode(fnodeWr_addr))
 						instr.PutSchedNode(fnodeWr_addr, earliestRdwr, new HashSet<>());
-					else
-						instr.GetSchedWithIterator(fnodeWr_addr, sched->true).forEachRemaining(sched -> sched.UpdateStartCycle(earliestRdwr));
+					else {
+						instr.GetSchedWithIterator(fnodeWr_addr, sched->true).forEachRemaining(sched -> {
+							if (sched.GetStartCycle() > earliestRdwr && (sched.HasAdjSig(AdjacentNode.addrReq) || fnodeWr.elements > 1))
+								logger.error("Instruction {}: Provides {} in stage {} although it is required in stage {}; Overriding to required stage.",
+										instr, fnodeWr_addr.name, sched.GetStartCycle(), earliestRdwr);
+							if (sched.GetStartCycle() > earliestRdwr)
+								sched.UpdateStartCycle(earliestRdwr);
+						});
+					}
 				}
 			}
 		}
@@ -174,7 +188,7 @@ public class SCAIEV {
 		AddUserNodesToCore(core);
 		
 		
-		scalLayer.BNode = BNodes;
+		scal.BNode = BNodes;
 		// Check errors
 		DRC drc = new DRC(instrSet, op_stage_instr, core, BNodes);
 		drc.SetErrLevel(errLevelHigh);
@@ -190,7 +204,7 @@ public class SCAIEV {
 		
 		// Get metadata from core required by SCAL
 		Optional<CoreBackend> coreInstanceOpt = Optional.empty();
-			
+
 
 		if(coreName.startsWith("VexRiscv")) {
 			coreInstanceOpt = Optional.of(new VexRiscv(core));
@@ -223,11 +237,11 @@ public class SCAIEV {
 		
 		String inPath = coreInstanceOpt.map(coreInstance -> coreInstance.getCorePathIn()).orElse("CoresSrc");
 		
-		scalLayer.Prepare(instrSet, op_stage_instr, spawn_instr_stage, core);
+		scal.Prepare(instrSet, op_stage_instr, spawn_instr_stage, core);
 
-		coreInstanceOpt.ifPresent(coreInstance -> coreInstance.Prepare(instrSet, op_stage_instr, core, scalLayer, BNodes));
+		coreInstanceOpt.ifPresent(coreInstance -> coreInstance.Prepare(instrSet, op_stage_instr, core, scal, BNodes));
 
-		scalLayer.Generate(inPath, outPath, coreInstanceOpt);
+		scal.Generate(inPath, outPath, coreInstanceOpt);
 		
 		// Remove user nodes before calling backend classes. Cores do not have to implement them, they were already handled in SCAL 
 		RemoveUserNodes();
@@ -244,7 +258,7 @@ public class SCAIEV {
 			netlistPath = Path.of(outPath, netlistPath).toString();
 		try {
 			java.io.Writer netlistWriter = new java.io.FileWriter(netlistPath);
-			netlistYaml.dump(scalLayer.netlist, netlistWriter);
+			netlistYaml.dump(scal.netlist, netlistWriter);
 		} catch (IOException e) {
 			e.printStackTrace();
 			return false;
@@ -547,7 +561,7 @@ public class SCAIEV {
 				}
 			}
 		}
-		this.scalLayer.AddISAXInterfacePinRenames(renamedISAXInterfacePins.entrySet());
+		this.scal.AddISAXInterfacePinRenames(renamedISAXInterfacePins.entrySet());
 
 		// Check if any spawn and if yes, add the barrier instr (WrRD spawn & Internal state spawn) 
 		boolean barrierNeeded = false;
@@ -584,7 +598,7 @@ public class SCAIEV {
 	private void OpStageInstrToString() {
 		for(SCAIEVNode operation : op_stage_instr.keySet())
 			for(PipelineStage stage : op_stage_instr.get(operation).keySet()) {
-				logger.debug("INFO. SCAIEV. Operation = "+ operation+ "in stage = "+stage.getName()+ " for instruction/s: "+op_stage_instr.get(operation).get(stage).toString());
+				logger.debug("INFO. SCAIEV. Operation = "+ operation+" in stage = "+stage.getName()+" for instruction/s: "+op_stage_instr.get(operation).get(stage).toString());
 			}
 		
 	}

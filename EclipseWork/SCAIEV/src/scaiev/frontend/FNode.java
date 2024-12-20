@@ -5,6 +5,8 @@ import java.util.HashSet;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import scaiev.frontend.SCAIEVNode.NodeTypeTag;
+
 /***********************
  * 
  * Frontend supported nodes. 'isInput' in nodes is from the core's point of view.
@@ -15,12 +17,13 @@ public class FNode{
 	// logging
 	protected static final Logger logger = LogManager.getLogger();
 
-
-	public static SCAIEVNode ISAX_isReady = new SCAIEVNode("IsReady", 1, true){{oneInterfToISAX = false;}};
-	public static SCAIEVNode BranchTaken = new SCAIEVNode("BranchTaken",1,true);
-	public static SCAIEVNode RdReg    = new SCAIEVNode("RdReg",datawidth,false);
-	public static SCAIEVNode WrReg    = new SCAIEVNode("WrReg",datawidth,true);
-	public static SCAIEVNode WrJump    = new SCAIEVNode("WrJump",datawidth,true);
+	//TODO: CVA6 only.
+	public SCAIEVNode ISAX_isReady = new SCAIEVNode("IsReady", 1, true){{oneInterfToISAX = false;}};
+	public SCAIEVNode BranchTaken = new SCAIEVNode("BranchTaken",1,true);
+	public SCAIEVNode RdReg    = new SCAIEVNode("RdReg",datawidth,false);
+	public SCAIEVNode WrReg    = new SCAIEVNode("WrReg",datawidth,true);
+	public SCAIEVNode WrJump    = new SCAIEVNode("WrJump",datawidth,true);
+	
 
 	public SCAIEVNode WrRD     = new SCAIEVNode("WrRD",datawidth,true) {{DH = true; validBy = AdjacentNode.validData;}};
 	public SCAIEVNode WrMem    = new SCAIEVNode("WrMem",datawidth,true) {{elements = 2; validBy = AdjacentNode.validData;}};//2 is a dummy value for the system to know that this interef requires mandatory addr signal to core. {{this.familyName = "Mem";}}; // input data to core
@@ -49,8 +52,8 @@ public class FNode{
 	public SCAIEVNode WrCommit = new SCAIEVNode("WrCommit",1,true); 
 	
 	public  HashSet<SCAIEVNode> user_FNode = new  HashSet<SCAIEVNode>();
-	public static String rdName = "Rd";
-	public static String wrName = "Wr";
+	public static String rdPrefix = "Rd";
+	public static String wrPrefix = "Wr";
 
 	private HashSet<SCAIEVNode> allFrontendNodes = null;
 	protected void refreshAllNodesSet() {
@@ -101,15 +104,17 @@ public class FNode{
 
 
 	/**
-	 * Adds a user-defined register node.
+	 * Adds a user-defined register node. The default node 
 	 */
 	public void AddUserNode (String name, int width, int elements) {
-		SCAIEVNode RdNode = new SCAIEVNode(rdName+name, width, false);
+		SCAIEVNode RdNode = new SCAIEVNode(rdPrefix+name, width, false);
 		RdNode.elements  = elements;
 		RdNode.familyName = name;
-		SCAIEVNode WrNode = new SCAIEVNode(wrName+name, width, true){{DH = true;}};
+		RdNode.tags.add(NodeTypeTag.supportsPortNodes);
+		SCAIEVNode WrNode = new SCAIEVNode(wrPrefix+name, width, true){{DH = true;}};
 		WrNode.elements  = elements;
 		WrNode.familyName = name;
+		WrNode.tags.add(NodeTypeTag.supportsPortNodes);
 		user_FNode.add(RdNode); 
 		user_FNode.add(WrNode);
 		if (allFrontendNodes != null) {
@@ -117,6 +122,20 @@ public class FNode{
 			allFrontendNodes.add(WrNode);
 		}
 	} 
+	/**
+	 * Adds a user-defined register node additional port.
+	 */
+	public SCAIEVNode AddUserNodePort (SCAIEVNode userNode, String portName) {
+		if (!user_FNode.contains(userNode)) {
+			logger.error("AddUserNodePort called on a non-registered user node {}", userNode.name);
+			return null;
+		}
+		SCAIEVNode portNode = SCAIEVNode.makePortNodeOf(userNode, portName);
+		user_FNode.add(portNode);
+		if (allFrontendNodes != null)
+			allFrontendNodes.add(portNode);
+		return portNode;
+	}
 	
 	public SCAIEVNode GetSCAIEVNode(String nodeName) {
 
@@ -141,14 +160,14 @@ public class FNode{
 	}
 	
 	public String GetNameWrNode(SCAIEVNode node) {
-		if(node.name.startsWith(rdName))
-			return wrName+node.name.split(rdName)[1];
+		if(node.name.startsWith(rdPrefix))
+			return wrPrefix+node.name.split(rdPrefix)[1];
 		return node.name;
 	}
 	
 	public String GetNameRdNode(SCAIEVNode node) {
-		if(node.name.startsWith(wrName))
-			return rdName+node.name.split(wrName)[1];
+		if(node.name.startsWith(wrPrefix))
+			return rdPrefix+node.name.split(wrPrefix)[1];
 		return node.name;
 	}	
 }
