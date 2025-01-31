@@ -28,12 +28,24 @@ These cores provide different configurations. While testing & evaluating our too
 | PicoRV32 | non-pipelined          | Native    |
 
 ## What is the design structure?
-Let us consider that user wants to develop a new instruction  ISAX1, which must be integrated in the VexRiscv core. The design will have the following hierarchy: 
+Let us consider that user wants to integrate two instructions, ISAX1 and ISAX2, into a supported core. The design will have the following hierarchy: 
 
-ISAX1 <--> CommonLogicModule (SCAL) <--> Top module of SCAIE-V extended Core
+```
+ISAX1 <-->
+          > CommonLogicModule (SCAL) <--> Top module of SCAIE-V extended Core
+ISAX2 <-->
+```
 
-Currently SCAIE-V generates the  CommonLogicModule (SCAL)  and updates the design files of the core. User must implement the wrapper to connect these submodules. ISAX1 will only be connected to the interface of the CommonLogicModule (SCAL) .
+On the left side, the adaptation layer SCAL interfaces with all ISAXes and produces services such as state management, arbitration, and decoding. 
+The ISAX interface is called SCIX (SCAIE-V ISAX interface), and is defined by the operations requested by an ISAX and the stage schedule.
 
+On the right side, SCAL interfaces with the core itself. The core extension itself and its interface to SCAL is called SCIF (SCAIE-V Core Interface). Besides instruction decoding, the SCIF for any given core is largely static, with portions enabled or disabled based on the requirements of SCAL.
+
+SCAIE-V generates the CommonLogicModule (SCAL) and updates the design files of the core.
+
+Currently, the user must implement the wrapper to connect these submodules manually. In the scenario, ISAX1 and ISAX2 will only be connected to the interface of the CommonLogicModule (SCAL).
+
+We are working on [a utility](https://github.com/esa-tu-darmstadt/SCAIE-V-2.0/tree/scalv2/util/maketop) to automate this.
 
 ## Which operations are supported in SCAIE-V? 
 | Operation     | Meaning | Bitwidth |
