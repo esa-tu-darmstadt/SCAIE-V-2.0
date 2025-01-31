@@ -207,7 +207,7 @@ public class Bluespec extends GenerateText {
 	}
 	
 	// TODO to be moved in piccolo, as it is piccolo specific
-	public String CreateMemStageFrwrd(boolean bypass, boolean flush,boolean bypass_val) {
+	public String CreateMemStageFrwrd(boolean bypass, boolean flush,boolean bypass_val, String bypass_signal) {
 		String rdVal = "";
 		String no = "no_";
 		String isTrue = "False";
@@ -222,13 +222,15 @@ public class Bluespec extends GenerateText {
 			comment = "";
 		}
 		if(bypass_val) {
-			rdVal = "bypass.bypass_state = BYPASS_RD_RDVAL;\n"
-					+ "let result = "+this.CreateLocalNodeName(BNode.WrRD, 1, "")+";"
-					+ "bypass.rd_val = result;";
+			rdVal = "bypass.bypass_state = BYPASS_RD_RDVAL;\n"; 
+			if(!bypass_signal.equals("")) { // could be "" if result comes from stage 0, and we already have it in bypass_base
+				rdVal += "let result = "+bypass_signal+";\n" // if wrrd in stage 1, bypass_signal = this.CreateLocalNodeName(BNode.WrRD, 1, "")
+				      + "bypass.rd_val = result;";
+				rdValue = "data_to_stage3.rd_val = result;";
+			} 
 			isTrue = "True";
 			no = "";
 			comment = "";
-			rdValue = "data_to_stage3.rd_val = result;";
 
 		}
 		if(flush) {

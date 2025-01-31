@@ -22,7 +22,7 @@
   latest: 2
   costly: 1
 - operation: WrRD
-  earliest: 1
+  earliest: 0
   latency: 1
   costly: 2
 - operation: RdPC
@@ -82,4 +82,3 @@
   latency: 0
   latest: 0
   costly: 1
-

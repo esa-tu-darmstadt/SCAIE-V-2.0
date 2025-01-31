@@ -371,10 +371,8 @@ public class Orca extends CoreBackend {
 						+ "    els";
 			}		
 			// Add default interfaces for non-spawn
-			HashSet<Integer> seen = new HashSet<Integer>();
 			for(int stage = 4; stage > 1; stage--) { 
 				if(!this.ContainsOpInStage(BNode.WrRD, stage) && this.op_stage_instr.containsKey(BNode.WrRD)) {// if validReq in 3 not there bc user requested it, add it on interf for datahazard mechanism
-					seen.add(stage);
 					language.UpdateInterface("excute",BNode.WrRD_valid, "",stage,true,false);
 					language.UpdateInterface("orca",BNode.WrRD_validData, "",stage,true,false); // just for wrapper, not used in this case
 				}			
@@ -808,4 +806,3 @@ public class Orca extends CoreBackend {
 
 	
 }
-

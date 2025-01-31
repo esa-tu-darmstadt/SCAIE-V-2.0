@@ -164,10 +164,7 @@ public class PicoRV32 extends CoreBackend {
 				replaceWith = "if (decoder_trigger && !decoder_pseudo_trigger && (!"+language.CreateNodeName(BNode.WrStall, 2,"")+" || (~(|cpu_state[3:0])))) begin";
 				toFile.ReplaceContent(this.ModFile("picorv32"), replaceText, new ToWrite( replaceWith,false,true, ""));
 				
-			} else if(this.ContainsOpInStage(BNode.RdStall, 2)) {
-				addDeclaration("wire "+ language.CreateNodeName(BNode.WrStall, 2, "") +";\n");
-				addLogic("assign "+language.CreateNodeName(BNode.WrStall, 2, "") +" = 0;\n");
-			}
+			} 
 			
 			if(this.ContainsOpInStage(BNode.WrStall, 1)) {
 				// avoid simulator error that signal used before definition
@@ -178,10 +175,7 @@ public class PicoRV32 extends CoreBackend {
 				toFile.ReplaceContent(this.ModFile("picorv32"), "reg [7:0] cpu_state;", new ToWrite(" ",false,true,""));
 				toFile.ReplaceContent(this.ModFile("picorv32"),"if (mem_do_prefetch || mem_do_rinst || mem_do_rdata) begin", new ToWrite("if ((mem_do_prefetch || mem_do_rinst || mem_do_rdata) && (!("+language.CreateNodeName(BNode.WrStall, 1,"")+") || (cpu_state != cpu_state_ld_rs1))) begin",false,true,""));
 				toFile.UpdateContent(this.ModFile("picorv32"),"endcase", new ToWrite("if ("+spawnStall+" "+language.CreateNodeName(BNode.WrStall, 1,"")+") cpu_state <= cpu_state_ld_rs1;",true,false,"cpu_state <= cpu_state_ld_rs2;"));				
-			} else if(this.ContainsOpInStage(BNode.RdStall, 1)) {
-				addDeclaration("wire "+ language.CreateNodeName(BNode.WrStall,1, "") +";\n");
-				addLogic("assign "+language.CreateNodeName(BNode.WrStall, 1, "") +" = 0;\n");
-			}
+			} 
 			
 			if(this.ContainsOpInStage(BNode.WrStall, 0)) {
 				String grep = "cpu_state_fetch: begin"; 
@@ -190,10 +184,7 @@ public class PicoRV32 extends CoreBackend {
 				grep = "cpu_state_ld_rs1: begin";
 				addLogic = "end\n";
 				toFile.UpdateContent(this.ModFile("picorv32"),grep, new ToWrite(addLogic, false,true,"",true));
-			} else if(this.ContainsOpInStage(BNode.RdStall, 0)) {
-				addDeclaration("wire "+ language.CreateNodeName(BNode.WrStall, 0, "") +";\n");
-				addLogic("assign "+language.CreateNodeName(BNode.WrStall, 0, "") +" = 0;\n");
-			}
+			} 
 		}		
 	}
 	
@@ -251,7 +242,7 @@ public class PicoRV32 extends CoreBackend {
 			
 			if(this.ContainsOpInStage(BNode.WrStall, 1)) // it should contain it anyways due to spawn
 				stall += " || "+language.CreateNodeName(BNode.WrStall, 1, "");
-			logic += language.CreateAssign( language.CreateNodeName(BNode.ISAX_spawnAllowed, 1, ""),"decoder_trigger) && (cpu_state == cpu_state_fetch) && (mem_state==0) && (!instr_jal)" +stall);
+			logic += language.CreateAssign( language.CreateNodeName(BNode.ISAX_spawnAllowed, 1, ""),"(cpu_state == cpu_state_ld_rs1) && (mem_state==0)" +stall);
 			addLogic(logic);
 		}
 		
@@ -526,9 +517,9 @@ public class PicoRV32 extends CoreBackend {
 	this.PutNode( " ", "", "picorv32", BNode.RdMem_addr,stageMem);
 	this.PutNode( " ", "", "picorv32", BNode.RdMem_addr_valid,stageMem);
 	
-	this.PutNode( " ", "(!(decoder_trigger) || (cpu_state !=  cpu_state_fetch)) || "+language.CreateNodeName(BNode.WrStall, 0, ""), "picorv32", BNode.RdStall,0);
+	this.PutNode( " ", "(!(decoder_trigger) || (cpu_state !=  cpu_state_fetch)) ", "picorv32", BNode.RdStall,0);
 	this.PutNode( " ", "(cpu_state !=  cpu_state_ld_rs1) ", "picorv32", BNode.RdStall,1);
-	this.PutNode( " ",  " ((cpu_state_exec ==  cpu_state) && !"+language.CreateNodeName(BNode.WrStall, 2, "")+" && (((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE) && (alu_wait || alu_wait_2))) ) || ((mem_do_prefetch || ~mem_done) && !"+language.CreateNodeName(BNode.WrStall, 2, "")+" && ((cpu_state == cpu_state_stmem ) ||(cpu_state == cpu_state_ldmem ) )) || (cpu_state ==  cpu_state_fetch) || (cpu_state ==  cpu_state_ld_rs1)", "picorv32", BNode.RdStall,2);
+	this.PutNode( " ",  " ((cpu_state_exec ==  cpu_state)  && (((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE) && (alu_wait || alu_wait_2))) ) || ((mem_do_prefetch || ~mem_done) && ((cpu_state == cpu_state_stmem ) ||(cpu_state == cpu_state_ldmem ) )) || (cpu_state ==  cpu_state_fetch) || (cpu_state ==  cpu_state_ld_rs1)", "picorv32", BNode.RdStall,2);
 	this.PutNode( " ", "0", "picorv32", BNode.RdStall,3);
 	
 	this.PutNode( " ", "", "picorv32", BNode.WrStall,0);

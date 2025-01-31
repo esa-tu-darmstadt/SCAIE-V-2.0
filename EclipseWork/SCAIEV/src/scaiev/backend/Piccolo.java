@@ -32,6 +32,8 @@ public class Piccolo extends CoreBackend{
 	private Bluespec        language = new Bluespec(toFile,this);
 	private String          topModule = "mkCore";
 	private String 			grepDeclareBehav = "// INTERFACE";
+	private String 			grepDeclare = "module";
+	SCAIEVNode ISAX_frwrd_wrrddatavalid = new SCAIEVNode("ISAX_frwrd_wrrddatavalid",1,true);
 	
 	private int nrTabs = 0;
 	public boolean Generate (HashMap <String,SCAIEVInstr> ISAXes, HashMap<SCAIEVNode, HashMap<Integer,HashSet<String>>> op_stage_instr, String extension_name, Core core, String out_path) { // core needed for verification purposes
@@ -43,6 +45,7 @@ public class Piccolo extends CoreBackend{
 		ConfigPiccolo();
 		IntegrateISAX_IOs();
 		IntegrateISAX_NoIllegalInstr();
+		IntegrateISAX_RdStall();
 		IntegrateISAX_WrStall();
 		IntegrateISAX_SpawnRD();
 		IntegrateISAX_FlushStages();
@@ -59,7 +62,7 @@ public class Piccolo extends CoreBackend{
 	// Infos for SCAL
 	public HashMap<SCAIEVNode, Integer> PrepareEarliest() {
 		HashMap<SCAIEVNode, Integer> node_stageValid = new HashMap<SCAIEVNode, Integer>();
-		node_stageValid.put(BNode.WrRD,1);
+		node_stageValid.put(BNode.WrRD,0);
 		return node_stageValid;		
 	};
 		
@@ -100,14 +103,128 @@ public class Piccolo extends CoreBackend{
 			toFile.ReplaceContent(this.ModFile("fv_ALU"), "Bool legal_LOAD = ",new ToWrite("Bool legal_LOAD = (   ((opcode == op_LOAD) || is_isax)",false,true,""));
 			this.toFile.UpdateContent(this.ModFile("fv_ALU"), "else begin",new ToWrite("else if( "+language.CreateAllEncoding(op_stage_instr.get(BNode.RdMem).get(this.piccolo_core.GetNodes().get(BNode.RdMem).GetEarliest()),ISAXes,rdInstr)+") begin\n"+tab+"alu_outputs = fv_LOAD (inputs);\nend",true,false,"inputs.decoded_instr.opcode == op_LOAD_FP)",true));	
 		}
-		if(this.op_stage_instr.containsKey(BNode.RdRS1) || this.op_stage_instr.containsKey(BNode.RdInstr) || this.op_stage_instr.containsKey(BNode.WrPC) || this.op_stage_instr.containsKey(BNode.RdPC) || this.op_stage_instr.containsKey(BNode.RdIValid)) {
-			String ifClause = language.CreateAllNoMemEncoding(allISAX,ISAXes,rdInstr);
-			System.out.println("ifClause = "+ ifClause);
+		
+		// Needed for RdAdr for spawn instr which requrie addr computed by core
+		if(this.op_stage_instr.containsKey(BNode.RdMem_spawn)) {
+			HashSet<String> instrwithaddr = new HashSet<String> ();
+			for(String instr : this.op_stage_instr.get(BNode.RdMem_spawn).get(this.piccolo_core.GetSpawnStage()))
+				if(!ISAXes.get(instr).GetSchedNodes().get(BNode.RdMem_spawn).get(0).HasAdjSig(AdjacentNode.addr))
+					instrwithaddr.add(instr);
+					
+			String ifClause = language.CreateAllEncoding(instrwithaddr,ISAXes,rdInstr);
 			if(!ifClause.isEmpty()) {
-				this.toFile.UpdateContent(this.ModFile("fv_ALU"), "else begin",new ToWrite("else if( "+language.CreateAllNoMemEncoding(allISAX,ISAXes,rdInstr)+") begin\n"+tab+"alu_outputs = alu_outputs_base;\nalu_outputs.op_stage2 = OP_Stage2_ISAX;\nend",true,false,"else if (   (inputs.decoded_instr.opcode == op_STORE_FP))",true));	
+				String textAdd =  "else if( "+language.CreateAllNoMemEncoding(allISAX,ISAXes,rdInstr)+") begin\n"
+	            		+tab+"alu_outputs = alu_outputs_base;\n"
+	            		+ "  let opcode = inputs.decoded_instr.opcode;\n"
+	            		+ "   IntXL s_rs1_val = unpack (inputs.rs1_val);\n"
+	            		+ "\n"
+	            		+ "   IntXL  imm_s = extend (unpack (inputs.decoded_instr.imm12_I));\n"
+	            		+ "   WordXL eaddr = pack (s_rs1_val + imm_s);\n"
+	            		+ "\n"
+	            		+ "   let funct3 = inputs.decoded_instr.funct3;\n"
+	            		+ "\n"
+	            		+ "   Bool legal_LOAD =(   (funct3 == f3_LB) || (funct3 == f3_LBU)\n"
+	            		+ "			  || (funct3 == f3_LH) || (funct3 == f3_LHU)\n"
+	            		+ "			  || (funct3 == f3_LW)\n"
+	            		+ "			 );\n"
+	            		+ "\n"
+	            		+ "\n"
+	            		+ "   let alu_outputs = alu_outputs_base;\n"
+	            		+ "\n"
+	            		+ "   alu_outputs.control   = ((legal_LOAD)\n"
+	            		+ "			    ? CONTROL_STRAIGHT\n"
+	            		+ "			    : CONTROL_TRAP);\n"
+	            		+ "   alu_outputs.addr      = eaddr;"
+	            		+ "alu_outputs.op_stage2 = OP_Stage2_ISAX;\n"
+	            		+ "end";
+				this.toFile.UpdateContent(this.ModFile("fv_ALU"), "else begin",new ToWrite(textAdd,true,false,"else if (   (inputs.decoded_instr.opcode == op_LOAD_FP))",true));	
 			}
 		}
+		
+		if(this.op_stage_instr.containsKey(BNode.WrMem_spawn)) {
+			HashSet<String> instrwithaddr = new HashSet<String> ();
+			for(String instr : this.op_stage_instr.get(BNode.WrMem_spawn).get(this.piccolo_core.GetSpawnStage()))
+				if(!ISAXes.get(instr).GetSchedNodes().get(BNode.WrMem_spawn).get(0).HasAdjSig(AdjacentNode.addr))
+					instrwithaddr.add(instr);
+					
+			String ifClause = language.CreateAllEncoding(instrwithaddr,ISAXes,rdInstr);
+			if(!ifClause.isEmpty()) {
+				String textAdd = "else if( "+ifClause+") begin\n"
+			            +tab+"       	   alu_outputs = alu_outputs_base;\n"
+			            		+ "	   // Signed version of rs1_val\n"
+			            		+ "	   IntXL  s_rs1_val = unpack (inputs.rs1_val);\n"
+			            		+ "	   IntXL  imm_s     = extend (unpack (inputs.decoded_instr.imm12_S));\n"
+			            		+ "	   WordXL eaddr     = pack (s_rs1_val + imm_s);\n"
+			            		+ "\n"
+			            		+ "	   let funct3 = inputs.decoded_instr.funct3;\n"
+			            		+ "\n"
+			            		+ "	   Bool legal_STORE = ((funct3 == f3_SB)\n"
+			            		+ "			    || (funct3 == f3_SH)\n"
+			            		+ "			    || (funct3 == f3_SW)\n"
+			            		+ "			      );\n"
+			            		+ "	   alu_outputs.control   = ((legal_STORE)\n"
+			            		+ "				    ? CONTROL_STRAIGHT\n"
+			            		+ "				    : CONTROL_TRAP);\n"
+			            		+ "	   alu_outputs.addr      = eaddr;\n"
+			            		+ "	   alu_outputs.op_stage2 = OP_Stage2_ISAX;"
+			            		+ "alu_outputs.op_stage2 = OP_Stage2_ISAX;\n"
+			            		+ "end";
+				this.toFile.UpdateContent(this.ModFile("fv_ALU"), "else begin",new ToWrite(textAdd,true,false,"else if (   (inputs.decoded_instr.opcode == op_STORE_FP))",true));	
+			}
+		}
+		
+		if(this.op_stage_instr.containsKey(BNode.RdRS1) || this.op_stage_instr.containsKey(BNode.RdInstr) || this.op_stage_instr.containsKey(BNode.WrPC) || this.op_stage_instr.containsKey(BNode.RdPC) || this.op_stage_instr.containsKey(BNode.RdIValid)) {
+			String ifClause = language.CreateAllNoMemEncoding(allISAX,ISAXes,rdInstr);
+			if(!ifClause.isEmpty()) {
+				String textAdd = "else if( "+language.CreateAllNoMemEncoding(allISAX,ISAXes,rdInstr)+") begin\n"
+			            +tab+"alu_outputs = alu_outputs_base;\n"
+			            + "alu_outputs.op_stage2 = OP_Stage2_ISAX;\n"
+						+ "end";
+				this.toFile.UpdateContent(this.ModFile("fv_ALU"), "else begin",new ToWrite(textAdd,true,false,"else if (   (inputs.decoded_instr.opcode == op_STORE_FP))",true));	
+			}
+		}
+		
 		this.toFile.UpdateContent(this.ModFile("CPU_Globals"),"typedef enum {  OP_Stage2_ALU",new ToWrite(", OP_Stage2_ISAX",false,true,"")); // leave it heere outside of if-else to avid undefined err
+		
+	}
+	
+	
+	private void IntegrateISAX_RdStall() {
+		/* 
+		 * this.PutNode("Bool", " (rg_state == CPU_RUNNING) && (! halting) && (! stage2_full) && (stage1.out.ostatus == OSTATUS_PIPE)", "mkCPU", BNode.RdStall,0);
+	 	this.PutNode("Bool", " (rg_state == CPU_RUNNING) && (! stage3_full) && (stage2.out.ostatus == OSTATUS_PIPE)", "mkCPU", BNode.RdStall,1);
+	 	this.PutNode("Bool", " (rg_state == CPU_RUNNING) && (stage3.out.ostatus == OSTATUS_PIPE)", "mkCPU", BNode.RdStall,2);
+		 */
+		for(int stage = 0; stage <=2; stage++) {
+			if(op_stage_instr.get(BNode.RdStall).containsKey(stage)) {
+				// Logic
+				if(stage == 0) {
+					String grep = "Move instruction from Stage1 to Stage2";
+					String addText = language.CreateLocalNodeName(BNode.RdStall, stage, "") +" <= !((! halting) && (! stage2_full) && (stage1.out.ostatus == OSTATUS_PIPE));\n"; 
+					this.toFile.UpdateContent(this.ModFile("mkCPU"),grep, new ToWrite(addText,false,true,""));					
+				}
+				if(stage == 1) {
+					String grep = "Move instruction from Stage2 to Stage3";
+					String addText = language.CreateLocalNodeName(BNode.RdStall, stage, "") +" <= !((! stage3_full) && (stage2.out.ostatus == OSTATUS_PIPE));\n"; 
+					this.toFile.UpdateContent(this.ModFile("mkCPU"),grep, new ToWrite(addText,false,true,""));					
+				}
+				if(stage == 2) {
+					String grep = "Bool stage1_full";
+					String addText = language.CreateLocalNodeName(BNode.RdStall, stage, "") +" <= !(stage3.out.ostatus == OSTATUS_PIPE);\n"; 
+					this.toFile.UpdateContent(this.ModFile("mkCPU"),grep, new ToWrite(addText,false,true,""));					
+				}
+				
+				// Declare interf ( we need default True, so that's we this must be done sepparately
+				String declare = "Wire #( Bool ) "+language.CreateLocalNodeName(BNode.RdStall,stage,"")+" <- mkDWire( True );\n";
+				this.toFile.UpdateContent(this.ModFile("mkCPU"), ");",new ToWrite(declare, true,false,"module mkCPU"));
+				this.toFile.UpdateContent(this.ModInterfFile("mkCPU"), "endinterface",new ToWrite(language.CreateMethodName(BNode.RdStall,stage,"",false)+";\n",true,false,"interface",true));
+				this.toFile.UpdateContent(this.ModInterfFile("mkCore"), "endinterface",new ToWrite("(*always_enabled *)"+language.CreateMethodName(BNode.RdStall,stage,"",false)+";\n",true,false,"interface",true));
+				String assignText = language.CreateMethodName(BNode.RdStall,stage,"",false)+";\n"+tab+"return "+language.CreateLocalNodeName(BNode.RdStall,stage, "")+";\nendmethod";
+				this.toFile.UpdateContent(this.ModFile("mkCPU"), "endmodule",new ToWrite(assignText,true,false,"module mkCPU",true));
+				this.toFile.UpdateContent(this.ModFile("mkCore"), "endmodule",new ToWrite(language.CreateMethodName(BNode.RdStall,stage,"",true)+" = cpu.met_"+language.CreateNodeName(BNode.RdStall, stage,"")+";\n",true,false,"module mkCore",true));
+				
+			}
+		}
 		
 	}
 	
@@ -115,6 +232,15 @@ public class Piccolo extends CoreBackend{
 		String wrRD = "// ISAX WrRD Logic //\n";
 		int stage = this.piccolo_core.GetNodes().get(BNode.WrRD).GetLatest();
 		if(op_stage_instr.containsKey(BNode.WrRD)) {
+			
+			// Add default interfaces for non-spawn
+			for(int i = 2; i >= 0; i--) 
+				if(!this.ContainsOpInStage(BNode.WrRD, i)) {// if validReq in 3 not there bc user requested it, add it on interf for datahazard mechanism
+					language.UpdateInterface("excute",BNode.WrRD_valid, "",i,true,false);
+					language.UpdateInterface("orca",BNode.WrRD_validData, "",i,true,false); // just for wrapper, not used in this case
+				}	
+			
+			// Commit Results
 			if(this.ContainsOpInStage(BNode.WrRD, 2)) {
 				// Valid bit
 				toFile.UpdateContent( this.ModFile("mkCPU_Stage3"), "// BEHAVIOR", new ToWrite("let isax_rg_stage3_rd_valid = ("+language.CreateLocalNodeName(BNode.WrRD_validData, stage,"")+") ? "+language.CreateLocalNodeName(BNode.WrRD_valid, stage,"")+" : rg_stage3.rd_valid;\n",false,true,""));
@@ -141,19 +267,35 @@ public class Piccolo extends CoreBackend{
 				toFile.ReplaceContent(this.ModFile("mkCPU_Stage3"), "bypass.bypass_state = (rg_full && rg_stage3.rd_valid)", new ToWrite(" bypass.bypass_state = (rg_full && isax_rg_stage3_rd_valid) ? BYPASS_RD_RDVAL", false, true, "" ));
 				toFile.ReplaceContent(this.ModFile("mkCPU_Stage3"), "bypass.bypass_state = (rg_full && rg_stage3.rd_valid)", new ToWrite(" bypass.bypass_state = (rg_full && isax_rg_stage3_rd_valid) ? BYPASS_RD_RDVAL", true, false, "`else" ));
 				toFile.ReplaceContent(this.ModFile("mkCPU_Stage3"), "bypass.bypass_state = (rg_full && rg_stage3.rd_valid)", new ToWrite(" bypass.bypass_state = (rg_full && isax_rg_stage3_rd_valid) ? BYPASS_RD_RDVAL", true, false, "else begin" ));
+
 				
-				
-				// If not present lso in stage 1, make sure validreq is 
-				if(!this.ContainsOpInStage(BNode.WrRD, 1))
-					language.UpdateInterface(this.ModFile("mkCPU_Stage2"),BNode.WrRD_valid, "",1,true,false);
-				
-			} else if(this.ContainsOpInStage(BNode.WrRD, 1))  {
-				if(!this.ContainsOpInStage(BNode.WrRD, 2))
-					language.UpdateInterface(this.ModFile("mkCPU"),BNode.WrRD_valid, "",2,true,false); // Just to avoid wrapper cry that this signal does not exist. Will be optimized away anyway
+			} 
+			if(this.ContainsOpInStage(BNode.WrRD,0)) {
+			String addText = 	"rule met_vISAX_frwrd_wrrddatavalid_0_i; \n"
+				+ tab+ "stage1.met_vISAX_frwrd_wrrddatavalid_0_i(vWrRD_validData_0_s); \n"
+				+ "endrule\n"; 
+			this.toFile.UpdateContent(this.ModFile("mkCPU"), this.grepDeclareBehav,new ToWrite(addText, false,true,""));
+			
+			addText = "Wire #(Bit#(32))  isax_wrrd <- mkDWire(0);\n"; 
+			this.toFile.UpdateContent(this.ModFile("mkCPU_Stage1"), ");",new ToWrite(addText, true,false,"module mkCPU_Stage1"));
+			
+			addText = "  rule wrrd_0 ; \n"
+					+ "    if(vISAX_frwrd_wrrddatavalid_0_s) begin\n"
+					+ "        isax_wrrd <= vWrRD_0_s; \n"
+					+ "    end else begin \n"
+					+ "        isax_wrrd <= alu_outputs.val1;\n"
+					+ "    end\n"
+					+ "   endrule\n";
+			this.toFile.UpdateContent(this.ModFile("mkCPU_Stage1"), this.grepDeclareBehav,new ToWrite(addText, false,true,""));
+			
+			addText = "val1          : isax_wrrd,\n";
+			toFile.ReplaceContent(this.ModFile("mkCPU_Stage1"), "val1          :", new ToWrite(addText, false, true, "" ));
+
 			}
+			
 			// Instructions that write WrRD but don't write mem
 			String addText = "";
-			if(this.ContainsOpInStage(BNode.WrRD, 2) || this.ContainsOpInStage(BNode.WrRD, 1)) {
+			if(this.op_stage_instr.containsKey(BNode.WrRD)) {
 				String textAdd = "rule wrrd_data_stage2; \n"
 						+ "stage2.met_vWrRD_validData_1_i("+language.CreateLocalNodeName(BNode.WrRD_validData, 1, "")+");\n"
 						+ "endrule\n"; 
@@ -166,14 +308,35 @@ public class Piccolo extends CoreBackend{
 				toFile.UpdateContent( this.ModFile("mkCPU_Stage2"),"endmodule" , new ToWrite(textAdd, false,true,"",true));
 				textAdd ="Wire #(Bool) "+language.CreateLocalNodeName(BNode.WrRD_validData, 1, "")+" <- mkDWire(False);";
 				this.toFile.UpdateContent(this.ModFile("mkCPU_Stage2"), ");",new ToWrite(textAdd, true,false,"module mkCPU_Stage2"));
-				if(!this.ContainsOpInStage(BNode.WrRD, 1)) // if it doesn't contain it to be generated automatically, add it artifically for Data Hazard logic
-				language.UpdateInterface("mkCore", BNode.WrRD_validData, "", 1, true, false); // Add validData stage 1 on top interface
-				if(!this.ContainsOpInStage(BNode.WrRD, 2)) // If it does not contain it, add it artificially for top module wrapper
-				language.UpdateInterface("mkCore", BNode.WrRD_validData, "", 2, true, false); // Add validData stage 2 on top interface, although not used!! Just for script top module
 				
-				if(this.ContainsOpInStage(BNode.WrRD, 1)) // Only if we have a WrRD in stage 1 it makes sense to check for WrRD_validData
-					addText += " else if ("+language.CreateLocalNodeName(BNode.WrRD_valid, 1, "")+" && "+language.CreateLocalNodeName(BNode.WrRD_validData, 1, "")+") begin\n"+language.CreateMemStageFrwrd(true,false, true);
-				addText += " else if ("+language.CreateLocalNodeName(BNode.WrRD_valid, 1, "")+") begin\n"+language.CreateMemStageFrwrd(true,false, false);
+				if(this.ContainsOpInStage(BNode.WrRD, 0)) {
+					// Declare forwarded signals from CPU to stages
+					language.UpdateInterface("mkCPU", ISAX_frwrd_wrrddatavalid, "", 1, false, true); 
+					language.UpdateInterface("mkCPU", ISAX_frwrd_wrrddatavalid, "", 0, false, false); 
+					
+					String stage2Full  = "Wire #(Bool)  isax_stage1_pipe <- mkDWire(False);\n"; // stage2_full  not global signal, so wrokaround to avoid syntax err
+					this.toFile.UpdateContent(this.ModFile("mkCPU"),");", new ToWrite(stage2Full, true, false, "module"));				
+					stage2Full = " isax_stage1_pipe <= ((!halting) && (! stage2_full) && (stage1.out.ostatus == OSTATUS_PIPE));\n"; 
+					this.toFile.UpdateContent(this.ModFile("mkCPU"),"Move instruction from Stage1", new ToWrite(stage2Full, false, true, ""));	
+					
+					String validDataReg = "rule rule_register_"+ISAX_frwrd_wrrddatavalid+"_1;\n"
+							+ this.tab+"if(isax_stage1_pipe) begin \n"
+							+ this.tab.repeat(2)+  language.CreateRegNodeName(ISAX_frwrd_wrrddatavalid, 1, "")+" <= "+language.CreateLocalNodeName(BNode.WrRD_validData, 0, "")+";\n"
+						    + this.tab+"end\n"
+						    + "endrule\n";
+					validDataReg += "rule rule_"+ISAX_frwrd_wrrddatavalid+"; \n"
+							+ this.tab + "stage2.met_vISAX_frwrd_wrrddatavalid_1_i("+language.CreateRegNodeName(ISAX_frwrd_wrrddatavalid, 1, "")+");\n"
+							+ "endrule\n";
+					this.toFile.UpdateContent(this.ModFile("mkCPU"),this.grepDeclareBehav, new ToWrite(validDataReg, false, true, ""));	
+					
+					// DH text 
+					addText += " else if ("+language.CreateLocalNodeName(ISAX_frwrd_wrrddatavalid, 1, "")+") begin\n"+language.CreateMemStageFrwrd(true,false, true, "");
+				
+				}
+				if(this.ContainsOpInStage(BNode.WrRD, 1)) 
+					addText += " else if ("+language.CreateLocalNodeName(BNode.WrRD_validData, 1, "")+") begin\n"+language.CreateMemStageFrwrd(true,false, true, language.CreateLocalNodeName(BNode.WrRD, 1, ""));
+				if(this.ContainsOpInStage(BNode.WrRD, 2)) 
+					addText += " else if ("+language.CreateLocalNodeName(BNode.WrRD_valid, 1, "")+") begin\n"+language.CreateMemStageFrwrd(true,false, false, "");
 				this.toFile.UpdateContent(this.ModFile("mkCPU_Stage2"), "// This stage is just relaying ALU", new ToWrite(addText, false, true , "", true ));			
 			}
 		}	
@@ -191,7 +354,7 @@ public class Piccolo extends CoreBackend{
 			}
 		}
 		if (noWrRD)
-			this.toFile.UpdateContent(this.ModFile("mkCPU_Stage2"), "// This stage is just relaying ALU", new ToWrite("else if(rg_stage2.op_stage2 ==  OP_Stage2_ISAX ) begin\n"+language.CreateMemStageFrwrd(false,false,false),false,true,"", true));
+			this.toFile.UpdateContent(this.ModFile("mkCPU_Stage2"), "// This stage is just relaying ALU", new ToWrite("else if(rg_stage2.op_stage2 ==  OP_Stage2_ISAX ) begin\n"+language.CreateMemStageFrwrd(false,false,false, ""),false,true,"", true));
 		
 	}
 	
@@ -239,7 +402,7 @@ public class Piccolo extends CoreBackend{
 			String  grep = "if (! rg_full) begin";
 			if(ContainsOpInStage(BNode.WrFlush,1)) {
 				validPCFlush = language.CreateLocalNodeName(BNode.WrFlush,1, "");
-				toFile.UpdateContent(this.ModFile("mkCPU_Stage2"), grep,new ToWrite("if("+validPCFlush+") begin \n "+ language.CreateMemStageFrwrd(false,true, false),false,true,"",true));
+				toFile.UpdateContent(this.ModFile("mkCPU_Stage2"), grep,new ToWrite("if("+validPCFlush+") begin \n "+ language.CreateMemStageFrwrd(false,true, false,""),false,true,"",true));
 			}
 			if(ContainsOpInStage(BNode.WrFlush,0)) {
 				validPCFlush = language.CreateLocalNodeName(BNode.WrFlush,0, "");
@@ -354,7 +517,7 @@ public class Piccolo extends CoreBackend{
 		
 		if(op_stage_instr.containsKey(BNode.RdMem_spawn) || op_stage_instr.containsKey(BNode.WrMem_spawn)) {
 			// RdAddr node - requried when user does not provide addr signal 
-			String rdAddrLogic = language.CreateLocalNodeName(BNode.RdMem_spawn_rdAddr, spawnStage, "") + " := x.addr;\n";
+			String rdAddrLogic = language.CreateLocalNodeName(BNode.RdMem_spawn_rdAddr, spawnStage, "") + " <= x.addr;\n";
 			this.toFile.UpdateContent(this.ModFile("mkCPU_Stage2"),"let funct3 = instr_funct3 (x.instr);", new ToWrite(rdAddrLogic,false,true,"")); //TODO Test
 
 			
@@ -451,6 +614,10 @@ public class Piccolo extends CoreBackend{
 
 	 	this.PutNode("Bit", "rs2_val_bypassed", "mkCPU_Stage1", BNode.RdRS2,0);
 	 	
+	 	this.PutNode("Bit", "", "mkCPU_Stage1", BNode.WrRD,0);
+	 	this.PutNode("Bool", "", "mkCPU_Stage1", BNode.WrRD_valid,0);
+	 	this.PutNode("Bool", "", "mkCPU", BNode.WrRD_validData,0);
+	 	
 	 	this.PutNode("Bit", "", "mkCPU_Stage2", BNode.WrRD,1);
 	 	this.PutNode("Bool", "", "mkCPU_Stage2", BNode.WrRD_valid,1);
 	 	this.PutNode("Bool", "", "mkCPU", BNode.WrRD_validData,1);
@@ -474,9 +641,9 @@ public class Piccolo extends CoreBackend{
 	 	this.PutNode("Bool", "", "mkCPU_Stage2",BNode.RdMem_addr_valid,stageMem);
 	 	this.PutNode("Bool", "", "mkCPU_Stage2",BNode.WrMem_addr_valid,stageMem);
 		 
-	 	this.PutNode("Bool", " (rg_state == CPU_RUNNING) && (! halting) && (! stage2_full) && (stage1.out.ostatus == OSTATUS_PIPE)", "mkCPU", BNode.RdStall,0);
-	 	this.PutNode("Bool", " (rg_state == CPU_RUNNING) && (! stage3_full) && (stage2.out.ostatus == OSTATUS_PIPE)", "mkCPU", BNode.RdStall,1);
-	 	this.PutNode("Bool", " (rg_state == CPU_RUNNING) && (stage3.out.ostatus == OSTATUS_PIPE)", "mkCPU", BNode.RdStall,2);
+	 	this.PutNode("Bool", "", "mkCPU", BNode.RdStall,0);
+	 	this.PutNode("Bool", "", "mkCPU", BNode.RdStall,1);
+	 	this.PutNode("Bool", "", "mkCPU", BNode.RdStall,2);
 	 	
 	 	this.PutNode("Bool", "", "mkCPU", BNode.WrStall,0);
 	 	this.PutNode("Bool", "", "mkCPU", BNode.WrStall,1);
@@ -511,7 +678,10 @@ public class Piccolo extends CoreBackend{
 	 	this.PutNode("Bit", "","mkCPU", BNode.WrMem_spawn_addr,spawnStage);
 	 	this.PutNode("Bit", "","mkCPU_Stage2", BNode.WrMem_spawn_rdAddr,spawnStage); // x.addr
 	 	
-	 	this.PutNode( "Bool", "stage3.out.ostatus == OSTATUS_PIPE","mkCPU", BNode.ISAX_spawnAllowed,0);
+	 	this.PutNode( "Bool", "(stage3.out.ostatus == OSTATUS_PIPE || stage3.out.ostatus == OSTATUS_EMPTY)","mkCPU", BNode.ISAX_spawnAllowed,0);
+	 	// Internal signals to help with implementaion
+	 	this.PutNode( "Bool","", "mkCPU_Stage2", ISAX_frwrd_wrrddatavalid, 1);
+	 	this.PutNode( "Bool","", "mkCPU_Stage1", ISAX_frwrd_wrrddatavalid, 0);
 	 	
 
 	}
