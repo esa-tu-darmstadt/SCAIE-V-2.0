@@ -10,3 +10,6 @@
 [submodule "CoresSrc/ORCA"]
 	path = CoresSrc/ORCA
 	url = https://github.com/cahz/orca.git
+[submodule "CoresSrc/CVA5"]
+	path = CoresSrc/CVA5
+	url = https://github.com/esa-tu-darmstadt/cva5-sv
