@@ -632,6 +632,10 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
         var wrstallSubpipe_opt = registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrStall, nodeKey.getStage(), ""));
         if (wrstallSubpipe_opt.isPresent())
           stallSubpipeCond += " || " + wrstallSubpipe_opt.get().getExpression();
+        //Add WrStallISAXEntry to the WrDeqInstr stall condition.
+        // IMPORTANT: Also triggers generation of WrStallISAXEntry and the default stall condition in the base pipeline.
+        stallSubpipeCond += " || " + registry.lookupExpressionRequired(
+            new NodeInstanceDesc.Key(WrStallISAXEntry, nodeKey.getStage().getParent().get(), nodeKey.getISAX()));
         String flushSubpipeCond = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, nodeKey.getStage(), ""));
         var wrflushSubpipe_opt = registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrFlush, nodeKey.getStage(), ""));
         if (wrflushSubpipe_opt.isPresent())
@@ -639,9 +643,6 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
         ret.logic += String.format("assign %s = %s && !(%s || %s);\n", wrDeqInstrWire, signalName, stallSubpipeCond, flushSubpipeCond);
         ret.outputs.add(new NodeInstanceDesc(wrDeqInstrKey, wrDeqInstrWire, ExpressionType.WireName, requestedFor));
 
-        // While we're here, force WrStallISAXEntry and default stall condition creation in the base pipeline.
-        registry.lookupExpressionRequired(
-            new NodeInstanceDesc.Key(WrStallISAXEntry, nodeKey.getStage().getParent().get(), nodeKey.getISAX()));
         return ret;
       }));
       return true;

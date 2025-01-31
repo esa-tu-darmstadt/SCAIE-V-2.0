@@ -10,6 +10,7 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -259,205 +260,206 @@ public class SCAIEVCmd {
       printHelpAndExit(options);
       return;
     }
-    for (LinkedHashMap readInstr : readData) {
-      Set<InstrTag> tags = EnumSet.noneOf(InstrTag.class);
-      String instrName = "", mask = "", f3 = "---", f7 = "-------", op = "-------";
-      String usernodeName = "";
-      boolean is_always = false;
-      int usernodeSize = 0, usernodeElements = 0;
-      for (Object setting : readInstr.keySet()) {
-        if (setting.toString().equals("core")) {
-          String targetCoreName = (String)readInstr.get(setting);
-          if (!core.equals(targetCoreName)) {
-            logger.warn("Core name in the ISAX yaml file does not match the requested core: Got {}, expected {}", targetCoreName, core);
+    if (readData != null)
+      for (LinkedHashMap readInstr : readData) {
+        Set<InstrTag> tags = EnumSet.noneOf(InstrTag.class);
+        String instrName = "", mask = "", f3 = "---", f7 = "-------", op = "-------";
+        String usernodeName = "";
+        boolean is_always = false;
+        int usernodeSize = 0, usernodeElements = 0;
+        for (Object setting : readInstr.keySet()) {
+          if (setting.toString().equals("core")) {
+            String targetCoreName = (String)readInstr.get(setting);
+            if (!core.equals(targetCoreName)) {
+              logger.warn("Core name in the ISAX yaml file does not match the requested core: Got {}, expected {}", targetCoreName, core);
+            }
           }
-        }
 
-        if (setting.toString().equals("tags")) {
-          for (String tagName : (List<String>)readInstr.get(setting)) {
-            var tag_opt = InstrTag.fromSerialName(tagName);
-            tag_opt.ifPresent(tag -> tags.add(tag));
-            if (tag_opt.isEmpty())
-              logger.warn("Ignoring unknown tag {}", tagName);
+          if (setting.toString().equals("tags")) {
+            for (String tagName : (List<String>)readInstr.get(setting)) {
+              var tag_opt = InstrTag.fromSerialName(tagName);
+              tag_opt.ifPresent(tag -> tags.add(tag));
+              if (tag_opt.isEmpty())
+                logger.warn("Ignoring unknown tag {}", tagName);
+            }
           }
-        }
-        if (setting.toString().equals("instruction")) {
-          instrName = (String)readInstr.get(setting);
-          is_always = false;
-        }
-        if (setting.toString().equals("always")) {
-          instrName = (String)readInstr.get(setting);
-          is_always = true;
-        }
-        if (setting.toString().equals("mask")) {
-          mask = (String)readInstr.get(setting);
-          if (mask.length() != 32) {
-            logger.error("The encoding mask should contain 32 characters, no other encoding widths are currently supported. ISAX: {}",
-                         instrName);
-            return;
+          if (setting.toString().equals("instruction")) {
+            instrName = (String)readInstr.get(setting);
+            is_always = false;
           }
-          char[] encoding = mask.toCharArray();
-          f7 = "";
-          f3 = "";
-          op = "";
-          for (int i = 0; i < 7; i++)
-            f7 += encoding[i];
-          for (int i = 17; i < 20; i++)
-            f3 += encoding[i];
-          for (int i = 25; i < 32; i++)
-            op += encoding[i];
-          for (char c : encoding) {
-            if (c != '-' && c != '0' && c != '1') {
-              logger.error("Illegal character in instruction encoding string '{}'. Allowed characters are '-', '0', '1'", mask);
-              f7 = "";
-              f3 = "";
-              op = "";
+          if (setting.toString().equals("always")) {
+            instrName = (String)readInstr.get(setting);
+            is_always = true;
+          }
+          if (setting.toString().equals("mask")) {
+            mask = (String)readInstr.get(setting);
+            if (mask.length() != 32) {
+              logger.error("The encoding mask should contain 32 characters, no other encoding widths are currently supported. ISAX: {}",
+                           instrName);
               return;
             }
-          }
-        }
-
-        if (setting.toString().equals("register")) {
-          addedUserNode = true;
-          usernodeName = (String)readInstr.get(setting);
-        }
-
-        if (setting.toString().equals("width")) {
-          usernodeSize = (int)readInstr.get(setting);
-        }
-        if (setting.toString().equals("elements")) {
-          usernodeElements = (int)readInstr.get(setting);
-        }
-
-        if (setting.toString().equals("schedule")) {
-          if (instrName.isEmpty()) {
-            logger.error("An instruction name and mask should be provided before the schedule. Ignoring instruction.");
-            break;
-          }
-          if (f3.isEmpty())
-            f3 = "---";
-          if (f7.isEmpty())
-            f7 = "-------";
-          if (op.isEmpty())
-            op = "-------";
-          logger.debug("Added instr. " + instrName + " with f7 " + f7 + " f3 " + f3 + " op " + op);
-          SCAIEVInstr newSCAIEVInstr = shim.addInstr(instrName, f7, f3, op, is_always ? "<always>" : "R"); // TODO R is here by default
-          tags.forEach(tag -> newSCAIEVInstr.addTag(tag));
-          List<LinkedHashMap> nodes = (List<LinkedHashMap>)readInstr.get(setting);
-          boolean decoupled = false;
-          boolean dynamic = false;
-          for (LinkedHashMap readNode : nodes) {
-            String nodeName = "";
-            int nodeStage = 0;
-            ArrayList<Integer> additionalStages = new ArrayList<Integer>();
-            boolean checkIsEarliestMarker = false;
-            boolean doNotAddAsNode = false;
-            HashSet<AdjacentNode> adjSignals = new HashSet<AdjacentNode>();
-            for (Object nodeSetting : readNode.keySet()) {
-              if (nodeSetting.toString().equals("interface")) {
-                String newName = (String)readNode.get(nodeSetting);
-                if (newName.contains(".")) {
-                  String[] splitted = newName.split("\\.");
-                  nodeName = splitted[0];
-                  if (splitted[1].equals("addr")) {
-                    nodeName += "_addr";
-                  }
-                  checkIsEarliestMarker = true; //.data, .addr suffix
-                } else {
-                  nodeName = newName;
-                  checkIsEarliestMarker = BNode.IsUserBNode(BNode.GetSCAIEVNode(nodeName));
-                }
+            char[] encoding = mask.toCharArray();
+            f7 = "";
+            f3 = "";
+            op = "";
+            for (int i = 0; i < 7; i++)
+              f7 += encoding[i];
+            for (int i = 17; i < 20; i++)
+              f3 += encoding[i];
+            for (int i = 25; i < 32; i++)
+              op += encoding[i];
+            for (char c : encoding) {
+              if (c != '-' && c != '0' && c != '1') {
+                logger.error("Illegal character in instruction encoding string '{}'. Allowed characters are '-', '0', '1'", mask);
+                f7 = "";
+                f3 = "";
+                op = "";
+                return;
               }
-              if (nodeSetting.toString().equals("stage")) {
-                if (checkIsEarliestMarker) {
-                  if (!op.contentEquals("-------")) {
-                    if (earliest_operation.containsKey(
-                            nodeName)) { // If there was another entry with an ""earliest"" higher, overwrite it, otherwise, don't
-                      int readEarliest = earliest_operation.get(nodeName);
-                      if (readEarliest > (int)readNode.get(nodeSetting))
+            }
+          }
+
+          if (setting.toString().equals("register")) {
+            addedUserNode = true;
+            usernodeName = (String)readInstr.get(setting);
+          }
+
+          if (setting.toString().equals("width")) {
+            usernodeSize = (int)readInstr.get(setting);
+          }
+          if (setting.toString().equals("elements")) {
+            usernodeElements = (int)readInstr.get(setting);
+          }
+
+          if (setting.toString().equals("schedule")) {
+            if (instrName.isEmpty()) {
+              logger.error("An instruction name and mask should be provided before the schedule. Ignoring instruction.");
+              break;
+            }
+            if (f3.isEmpty())
+              f3 = "---";
+            if (f7.isEmpty())
+              f7 = "-------";
+            if (op.isEmpty())
+              op = "-------";
+            logger.debug("Added instr. " + instrName + " with f7 " + f7 + " f3 " + f3 + " op " + op);
+            SCAIEVInstr newSCAIEVInstr = shim.addInstr(instrName, f7, f3, op, is_always ? "<always>" : "R"); // TODO R is here by default
+            tags.forEach(tag -> newSCAIEVInstr.addTag(tag));
+            List<LinkedHashMap> nodes = (List<LinkedHashMap>)readInstr.get(setting);
+            boolean decoupled = false;
+            boolean dynamic = false;
+            for (LinkedHashMap readNode : nodes) {
+              String nodeName = "";
+              int nodeStage = 0;
+              ArrayList<Integer> additionalStages = new ArrayList<Integer>();
+              boolean checkIsEarliestMarker = false;
+              boolean doNotAddAsNode = false;
+              HashSet<AdjacentNode> adjSignals = new HashSet<AdjacentNode>();
+              for (Object nodeSetting : readNode.keySet()) {
+                if (nodeSetting.toString().equals("interface")) {
+                  String newName = (String)readNode.get(nodeSetting);
+                  if (newName.contains(".")) {
+                    String[] splitted = newName.split("\\.");
+                    nodeName = splitted[0];
+                    if (splitted[1].equals("addr")) {
+                      nodeName += "_addr";
+                    }
+                    checkIsEarliestMarker = true; //.data, .addr suffix
+                  } else {
+                    nodeName = newName;
+                    checkIsEarliestMarker = BNode.IsUserBNode(BNode.GetSCAIEVNode(nodeName));
+                  }
+                }
+                if (nodeSetting.toString().equals("stage")) {
+                  if (checkIsEarliestMarker) {
+                    if (!op.contentEquals("-------")) {
+                      if (earliest_operation.containsKey(
+                              nodeName)) { // If there was another entry with an ""earliest"" higher, overwrite it, otherwise, don't
+                        int readEarliest = earliest_operation.get(nodeName);
+                        if (readEarliest > (int)readNode.get(nodeSetting))
+                          earliest_operation.put(nodeName, (int)readNode.get(nodeSetting));
+                      } else
                         earliest_operation.put(nodeName, (int)readNode.get(nodeSetting));
-                    } else
-                      earliest_operation.put(nodeName, (int)readNode.get(nodeSetting));
+                    }
+                  }
+                  nodeStage = (int)readNode.get(nodeSetting);
+                  // if(is_always) // For read/writes without opcode: now set as spawn without decoding; in scaiev mapped on Read stage /WB
+                  // stage; are direct read/writes 	if( FNode.GetSCAIEVNode(nodeName)==null | (FNode.GetSCAIEVNode(nodeName)!=null &&
+                  // FNode.GetSCAIEVNode(nodeName).DH)) 		nodeStage = 10000; // immediate write
+                  checkIsEarliestMarker = false;
+                }
+
+                // Multiple stages only supported for read nodes
+                if (nodeSetting.toString().equals("stages")) {
+                  // nodeStage = (int) readNode.get(nodeSetting);
+                  additionalStages = (ArrayList<Integer>)readNode.get(nodeSetting);
+                  nodeStage = additionalStages.get(0);
+                  if (is_always)
+                    logger.fatal("No multiple stages supported for always. Node: " + readNode);
+                }
+
+                if (nodeSetting.toString().equals("has valid"))
+                  adjSignals.add(AdjacentNode.validReq);
+                if (nodeSetting.toString().equals("has validResp"))
+                  adjSignals.add(AdjacentNode.validResp);
+                if (nodeSetting.toString().equals("has addr"))
+                  adjSignals.add(AdjacentNode.addr);
+                if (nodeSetting.toString().equals("has size"))
+                  adjSignals.add(AdjacentNode.size);
+                if (nodeSetting.toString().equals("is decoupled")) {
+                  decoupled = true;
+                  if (dynamic) {
+                    logger.warn("An instruction cannot have both static and dynamic spawn operations. All spawn operations of {} will be "
+                                    + "treated as dynamic.",
+                                instrName);
                   }
                 }
-                nodeStage = (int)readNode.get(nodeSetting);
-                // if(is_always) // For read/writes without opcode: now set as spawn without decoding; in scaiev mapped on Read stage /WB
-                // stage; are direct read/writes 	if( FNode.GetSCAIEVNode(nodeName)==null | (FNode.GetSCAIEVNode(nodeName)!=null &&
-                // FNode.GetSCAIEVNode(nodeName).DH)) 		nodeStage = 10000; // immediate write
-                checkIsEarliestMarker = false;
-              }
-
-              // Multiple stages only supported for read nodes
-              if (nodeSetting.toString().equals("stages")) {
-                // nodeStage = (int) readNode.get(nodeSetting);
-                additionalStages = (ArrayList<Integer>)readNode.get(nodeSetting);
-                nodeStage = additionalStages.get(0);
-                if (is_always)
-                  logger.fatal("No multiple stages supported for always. Node: " + readNode);
-              }
-
-              if (nodeSetting.toString().equals("has valid"))
-                adjSignals.add(AdjacentNode.validReq);
-              if (nodeSetting.toString().equals("has validResp"))
-                adjSignals.add(AdjacentNode.validResp);
-              if (nodeSetting.toString().equals("has addr"))
-                adjSignals.add(AdjacentNode.addr);
-              if (nodeSetting.toString().equals("has size"))
-                adjSignals.add(AdjacentNode.size);
-              if (nodeSetting.toString().equals("is decoupled")) {
-                decoupled = true;
-                if (dynamic) {
-                  logger.warn("An instruction cannot have both static and dynamic spawn operations. All spawn operations of {} will be "
-                                  + "treated as dynamic.",
-                              instrName);
+                if (nodeSetting.toString().equals("is dynamic")) {
+                  if (decoupled) {
+                    logger.warn("An instruction cannot have both non-decoupled dynamic and decoupled operations. All spawn operations of "
+                                    + "{} will be treated as dynamic decoupled.",
+                                instrName);
+                  }
+                  dynamic = true;
+                  adjSignals.add(AdjacentNode.validReq);
+                  // adjSignals.add(AdjacentNode.addr);
+                }
+                if (nodeSetting.toString().equals("is dynamic decoupled")) {
+                  if (decoupled && !dynamic) {
+                    logger.warn("An instruction cannot have both static and dynamic decoupled operations. All operations of {} will be "
+                                    + "treated as dynamic.",
+                                instrName);
+                  }
+                  dynamic = true;
+                  decoupled = true;
+                  adjSignals.add(AdjacentNode.validReq);
+                  // adjSignals.add(AdjacentNode.addr);
                 }
               }
-              if (nodeSetting.toString().equals("is dynamic")) {
-                if (decoupled) {
-                  logger.warn("An instruction cannot have both non-decoupled dynamic and decoupled operations. All spawn operations of "
-                                  + "{} will be treated as dynamic decoupled.",
-                              instrName);
+              if (!checkIsEarliestMarker && !doNotAddAsNode) {
+                if (FNode.IsUserFNode(FNode.GetSCAIEVNode(nodeName)) && (FNode.GetSCAIEVNode(nodeName).elements > 1)) {
+                  // adjSignals.add(AdjacentNode.addr);
+                  // adjSignals.add(AdjacentNode.addrReq);
                 }
-                dynamic = true;
-                adjSignals.add(AdjacentNode.validReq);
-                // adjSignals.add(AdjacentNode.addr);
-              }
-              if (nodeSetting.toString().equals("is dynamic decoupled")) {
-                if (decoupled && !dynamic) {
-                  logger.warn("An instruction cannot have both static and dynamic decoupled operations. All operations of {} will be "
-                                  + "treated as dynamic.",
-                              instrName);
+                newSCAIEVInstr.PutSchedNode(BNode.GetSCAIEVNode(nodeName), nodeStage, adjSignals);
+                for (int i = 1; i < additionalStages.size(); i++) {
+                  newSCAIEVInstr.PutSchedNode(FNode.GetSCAIEVNode(nodeName), i);
                 }
-                dynamic = true;
-                decoupled = true;
-                adjSignals.add(AdjacentNode.validReq);
-                // adjSignals.add(AdjacentNode.addr);
+                logger.trace("INFO. Just added for instr. " + instrName + " nodeName " + nodeName + " nodeStage = " + nodeStage +
+                             " hasValid " + adjSignals.contains(AdjacentNode.validReq) + " hasAddr " +
+                             adjSignals.contains(AdjacentNode.addr) + " hasValidResp " + adjSignals.contains(AdjacentNode.validResp));
               }
             }
-            if (!checkIsEarliestMarker && !doNotAddAsNode) {
-              if (FNode.IsUserFNode(FNode.GetSCAIEVNode(nodeName)) && (FNode.GetSCAIEVNode(nodeName).elements > 1)) {
-                // adjSignals.add(AdjacentNode.addr);
-                // adjSignals.add(AdjacentNode.addrReq);
-              }
-              newSCAIEVInstr.PutSchedNode(BNode.GetSCAIEVNode(nodeName), nodeStage, adjSignals);
-              for (int i = 1; i < additionalStages.size(); i++) {
-                newSCAIEVInstr.PutSchedNode(FNode.GetSCAIEVNode(nodeName), i);
-              }
-              logger.trace("INFO. Just added for instr. " + instrName + " nodeName " + nodeName + " nodeStage = " + nodeStage +
-                           " hasValid " + adjSignals.contains(AdjacentNode.validReq) + " hasAddr " +
-                           adjSignals.contains(AdjacentNode.addr) + " hasValidResp " + adjSignals.contains(AdjacentNode.validResp));
-            }
+            newSCAIEVInstr.SetAsDynamic(dynamic);
+            newSCAIEVInstr.SetAsDecoupled(decoupled);
           }
-          newSCAIEVInstr.SetAsDynamic(dynamic);
-          newSCAIEVInstr.SetAsDecoupled(decoupled);
+        }
+        if (!usernodeName.isEmpty()) {
+          if (FNode != BNode)
+            FNode.AddUserNode(usernodeName, usernodeSize, usernodeElements);
+          BNode.AddUserNode(usernodeName, usernodeSize, usernodeElements);
         }
       }
-      if (!usernodeName.isEmpty()) {
-        if (FNode != BNode)
-          FNode.AddUserNode(usernodeName, usernodeSize, usernodeElements);
-        BNode.AddUserNode(usernodeName, usernodeSize, usernodeElements);
-      }
-    }
 
     if (addedUserNode)
       logger.debug("User added new nodes. Supported FNodes are: " + shim.FNodes.GetAllFrontendNodes());

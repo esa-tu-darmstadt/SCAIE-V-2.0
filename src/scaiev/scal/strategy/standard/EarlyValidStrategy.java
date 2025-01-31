@@ -97,7 +97,7 @@ public class EarlyValidStrategy extends MultiNodeStrategy {
     ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.PIPEOUT, checkAdj, stage, "", 0), checkAdjNodeName_out,
                                          ExpressionType.AnyExpression, requestedFor));
 
-    String body = "always @(*) begin \n" + tab.repeat(1) + "case(1'b1)\n";
+    String body = "always_comb begin \n" + tab.repeat(1) + "case(1'b1)\n";
     boolean returnEmpty = true;
     for (PipelineStage stageISAX : stage_lookAtISAX.keySet())
       if (!stage.equals(stageISAX)) {
@@ -184,7 +184,7 @@ public class EarlyValidStrategy extends MultiNodeStrategy {
                                                               HashMap<PipelineStage, HashSet<String>> stage_lookAtISAX, PipelineStage stage,
                                                               SCAIEVNode baseNode) {
     String tab = language.tab;
-    String body = "always @(*) begin \n" + tab.repeat(1) + "case(1'b1)\n";
+    String body = "always_comb begin \n" + tab.repeat(1) + "case(1'b1)\n";
     SCAIEVNode nodeValidData = bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.validData).get().makeFamilyNode();
     String nodeNameValidData = language.CreateLocalNodeName(nodeValidData, stage, "");
     boolean returnEmpty = true;

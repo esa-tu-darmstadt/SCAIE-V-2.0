@@ -298,16 +298,8 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
       requestedFor.addRelevantISAX(isaxName);
       assert (!muxISAX.subpipelineFirstStages.isEmpty());
       String ivalidCond = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdIValid, nodeKey.getStage(), isaxName));
-      var stallCond_opt =
-          muxISAX.subpipelineFirstStages.stream()
-              .map(firstStage -> {
-                String stallCond = "!(" + registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, firstStage, "")) + ")";
-                var wrstallEntryNode_opt = registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrStall, firstStage, ""));
-                if (wrstallEntryNode_opt.isPresent())
-                  stallCond += " && !(" + wrstallEntryNode_opt.get().getExpression() + ")";
-                return "(" + stallCond + ")";
-              })
-              .reduce((a, b) -> a + " || " + b);
+      //Condition: 1 iff the current instruction does enter the sub-pipeline
+      var stallCond_opt = Optional.of(registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.WrDeqInstr, nodeKey.getStage(), "")));
       if (stallCond_opt.isPresent())
         ivalidCond += " && (" + stallCond_opt.get() + ")";
 

@@ -14,6 +14,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.yaml.snakeyaml.Yaml;
 import scaiev.backend.BNode;
+import scaiev.backend.CVA5;
 import scaiev.backend.CoreBackend;
 import scaiev.backend.Orca;
 import scaiev.backend.Piccolo;
@@ -210,6 +211,8 @@ public class SCAIEV {
       coreInstanceOpt = Optional.of(new Orca());
     } else if (coreName.equals("PicoRV32")) {
       coreInstanceOpt = Optional.of(new PicoRV32());
+    } else if (coreName.equals("CVA5")) {
+      coreInstanceOpt = Optional.of(new CVA5());
     }
 
     // Generate Interface

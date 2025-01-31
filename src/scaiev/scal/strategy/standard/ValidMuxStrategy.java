@@ -171,7 +171,7 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
         }
         conditionalAssigns.add(new ConditionalAssignEntry(true, RdIValid, assignSignal));
         // body += tab.repeat(2) +RdIValid+" : "+assignNodeName +" = " + assignSignal+ ";\n";
-        // assignLogic = "always @(*) "+assignNodeName +" = " + assignSignal+ ";\n";
+        // assignLogic = "always_comb "+assignNodeName +" = " + assignSignal+ ";\n";
         if (checkAdj.getAdj() == AdjacentNode.validReq &&
             bNodes.GetAdjSCAIEVNode(spawnNode_opt.get(), AdjacentNode.validResp).isPresent()) {
           // If ValidMuxStrategy translates validReq from spawn into non-spawn, also translate validResp back into spawn.
@@ -284,7 +284,7 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
     }
 
     // Build the body from the collected assign conditions.
-    String body = "always @(*) begin \n";
+    String body = "always_comb begin \n";
     var exclusiveAssigns = conditionalAssigns.stream().filter(condAssign -> condAssign.isExclusive).toList();
     if (!exclusiveAssigns.isEmpty()) {
       String ifElseif = "if";

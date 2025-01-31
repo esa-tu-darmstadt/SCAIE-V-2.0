@@ -228,7 +228,7 @@ public class SCAL implements SCALBackendAPI {
   /**
    * Prevent SCAL from stalling the core if a given type of spawn operation (by family name) is to be committed.
    *  -> The core backend may handle collisions between in-pipeline and spawn operations in a different way.
-   *  -> If the core backend injects a writeback into the instruction pipeline, stalling the pipeline until completion could
+   *  -> If the core backend (e.g. CVA5) injects a writeback into the instruction pipeline, stalling the pipeline until completion could
    * lead to a deadlock.
    * @param spawn_node Node whose family do not need stalls on commit
    */
@@ -500,6 +500,13 @@ public class SCAL implements SCALBackendAPI {
         Optional<NodeLogicBuilder> directBuilder = readNodeStrategy_direct.implement(nodeKey);
         if (directBuilder.isPresent())
           return directBuilder;
+        if (nodeKey.getStage().getKind() == StageKind.Sub
+            && nodeKey.getStage().getPrev().isEmpty()
+            && nodeKey.getStage().getParent().map(parent -> parent.getKind() == StageKind.Core
+                                                            || parent.getKind() == StageKind.Decoupled)
+                                             .orElse(false)) {
+          //TODO: Distribute WrStall/WrFlush of related sub-pipelines (i.e., same instruction) to RdStall/RdFlush.
+        }
 
         return Optional.of(NodeLogicBuilder.fromFunction("defaultCorePipeZero_" + nodeKey.toString(false), (NodeRegistryRO registry) -> {
           NodeLogicBlock ret = new NodeLogicBlock();
@@ -845,9 +852,6 @@ public class SCAL implements SCALBackendAPI {
             assert (net.size == operation.size);
             assert (net.isax_module_pin.equals(isaxPinName));
           }
-
-          // if (!instrName.isEmpty() && !BNode.IsUserBNode(operation))
-          //	AddIn_op_stage_instr(operation, stage, instrName);
 
           interfToISAX += pin.getValue().declaration;
         } else if (pin.getKey().equals(NodeLogicBlock.InterfToCoreKey)) {

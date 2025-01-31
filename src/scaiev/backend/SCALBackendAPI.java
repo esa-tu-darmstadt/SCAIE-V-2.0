@@ -91,7 +91,7 @@ public interface SCALBackendAPI {
   /**
    * Prevent SCAL from stalling the core if a given type of spawn operation (by family name) is to be committed.
    *  -> The core backend may handle collisions between in-pipeline and spawn operations in a different way.
-   *  -> If the core backend injects a writeback into the instruction pipeline, stalling the pipeline until completion could
+   *  -> If the core backend (e.g. CVA5) injects a writeback into the instruction pipeline, stalling the pipeline until completion could
    * lead to a deadlock.
    * @param spawn_node Node whose family does not need stalls on commit
    */

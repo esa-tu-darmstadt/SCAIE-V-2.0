@@ -36,8 +36,8 @@ public class VHDL extends GenerateText {
     dictionary.put(DictWords.bitsRange, "downto");
     dictionary.put(DictWords.in, "in");
     dictionary.put(DictWords.out, "out");
-    dictionary.put(DictWords.False, "'0'");
-    dictionary.put(DictWords.True, "'1'");
+    dictionary.put(DictWords.False, "false");
+    dictionary.put(DictWords.True, "true");
     dictionary.put(DictWords.ZeroBit, "'0'");
     dictionary.put(DictWords.OneBit, "'1'");
     this.toFile = toFile;

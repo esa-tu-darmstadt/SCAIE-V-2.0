@@ -308,13 +308,6 @@ public class Verilog extends GenerateText {
     consumer.remove_trailing_commas();
   }
 
-  public String CreateTextISAXorOrig(String ifClause, String newSignal, String ISAXSignal, String origSignal) {
-    String text = "";
-    text += "always@(*) begin \n" + tab + "if( " + ifClause + " ) \n" + tab.repeat(2) + newSignal + " <= " + ISAXSignal + "; \n" + tab +
-            "else \n" + tab.repeat(2) + newSignal + " <= " + origSignal + ";\n"
-            + "end;\n\n";
-    return text;
-  }
   public String CreateTextRegReset(String signalName, String signalAssign, String stall) {
     String text = "";
     String stallText = "";
