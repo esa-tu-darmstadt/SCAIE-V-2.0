@@ -196,7 +196,7 @@ public class Piccolo extends CoreBackend{
 	 	this.PutNode("Bool", " (rg_state == CPU_RUNNING) && (stage3.out.ostatus == OSTATUS_PIPE)", "mkCPU", BNode.RdStall,2);
 		 */
 		for(int stage = 0; stage <=2; stage++) {
-			if(op_stage_instr.get(BNode.RdStall).containsKey(stage)) {
+			if(op_stage_instr.containsKey(BNode.RdStall) && op_stage_instr.get(BNode.RdStall).containsKey(stage)) {
 				// Logic
 				if(stage == 0) {
 					String grep = "Move instruction from Stage1 to Stage2";

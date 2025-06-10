@@ -126,14 +126,14 @@ public class AutomaticDemoTest {
 								}
 								if(nodeSetting.toString().equals("stage")) {
 									if(addEarliest) {
-										if(!op.contentEquals("-------")) {
+									//	if(!op.contentEquals("-------")) { // was
 											if(earliest_operation.containsKey(nodeName)) { // If there was another entry with an ""earliest"" higher, overwrite it, otherwise, don't
 												int readEarliest = earliest_operation.get(nodeName);
 												if(readEarliest>  (int) readNode.get(nodeSetting))
 													earliest_operation.put(nodeName, (int) readNode.get(nodeSetting));
-											} else
+											} else 
 												earliest_operation.put(nodeName, (int) readNode.get(nodeSetting));
-										}
+									//	}
 									} else {
 										nodeStage = (int) readNode.get(nodeSetting);
 									}
@@ -158,10 +158,10 @@ public class AutomaticDemoTest {
 								if(nodeSetting.toString().equals("has addr"))
 									adjSignals.add(AdjacentNode.addr);
 								if(nodeSetting.toString().equals("is decoupled")) {
-									decoupled = true;
-									if(decoupled && !dynamic_decoupled)
+									if(decoupled && dynamic_decoupled)
 										System.out.println("WARNING. AutomaticDemoTest. The tool currently supports either decoupled instruction or dynamic dec. instr. (so all nodes must obey to 1 of the 2, mixture currently not possible). Thus, having a node \"is decoupled\" and the next one dynamic decoupled will lead to faulty generation. Make them both either dynamic or not dyn.");
 									
+									decoupled = true;
 								}
 								if(nodeSetting.toString().equals("is dynamic decoupled")) {
 									if(decoupled && !dynamic_decoupled)
@@ -189,6 +189,7 @@ public class AutomaticDemoTest {
 						}
 					}				
 				}
+				
 				if(!usernodeName.equals("NOTDEFINED")) {
 					FNode.AddUserFNode(usernodeName,usernodeSize,usernodeElements);
 					BNode.AddUserBNode(usernodeName,usernodeSize,usernodeElements);

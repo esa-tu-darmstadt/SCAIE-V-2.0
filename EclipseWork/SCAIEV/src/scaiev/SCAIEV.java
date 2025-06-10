@@ -284,12 +284,12 @@ public class SCAIEV {
 					if(instrSet.get(instr).HasNode(node)) { // get node
 						List<Scheduled> scheds = instrSet.get(instr).GetNodes(node); //check out latest sched stage
 						for(Scheduled sched : scheds) {
-							if(sched.GetStartCycle()>latest && sched.GetStartCycle()<=core.maxStage && !this.instrSet.get(instr).HasNoOp())
+							if(sched.GetStartCycle()>latest && sched.GetStartCycle()<=core.maxStage) //was:  && !this.instrSet.get(instr).HasNoOp())
 								latest = sched.GetStartCycle();
 						}	
 					}				
 				}
-				UpdateSpawnCommitStage(node,latest+1,latest);           		 
+				UpdateSpawnCommitStage(node,latest+1,latest); 
 			}
 		}		
 		 
@@ -311,7 +311,8 @@ public class SCAIEV {
 					SCAIEVNode WrNode = BNodes.GetSCAIEVNode(BNodes.GetNameWrNode(node));
 					earliest = WrNode.commitStage;
 				}
-				UpdateSpawnCommitStage(node,core.maxStage+1,earliest);     
+				UpdateSpawnCommitStage(node,core.maxStage+1,earliest);  
+				
 			} 			
 		}
 		
@@ -333,8 +334,8 @@ public class SCAIEV {
 				// Get Latest stage
 				int latest =  core.maxStage; 
 				Integer earliest = 0;
-				boolean noDHWr = true;
-				boolean noDHRd = true;
+				boolean noDHWr = true; // is there a write with opcode  = with DH handling?
+				boolean noDHRd = true; // is there a read with opcode  = with DH handling?
 				// Check if it needs DH (data hazard) 
 				SCAIEVNode otheroperation;
 				if(operation.isInput) 
@@ -373,16 +374,10 @@ public class SCAIEV {
 				}
 				 
 				added = true; 
-
-				if(!operation.isInput) {
-					if(noDHRd) // if no instruction wants to read, than ReadStage = WB Stage and SCAL DH logic should not cover earlier stages
-						earliest = earliest_useroperation.get(operation);
-					else 
-						earliest = earliest_useroperation.get(FNodes.GetNameWrNode(operation));
-				}
-				if(operation.isInput)
+				if(!operation.isInput)  // Read Node
+					earliest = earliest_useroperation.get(FNodes.GetNameWrNode(operation)); // earliest_useroperation has just write nodes (due to wrnode.addr)
+				else // WrNode
 					earliest = earliest_useroperation.get(operation);
-				
 				// TODO latest for WrNode should be infinite
 				if(operation.isInput) {
 					CoreNode corenode = new CoreNode(earliest, 0,latest, latest+1, operation.name); // default values, it is anyways supposed user defined node well

@@ -84,7 +84,7 @@ public class SCAIEVInstr {
 
 	public void ConvertToBackend(Core core, BNode userBNode) throws FrontendNodeException {
 		for (SCAIEVNode node : userBNode.GetAllFrontendNodes()) {
-			CheckThrowNodeUniquePerCycle(node);
+		//	CheckThrowNodeUniquePerCycle(node);
 		}
 		
 		for (SCAIEVNode node : userBNode.GetAllBackNodes()) {
