@@ -92,8 +92,11 @@ public class PicoRV32 extends CoreBackend {
 		toFile.ReplaceContent(this.ModFile("picorv32"),"instr_getq, instr_setq, instr_retirq, instr_maskirq",new ToWrite("instr_getq, instr_setq, instr_retirq, instr_maskirq, instr_waitirq, instr_timer, "+isISAXSignal+"};",true,false,"assign instr_trap ="));
 		HashSet<String> allISAXes = new HashSet<String>();
 		allISAXes.addAll(ISAXes.keySet());
+		String wrstall = "";
+		if(this.ContainsOpInStage(BNode.WrStall, 2)) 
+			wrstall = " || WrStall_2_reg && ~WrStall_2_i ";
 		String logicIsISAX = "always@(posedge "+language.clk+")  begin\n"
-				+ tab + "if (mem_do_rinst && mem_done) begin\n"
+				+ tab + "if ((mem_do_rinst && mem_done) "+wrstall+")begin\n"
 				+ tab + tab + isISAXSignal + " <= " + language.CreateAllEncoding(allISAXes, ISAXes, "mem_rdata_latched")+";\n"
 				+ tab + "end\n"
 				+ "end\n";
@@ -125,8 +128,11 @@ public class PicoRV32 extends CoreBackend {
 	private void IntegrateISAX_RdInstr() {
 		String text = "";
 		if(this.ContainsOpInStage(BNode.RdInstr, 0)) {
+			String wrstall = "";
+			if(this.ContainsOpInStage(BNode.WrStall, 2)) 
+				wrstall = " || WrStall_2_reg && ~WrStall_2_i ";
 			text = "always @(posedge "+language.clk+") begin \n"
-					+ "		if (mem_do_rinst && mem_done) \n"
+					+ "		if ((mem_do_rinst && mem_done) "+wrstall+")\n"
 					+ "			rdInstr_0_r <= mem_rdata_latched;\n" //I updated it to isax_mem_rdata_latched for stall mem, bc when mem_do_rinst && mem_done and stall2 set, _latched had old data. Updated it back now
 					+ "	end\n "
 					+ "wire [32 -1:0] "+language.CreateLocalNodeName(BNode.RdInstr, 0, "")+";\n"
@@ -140,15 +146,43 @@ public class PicoRV32 extends CoreBackend {
 		String spawnStall = "";
 		if(this.op_stage_instr.containsKey(BNode.WrStall) | this.op_stage_instr.containsKey(BNode.RdStall) ){
 			if(this.ContainsOpInStage(BNode.WrStall, 2)) {
-				//toFile.UpdateContent(this.ModFile("picorv32"),"cpu_state <= cpu_state_fetch;", new ToWrite("if(!"+language.CreateNodeName(BNode.WrStall, 2,"")+")cpu_state <= cpu_state_fetch;",true,false,"latched_is_lu: reg_out <= mem_rdata_word;")); // Stall if in load state // TODO could be an issue like re-start reading
+				String replaceText = "";
+				String replaceWith = "";
+				String prereq = "";
+				addDeclaration(" reg WrStall_2_reg, WrStall_2_reg2;");
+				
+				replaceText = "if (COMPRESSED_ISA && mem_done && ";
+				replaceWith = "if (COMPRESSED_ISA && (mem_done && (mem_do_prefetch || mem_do_rinst) || WrStall_2_reg && ~WrStall_2_i)) begin";
+				toFile.ReplaceContent(this.ModFile("picorv32"), replaceText, new ToWrite( replaceWith,false,true, ""));
+				
+				replaceText = "if (mem_do_rinst && mem_done)";
+				replaceWith = "if (mem_do_rinst && mem_done || WrStall_2_reg && ~WrStall_2_i) begin";
+				toFile.ReplaceContent(this.ModFile("picorv32"), replaceText, new ToWrite( replaceWith,false,true, ""));
+				replaceText = "if (mem_do_rinst && mem_done)";
+				prereq = "assert(!mem_valid || mem_ready);";
+				replaceWith = replaceWith + " // second";
+				toFile.ReplaceContent(this.ModFile("picorv32"), replaceText, new ToWrite( replaceWith,true,false, prereq));
+				
+				// Avoid new decoding based on mem_data_q. Without this, alu result would be wrong
+				replaceText = "if (decoder_trigger && !decoder_pseudo_trigger";
+				replaceWith = "if (decoder_trigger && !decoder_pseudo_trigger  && (!"+language.CreateNodeName(BNode.WrStall,2,"")+" || (~(|cpu_state[3:0]))) || WrMem_validReq_0_i || WrStall_2_reg2 && ~WrStall_2_reg) begin";
+				toFile.ReplaceContent(this.ModFile("picorv32"), replaceText, new ToWrite( replaceWith,false,true, ""));
+				
+				replaceText = "|{is_sb_sh_sw, WrMem_validReq_0_i}:";
+				replaceWith = "WrMem_validReq_0_i: \n"
+						+ "					decoded_imm <= $signed({RdInstr_0_o[31:25], RdInstr_0_o[11:7]});\n"
+						+ "				is_sb_sh_sw:";
+				toFile.ReplaceContent(this.ModFile("picorv32"), replaceText, new ToWrite( replaceWith,false,true, ""));
+				
+				
 				toFile.ReplaceContent(this.ModFile("picorv32"), "if (!mem_do_prefetch || mem_done) begin", new ToWrite("if("+language.CreateNodeName(BNode.WrStall, 2,"")+") begin end else if (!mem_do_prefetch || mem_done) begin",true,false,"cpu_state_stmem: begin")); // Stall if in write state
 				toFile.ReplaceContent(this.ModFile("picorv32"), "if (reg_sh == 0) begin", new ToWrite("if("+language.CreateNodeName(BNode.WrStall, 2,"")+")begin   end else if (reg_sh == 0) begin",true,false,"cpu_state_shift: begin")); // Stall if in shift state
 				toFile.ReplaceContent(this.ModFile("picorv32"), "if ((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE)", new ToWrite("if("+language.CreateNodeName(BNode.WrStall, 2,"")+")begin end else if ((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE) && (alu_wait || alu_wait_2)) begin",true,false, "cpu_state_exec: begin")); // stall execute
 				toFile.UpdateContent(this.ModFile("picorv32"),  "if (!mem_do_prefetch || mem_done) begin", new ToWrite("if("+language.CreateNodeName(BNode.WrStall, 2,"")+")begin end else\n", true, false, "cpu_state_ldmem: begin", true));
 			
 				// Make sure next instr is not decoded yet 
-				String replaceText = "assign mem_rdata_latched = COMPRESSED_ISA && mem_la_use_prefetched_high_word ? {16'bx, mem_16bit_buffer} :";
-				String replaceWith = "reg [31:0] mem_rdata_latched_reg;\n"
+				replaceText = "assign mem_rdata_latched = COMPRESSED_ISA && mem_la_use_prefetched_high_word ? {16'bx, mem_16bit_buffer} :";
+				replaceWith = "reg [31:0] mem_rdata_latched_reg;\n"
 						+ "wire [31:0] isax_mem_rdata_latched;\n"
 						+ "assign isax_mem_rdata_latched = COMPRESSED_ISA && mem_la_use_prefetched_high_word ? {16'bx, mem_16bit_buffer} :";
 				toFile.ReplaceContent(this.ModFile("picorv32"), replaceText, new ToWrite( replaceWith,false,true, ""));
@@ -159,13 +193,17 @@ public class PicoRV32 extends CoreBackend {
 						+ "    assign mem_rdata_latched =!WrStall_2_i ? isax_mem_rdata_latched:  mem_rdata_latched_reg;";
 				addLogic(addText);
 				
-				// Avoid new decoding based on mem_data_q. Without this, alu result would be wrong
-				replaceText = "if (decoder_trigger && !decoder_pseudo_trigger) begin";
-				replaceWith = "if (decoder_trigger && !decoder_pseudo_trigger && (!"+language.CreateNodeName(BNode.WrStall, 2,"")+" || (~(|cpu_state[3:0])))) begin";
-				toFile.ReplaceContent(this.ModFile("picorv32"), replaceText, new ToWrite( replaceWith,false,true, ""));
+				addDeclaration("wire WrStall_2_temp;\n");
+				addLogic("assign WrStall_2_temp = 0;\n");
 				
-			} 
-			
+				addLogic("always @(posedge clk) begin\n"
+						+ "        WrStall_2_reg <= "+language.CreateNodeName(BNode.WrStall,2,"")+"; \n"
+						+ "        WrStall_2_reg2 <= WrStall_2_reg;\n"
+						+ "end");
+			} else {
+				addDeclaration("wire WrStall_2_temp;\n");
+				addLogic("assign WrStall_2_temp = 0;\n");
+			}
 			if(this.ContainsOpInStage(BNode.WrStall, 1)) {
 				// avoid simulator error that signal used before definition
 				addDeclaration("localparam cpu_state_ld_rs1 = 8'b00100000;\n"); 
@@ -185,6 +223,8 @@ public class PicoRV32 extends CoreBackend {
 				addLogic = "end\n";
 				toFile.UpdateContent(this.ModFile("picorv32"),grep, new ToWrite(addLogic, false,true,"",true));
 			} 
+			
+			
 		}		
 	}
 	
@@ -310,6 +350,7 @@ public class PicoRV32 extends CoreBackend {
 	}
 
 	private void IntegrateISAX_Mem() {
+		String addText = "";
 		int stage = this.picorv32.GetNodes().get(BNode.WrMem).GetLatest();
 		boolean wrMem = this.op_stage_instr.containsKey(BNode.WrMem) && this.op_stage_instr.get(BNode.WrMem).containsKey(stage);
 		boolean rdMem = this.op_stage_instr.containsKey(BNode.RdMem) && this.op_stage_instr.get(BNode.RdMem).containsKey(stage);
@@ -321,7 +362,10 @@ public class PicoRV32 extends CoreBackend {
 			toFile.ReplaceContent(this.ModFile("picorv32"),"instr_sb    <= is_sb_sh_sw", new ToWrite("instr_sb    <= (is_sb_sh_sw || ("+validISAXWrMem+")) && mem_rdata_q[14:12] == 3'b000;",false,true,""));
 			toFile.ReplaceContent(this.ModFile("picorv32"),"instr_sh    <= is_sb_sh_sw", new ToWrite("instr_sh    <= (is_sb_sh_sw || ("+validISAXWrMem+")) && mem_rdata_q[14:12] == 3'b001;",false,true,""));
 			toFile.ReplaceContent(this.ModFile("picorv32"),"instr_sw    <= is_sb_sh_sw", new ToWrite("instr_sw    <= (is_sb_sh_sw || ("+validISAXWrMem+")) && mem_rdata_q[14:12] == 3'b010;",false,true,""));
-			toFile.ReplaceContent(this.ModFile("picorv32"),"is_sb_sh_sw:", new ToWrite("|{is_sb_sh_sw, " +validISAXWrMem+"}:",true,false,"|{instr_jalr,"));
+			addText = tab +"WrMem_validReq_0_i:\n"
+					+ tab + "decoded_imm <= $signed({RdInstr_0_o[31:25], RdInstr_0_o[11:7]});\n"
+					+ "is_sb_sh_sw:";
+			toFile.ReplaceContent(this.ModFile("picorv32"),"is_sb_sh_sw:", new ToWrite(addText,true,false,"|{instr_jalr,"));
 			
 			validISAXWrMem = language.CreateNodeName(BNode.WrMem_validReq, stage-1, "");
 			this.toFile.UpdateContent(this.ModFile("picorv32"),") (",new ToWrite("input "+validISAXWrMem+",\n",true,false,"module picorv32 ",false,"picorv32"));
@@ -340,7 +384,7 @@ public class PicoRV32 extends CoreBackend {
 			this.toFile.UpdateContent(this.ModFile("picorv32"),"mem_la_wdata = {4{reg_op2[7:0]}};",new ToWrite("if("+language.CreateNodeName(BNode.WrMem_validReq, stage, "")+") mem_la_wdata = {4{"+language.CreateNodeName(BNode.WrMem, stage, "")+"[7:0]}};\n",false,true,""));
 			
 			// Cancel invalid transfers 
-			String addText = "if(!"+language.CreateNodeName(BNode.WrMem_validReq, stage, "")+" && ISAX_isisax_2 ) begin \n"
+			addText = "if(!"+language.CreateNodeName(BNode.WrMem_validReq, stage, "")+" && ISAX_isisax_2 ) begin \n"
 					+ tab+"cpu_state <= cpu_state_fetch;\n"
 					+ tab+"decoder_trigger <= 1;\n"
 					+ "end else";
@@ -394,7 +438,7 @@ public class PicoRV32 extends CoreBackend {
 		}
 		
 		if(this.ContainsOpInStage(BNode.WrPC, 1 )) {
-			String textToAdd = "if("+language.CreateNodeName(BNode.WrPC_valid, 1, "")+" )begin \n"
+			String textToAdd = "("+language.CreateNodeName(BNode.WrPC_valid, 1, "")+" ) : begin \n"
 					+ tab + "reg_next_pc <= "+language.CreateNodeName(BNode.WrPC, 1, "")+"; \n"
 					+ tab + "reg_out <= "+language.CreateNodeName(BNode.WrPC, 1, "")+";\n"
 					+ tab + "decoder_trigger <= 0;\n"
@@ -403,9 +447,9 @@ public class PicoRV32 extends CoreBackend {
 					+ tab + "latched_branch <= 1;\n"
 					+ tab + "latched_stalu <= 0;\n"
 					+ tab + "cpu_state <= cpu_state_fetch; \n"
-					+ tab + "end else ";
-			String grepText = "(CATCH_ILLINSN || WITH_PCPI) && instr_trap: begin";
-			toFile.ReplaceContent(this.ModFile("picorv32"),grepText,  new ToWrite (textToAdd, false,true,"",true));
+					+ tab + "end ";
+			String grepText = "is_lui_auipc_jal: begin";// was : but instr_trap should not be 1 for ISAX! "(CATCH_ILLINSN || WITH_PCPI) && instr_trap: begin";
+			toFile.UpdateContent(this.ModFile("picorv32"),grepText,  new ToWrite (textToAdd, false,true,"",true));
 		}
 		if(this.ContainsOpInStage(BNode.WrPC, 2 )) {
 			String textToAdd = "if((cpu_state != cpu_state_ldmem && cpu_state != cpu_state_stmem) | (!mem_do_prefetch && mem_done)) begin\n"
@@ -519,7 +563,7 @@ public class PicoRV32 extends CoreBackend {
 	
 	this.PutNode( " ", "(!(decoder_trigger) || (cpu_state !=  cpu_state_fetch)) ", "picorv32", BNode.RdStall,0);
 	this.PutNode( " ", "(cpu_state !=  cpu_state_ld_rs1) ", "picorv32", BNode.RdStall,1);
-	this.PutNode( " ",  " ((cpu_state_exec ==  cpu_state)  && (((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE) && (alu_wait || alu_wait_2))) ) || ((mem_do_prefetch || ~mem_done) && ((cpu_state == cpu_state_stmem ) ||(cpu_state == cpu_state_ldmem ) )) || (cpu_state ==  cpu_state_fetch) || (cpu_state ==  cpu_state_ld_rs1)", "picorv32", BNode.RdStall,2);
+	this.PutNode( " ",  "((cpu_state_exec ==  cpu_state) && !WrStall_2_temp && (((TWO_CYCLE_ALU || TWO_CYCLE_COMPARE) && (alu_wait || alu_wait_2))) ) || ((mem_do_prefetch || ~mem_done) && !WrStall_2_temp && ((cpu_state == cpu_state_stmem ) ||(cpu_state == cpu_state_ldmem ) )) || (cpu_state ==  cpu_state_fetch) || (cpu_state ==  cpu_state_ld_rs1)", "picorv32", BNode.RdStall,2);
 	this.PutNode( " ", "0", "picorv32", BNode.RdStall,3);
 	
 	this.PutNode( " ", "", "picorv32", BNode.WrStall,0);
