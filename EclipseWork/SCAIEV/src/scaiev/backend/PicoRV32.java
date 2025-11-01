@@ -165,7 +165,10 @@ public class PicoRV32 extends CoreBackend {
 				
 				// Avoid new decoding based on mem_data_q. Without this, alu result would be wrong
 				replaceText = "if (decoder_trigger && !decoder_pseudo_trigger";
-				replaceWith = "if (decoder_trigger && !decoder_pseudo_trigger  && (!"+language.CreateNodeName(BNode.WrStall,2,"")+" || (~(|cpu_state[3:0]))) || WrMem_validReq_0_i || WrStall_2_reg2 && ~WrStall_2_reg) begin";
+				String wrmem=""; 
+				if(this.ContainsOpInStage(BNode.WrMem, 2))
+					wrmem = " || WrMem_validReq_0_i";	
+				replaceWith = "if (decoder_trigger && !decoder_pseudo_trigger  && (!"+language.CreateNodeName(BNode.WrStall,2,"")+" || (~(|cpu_state[3:0]))) "+wrmem+" || WrStall_2_reg2 && ~WrStall_2_reg) begin";
 				toFile.ReplaceContent(this.ModFile("picorv32"), replaceText, new ToWrite( replaceWith,false,true, ""));
 				
 				replaceText = "|{is_sb_sh_sw, WrMem_validReq_0_i}:";
