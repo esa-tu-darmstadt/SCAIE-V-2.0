@@ -70,6 +70,7 @@ public class Orca extends CoreBackend {
 		IntegrateISAX_WrStall();
 		IntegrateISAX_WrFlush();
 		IntegrateISAX_RdStall();
+		Integrate_RdRS();
 		IntegrateISAX_WrRD();
 		IntegrateISAX_Mem();
 		IntegrateISAX_WrPC();
@@ -149,38 +150,14 @@ public class Orca extends CoreBackend {
 				if(stage==2) {
 					language.UpdateInterface(NodeAssignM(BNode.RdStall, stage), ISAX_frwrd_to_stage1_ready, "", stage, false, false); 
 					String ready = "ISAX_frwrd_to_stage1_ready_2_o <= to_decode_ready or (not from_decode_valid_signal);\n";
-					if(this.ContainsOpInStage(BNode.RdRS1, 2) || this.ContainsOpInStage(BNode.RdRS2, 2)) { // no frwrd path, we need to stall (or add frwrd, for the moment stall)
-						String declare = "signal is_ISAX_2 : std_logic;\n"
-								+ "  signal ISAX_DH:  std_logic;\n"
-								+ "  signal isax_bubble: std_logic;\n";
-						toFile.UpdateContent(this.ModFile("decode"),Parse.declare,new ToWrite(declare,false,true,""));
-						
+					if(this.ContainsOpInStage(BNode.RdRS1, 2) || this.ContainsOpInStage(BNode.RdRS2, 2))  // no frwrd path, we need to stall (or add frwrd, for the moment stall)
 						ready = "ISAX_frwrd_to_stage1_ready_2_o <= ((to_decode_ready and (not (ISAX_DH and is_ISAX_2 and (not isax_bubble))) ) or (not from_decode_valid_signal));\n";
-						
-
-						HashSet<String> allISAXes =  new HashSet<String>();
-						allISAXes.addAll(ISAXes.keySet());
-						String addText = language.CreateText1or0("is_ISAX_2",language.CreateAllEncoding(allISAXes, ISAXes, "from_stage1_instruction"))+ "\n";
-						toFile.UpdateContent(this.ModFile("decode"),Parse.behav,new ToWrite(addText,false,true,""));
-						
-						addText = "ISAX_DH <= '1' when((from_stage1_instruction(19 downto 15) = from_decode_instruction_signal(11 downto 7)) or (from_stage1_instruction(24 downto 20) = from_decode_instruction_signal(11 downto 7))) else '0';\n";
-						toFile.UpdateContent(this.ModFile("decode"),Parse.behav,new ToWrite(addText,false,true,""));
-						
-						addText = "if(to_decode_ready = '1') then \n"
-								+ "    ISAX_bubble <= (not to_stage1_ready) and  to_decode_ready;\n"
-								+ "end if;\n";
-						toFile.UpdateContent(this.ModFile("decode"),Parse.behav,new ToWrite(language.CreateInProc(true, addText),false,true,""));
-						
-						if(!this.ContainsOpInStage(BNode.WrStall, 2)) { // OTHERWISE HANDLED IN WRSTALL
-							addText = "to_stage1_ready <= (to_decode_ready and (not (ISAX_DH and is_ISAX_2 and (not isax_bubble))) ) or (not from_decode_valid_signal);\n";
-							toFile.ReplaceContent(this.ModFile("decode"),"to_stage1_ready <=", new ToWrite(addText, true, false , "PIPELINE_STAGES = 2") );
-						}
-					}
 					toFile.UpdateContent(this.ModFile("decode"),Parse.behav,new ToWrite(ready,false,true,""));
 					
 				}
 			}
 		}
+		
 	}
 	
 
@@ -275,7 +252,7 @@ public class Orca extends CoreBackend {
 				String addText = "to_stage1_ready <= (not "+language.CreateNodeName(BNode.WrStall, 2 ,"")+") and ((to_decode_ready and (not (ISAX_DH and is_ISAX_2 and (not isax_bubble))) ) or (not from_decode_valid_signal));\n";
 				toFile.ReplaceContent(this.ModFile("decode"),"to_stage1_ready <=", new ToWrite(addText, true, false , "PIPELINE_STAGES = 2") );
 			} else {
-				String addText = "to_stage1_ready <= (not "+language.CreateNodeName(BNode.WrStall, 2 ,"")+") and ((to_decode_ready and (not (ISAX_DH and is_ISAX_2 and (not isax_bubble))) ) or (not from_decode_valid_signal));\n";
+				String addText = "to_stage1_ready <= (not "+language.CreateNodeName(BNode.WrStall, 2 ,"")+") and (to_decode_ready or (not from_decode_valid_signal));\n";
 				toFile.ReplaceContent(this.ModFile("decode"),"to_stage1_ready <=", new ToWrite(addText, true, false , "PIPELINE_STAGES = 2") );
 			}
 			
@@ -283,7 +260,7 @@ public class Orca extends CoreBackend {
 		
 		if(this.ContainsOpInStage(BNode.WrStall, 3)) {
 			toFile.ReplaceContent(this.ModFile("execute"), "to_lsu_valid     <= lsu_select and to_execute_valid",new ToWrite("to_lsu_valid     <= lsu_select and to_execute_valid and from_writeback_ready and not WrStall_3_i;\n",false,true,"", true));
-			toFile.ReplaceContent(this.ModFile(NodeAssignM(BNode.WrStall, 3)), "((not vcp_select) or vcp_ready)))",new ToWrite("((not vcp_select) or vcp_ready))));\n",false,true,"", true));
+			toFile.ReplaceContent(this.ModFile(NodeAssignM(BNode.WrStall, 3)), "       ((not vcp_select) or vcp_ready)))",new ToWrite("((not vcp_select) or vcp_ready))));\n",false,true,"", true));
 			toFile.ReplaceContent(this.ModFile(NodeAssignM(BNode.WrStall, 3)), "from_execute_ready <=",new ToWrite(" from_execute_ready <= (not WrStall_3_i) and ((not to_execute_valid) or (from_writeback_ready and",false,true,"", true));
 			
 		}
@@ -293,6 +270,32 @@ public class Orca extends CoreBackend {
 			toFile.ReplaceContent(this.ModFile(NodeAssignM(BNode.WrStall, 4)), "to_rf_valid <= to_rf_select_writeable", new ToWrite("to_rf_valid <= (not "+language.CreateNodeName(BNode.WrStall, 4, "")+") and to_rf_select_writeable and (from_syscall_valid or", false,true,"", true));
 		}
 		
+	}
+	
+	private void Integrate_RdRS() {
+		if(this.ContainsOpInStage(BNode.RdRS1, 2) || this.ContainsOpInStage(BNode.RdRS2, 2)) { // no frwrd path, we need to stall (or add frwrd, for the moment stall)
+			String declare = "signal is_ISAX_2 : std_logic;\n"
+					+ "  signal ISAX_DH:  std_logic;\n"
+					+ "  signal isax_bubble: std_logic;\n";
+			toFile.UpdateContent(this.ModFile("decode"),Parse.declare,new ToWrite(declare,false,true,""));
+			HashSet<String> allISAXes =  new HashSet<String>();
+			allISAXes.addAll(ISAXes.keySet());
+			String addText = language.CreateText1or0("is_ISAX_2",language.CreateAllEncoding(allISAXes, ISAXes, "from_stage1_instruction"))+ "\n";
+			toFile.UpdateContent(this.ModFile("decode"),Parse.behav,new ToWrite(addText,false,true,""));
+			
+			addText = "ISAX_DH <= '1' when((from_stage1_instruction(19 downto 15) = from_decode_instruction_signal(11 downto 7)) or (from_stage1_instruction(24 downto 20) = from_decode_instruction_signal(11 downto 7))) else '0';\n";
+			toFile.UpdateContent(this.ModFile("decode"),Parse.behav,new ToWrite(addText,false,true,""));
+			
+			addText = "if(to_decode_ready = '1') then \n"
+					+ "    ISAX_bubble <= (not to_stage1_ready) and  to_decode_ready;\n"
+					+ "end if;\n";
+			toFile.UpdateContent(this.ModFile("decode"),Parse.behav,new ToWrite(language.CreateInProc(true, addText),false,true,""));
+			
+			if(!this.ContainsOpInStage(BNode.WrStall, 2)) { // OTHERWISE HANDLED IN WRSTALL
+				addText = "to_stage1_ready <= (to_decode_ready and (not (ISAX_DH and is_ISAX_2 and (not isax_bubble))) ) or (not from_decode_valid_signal);\n";
+				toFile.ReplaceContent(this.ModFile("decode"),"to_stage1_ready <=", new ToWrite(addText, true, false , "PIPELINE_STAGES = 2") );
+			}
+		}
 	}
 	
 	private void IntegrateISAX_WrRD(){
