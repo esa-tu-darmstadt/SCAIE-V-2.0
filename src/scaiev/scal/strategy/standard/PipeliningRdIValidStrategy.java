@@ -23,6 +23,7 @@ import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
+import scaiev.scal.NodeRegistry;
 import scaiev.scal.NodeRegistryRO;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
@@ -52,7 +53,7 @@ public class PipeliningRdIValidStrategy extends MultiNodeStrategy {
    * @param language The (Verilog) language object
    * @param bNodes The BNode object for the node instantiation
    * @param core The core node description
-   * @param minPipeFront The minimum stages to instantiate an RdIValid pipeline for
+   * @param minPipelineFront The minimum stages to instantiate an RdIValid pipeline for
    * @param allISAXes The ISAX descriptions
    * @param stage_getRdIValidDesc A stage mapping providing additional conditional expressions to RdIValid per ISAX
    */
@@ -75,7 +76,8 @@ public class PipeliningRdIValidStrategy extends MultiNodeStrategy {
                (key.getStage().getKind() == StageKind.Core || key.getStage().getKind() == StageKind.Decoupled),
         key
         -> false, // always try pipelining first
-        strategyBuilders.buildRdIValidStrategy(language, bNodes, core, allISAXes, stage_getRdIValidDesc));
+        strategyBuilders.buildRdIValidStrategy(language, bNodes, core, allISAXes, stage_getRdIValidDesc),
+        false);
   }
 
   // Keys for which the additional builder for RdIValid has been instantiated, but not necessarily activated.
@@ -88,7 +90,7 @@ public class PipeliningRdIValidStrategy extends MultiNodeStrategy {
       markerPurpose = marker_ReevalPipeliningRdIValid;
     }
 
-    String baseCond = "MISSING_cond";
+    String baseCond = NodeRegistry.MISSING_PREFIX+"cond";
     /** Sets the base condition replacing the instruction decode logic. */
     void setBaseCond(String baseCond) { this.baseCond = baseCond; }
 

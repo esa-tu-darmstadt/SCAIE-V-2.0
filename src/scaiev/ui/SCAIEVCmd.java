@@ -32,6 +32,7 @@ import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVInstr.InstrTag;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
+import scaiev.frontend.Scheduled.ScheduledNodeTag;
 import scaiev.ui.SCAIEVConfig;
 
 public class SCAIEVCmd {
@@ -109,7 +110,7 @@ public class SCAIEVCmd {
                           .argName("amount")
                           .hasArg()
                           .required(false)
-                          .desc("Amount of internally-implemented contexts")
+                          .desc("Amount of internally-implemented contexts for ISAX registers")
                           .build());
     options.addOption(Option.builder("decoupled_without_DH")
                           .required(false)
@@ -119,18 +120,52 @@ public class SCAIEVCmd {
                           .required(false)
                           .desc("Do not buffer decoupled instruction results in FIFOs and drop them instead during collisions")
                           .build());
+    options.addOption(Option.builder("decoupled_without_retire_handling")
+                          .required(false)
+                          .desc("Do not delay decoupled operations until full instruction retire (only affects cores with out of order completion)")
+                          .build());
     options.addOption(Option.builder("spawn_input_fifo_depth")
                           .required(false)
-                          .argName("depth")
+                          .argName("infifo_depth")
                           .hasArg()
-                          .desc("The depth of the FIFO for decoupled instruction results (disabled by -decoupled_without_input_fifo true)")
+                          .desc("The maximum depth of the FIFO for decoupled instruction results (may be larger due to decoupled_parallel_max)"
+                                +"(disabled by -decoupled_without_input_fifo true)")
                           .build());
     options.addOption(Option.builder("semicoupled_fifo_depth")
                           .required(false)
-                          .argName("depth")
+                          .argName("orderfifo_depth")
                           .hasArg()
                           .desc("The depth of the FIFOs tracking each semi-coupled instruction")
                           .build());
+    options.addOption(Option.builder("decoupled_parallel_max")
+                          .required(false)
+                          .argName("decparallel")
+                          .hasArg()
+                          .desc("The maximum supported count of in-flight instr per decoupled ISAX; for non-dynamic ISAXes, limited by latency")
+                          .build());
+    options.addOption(Option.builder("decoupled_disable_disaxkill")
+                           .required(false)
+                           .argName("decnokill")
+                           .hasArg()
+                           .desc("Disable conditional generation of the disaxkill instruction")
+                           .build());
+    options.addOption(Option.builder("decoupled_disable_disaxfence")
+                           .required(false)
+                           .argName("decnofence")
+                           .hasArg()
+                           .desc("Disable conditional generation of the disaxfence instruction")
+                           .build());
+    if (coreDatab.GetCoreNames().contains("CVA5")) {
+      options.addOption(Option.builder("cva5_wrrdspawn_injectmode")
+                            .required(false)
+                            .desc("CVA5-specific: Use injection into the Decode stage for decoupled writebacks")
+                            .build());
+      options.addOption(Option.builder("cva5_fetchdecodepipe_wideid")
+                            .required(false)
+                            .desc("CVA5-specific: Always use MAX_IDS-deep buffers for fetch-decode pipelining")
+                            .build());
+    }
+    
 
     //////////   collect options   //////////
     var cfg = new SCAIEVConfig();
@@ -161,6 +196,21 @@ public class SCAIEVCmd {
       if (line.hasOption("decoupled_without_input_fifo")) {
         cfg.decoupled_with_input_fifo = false;
       }
+      if (line.hasOption("decoupled_without_retire_handling")) {
+        cfg.decoupled_retire_hazard_handling = false;
+      }
+      if (line.hasOption("cva5_wrrdspawn_injectmode")) {
+        cfg.cva5_wrrdspawn_injectmode = true;
+      }
+      if (line.hasOption("cva5_fetchdecodepipe_wideid")) {
+        cfg.cva5_fetchdecodepipe_wideid = true;
+      }
+      if (line.hasOption("decoupled_disable_disaxkill")) {
+        cfg.maygenerate_disaxkill = false;
+      }
+      if (line.hasOption("decoupled_disable_disaxfence")) {
+        cfg.maygenerate_disaxfence = false;
+      }
 
       if (line.hasOption("spawn_input_fifo_depth")) {
         cfg.spawn_input_fifo_depth = parseIntArgOrThrow(line.getOptionValue("spawn_input_fifo_depth"), "spawn_input_fifo_depth");
@@ -173,6 +223,12 @@ public class SCAIEVCmd {
         cfg.semicoupled_fifo_depth = parseIntArgOrThrow(line.getOptionValue("semicoupled_fifo_depth"), "semicoupled_fifo_depth");
         if (cfg.semicoupled_fifo_depth <= 0) {
           throw new ParseException("semicoupled_fifo_depth must not be below 1");
+        }
+      }
+      if (line.hasOption("decoupled_retire_counter_max")) {
+        cfg.decoupled_parallel_max = parseIntArgOrThrow(line.getOptionValue("decoupled_parallel_max"), "decoupled_parallel_max");
+        if (cfg.decoupled_parallel_max <= 0) {
+          throw new ParseException("decoupled_parallel_max must not be below 1");
         }
       }
 
@@ -355,6 +411,7 @@ public class SCAIEVCmd {
               boolean checkIsEarliestMarker = false;
               boolean doNotAddAsNode = false;
               HashSet<AdjacentNode> adjSignals = new HashSet<AdjacentNode>();
+              List<ScheduledNodeTag> schedTags = new ArrayList<>();
               for (Object nodeSetting : readNode.keySet()) {
                 if (nodeSetting.toString().equals("interface")) {
                   String newName = (String)readNode.get(nodeSetting);
@@ -435,15 +492,29 @@ public class SCAIEVCmd {
                   adjSignals.add(AdjacentNode.validReq);
                   // adjSignals.add(AdjacentNode.addr);
                 }
+                if (nodeSetting.toString().equals("tags")) {
+                  for (String tagName : (List<String>)readNode.get(nodeSetting)) {
+                    var tag_opt = ScheduledNodeTag.fromSerialName(tagName);
+                    tag_opt.ifPresent(tag -> schedTags.add(tag));
+                    if (tag_opt.isEmpty())
+                      logger.warn("Ignoring unknown tag {}", tagName);
+                  }
+                }
               }
               if (!checkIsEarliestMarker && !doNotAddAsNode) {
+                SCAIEVNode node = BNode.GetSCAIEVNode(nodeName);
+
+                if (node.name.isEmpty()) {
+                  logger.error("Instruction %s: Could not find node %s. Ignoring node entry.".formatted(instrName, node.name));
+                  continue;
+                }
                 if (FNode.IsUserFNode(FNode.GetSCAIEVNode(nodeName)) && (FNode.GetSCAIEVNode(nodeName).elements > 1)) {
                   // adjSignals.add(AdjacentNode.addr);
                   // adjSignals.add(AdjacentNode.addrReq);
                 }
-                newSCAIEVInstr.PutSchedNode(BNode.GetSCAIEVNode(nodeName), nodeStage, adjSignals);
+                newSCAIEVInstr.PutSchedNode(BNode.GetSCAIEVNode(nodeName), nodeStage, adjSignals, schedTags);
                 for (int i = 1; i < additionalStages.size(); i++) {
-                  newSCAIEVInstr.PutSchedNode(FNode.GetSCAIEVNode(nodeName), i);
+                  newSCAIEVInstr.PutSchedNode(FNode.GetSCAIEVNode(nodeName), i, new HashSet<>(), schedTags);
                 }
                 logger.trace("INFO. Just added for instr. " + instrName + " nodeName " + nodeName + " nodeStage = " + nodeStage +
                              " hasValid " + adjSignals.contains(AdjacentNode.validReq) + " hasAddr " +

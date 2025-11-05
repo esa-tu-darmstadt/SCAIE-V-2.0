@@ -7,6 +7,10 @@ public class CombinedNodeLogicBuilder extends NodeLogicBuilder {
 
   NodeLogicBuilder[] inner;
 
+  /**
+   * @param name the name to give to the combined builder
+   * @param inner the inner builders
+   */
   public CombinedNodeLogicBuilder(String name, NodeLogicBuilder... inner) {
     super(name + (inner.length == 0 ? "(empty)" : ""));
     this.inner = inner;
@@ -17,6 +21,7 @@ public class CombinedNodeLogicBuilder extends NodeLogicBuilder {
    * if only one inner builder is given, directly returns the inner builder.
    * @param name the name of the combined builder; will not be applied if inner.length==1.
    * @param inner the inner builders to combine
+   * @return a NodeLogicBuilder
    */
   public static NodeLogicBuilder of(String name, NodeLogicBuilder... inner) {
     if (inner.length == 1)
@@ -29,6 +34,7 @@ public class CombinedNodeLogicBuilder extends NodeLogicBuilder {
    * if only one inner builder is given, directly returns the inner builder.
    * @param name the name of the combined builder; will not be applied if inner.length==1.
    * @param inner the inner builders to combine
+   * @return a NodeLogicBuilder
    */
   public static NodeLogicBuilder of(String name, Collection<NodeLogicBuilder> inner) {
     if (inner.size() == 1)

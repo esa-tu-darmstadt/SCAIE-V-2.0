@@ -1,6 +1,8 @@
 package scaiev.frontend;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -16,6 +18,7 @@ import org.apache.logging.log4j.Logger;
 import scaiev.backend.BNode;
 import scaiev.coreconstr.Core;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
+import scaiev.frontend.Scheduled.ScheduledNodeTag;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
@@ -35,7 +38,6 @@ public class SCAIEVInstr {
   private boolean dynamic = false;
   private Set<InstrTag> tags = EnumSet.noneOf(InstrTag.class);
   private HashMap<SCAIEVNode, List<Scheduled>> node_scheduled = new HashMap<SCAIEVNode, List<Scheduled>>();
-  private HashMap<Integer, Integer> regs = new HashMap<>(); // 0->read, 1->write, 2-> read and write
   private int zolLoopDepth = 0;
 
   public boolean ignoreEncoding = false;
@@ -167,7 +169,7 @@ public class SCAIEVInstr {
           oldSched.UpdateStartCycle(
               commitFrontPos); // for write nodes, take the WB stage of that node // for read nodes, take the "read regfile" stage
         } else if (node.isInput ||
-                   (node == userBNode.RdMem_spawn)) { // spawn for reading state not supported for the moment. Just for write nodes. Or
+                   (node.equals(userBNode.RdMem_spawn))) { // spawn for reading state not supported for the moment. Just for write nodes. Or
                                                       // spawn as instr without decoding,which is actually mapped on read stage
           // Memory spawn should have interf to core by default. It won't have to ISAX, as it's defined like this within BNode prop
           //					for(SCAIEVNode adjNode : userBNode.GetAdjSCAIEVNodes(node))
@@ -196,14 +198,7 @@ public class SCAIEVInstr {
     }
   }
 
-  public void AddAdjacentNode(SCAIEVNode node, AdjacentNode adj, int stage) throws FrontendNodeException {
-    Scheduled oldSched = GetCheckUniqueSchedWith(node, snode -> snode.GetStartCycle() == stage);
-    oldSched.AddAdjSig(adj);
-    node_scheduled.remove(node);
-    PutSchedNode(node, oldSched);
-  }
-
-  public void PutSchedNode(SCAIEVNode node, Scheduled newShedNode) {
+  public Scheduled PutSchedNode(SCAIEVNode node, Scheduled newShedNode) {
     List<Scheduled> lst = node_scheduled.get(node);
     if (lst == null) {
       lst = new ArrayList<Scheduled>();
@@ -211,64 +206,29 @@ public class SCAIEVInstr {
     }
 
     lst.add(newShedNode);
+    return newShedNode;
   }
 
-  public void PutSchedNode(SCAIEVNode node, int startCycle) {
+  public Scheduled PutSchedNode(SCAIEVNode node, int startCycle) {
     Scheduled new_scheduled = new Scheduled(startCycle, new HashSet<AdjacentNode>(), new HashMap<AdjacentNode, Integer>());
-    PutSchedNode(node, new_scheduled);
+    return PutSchedNode(node, new_scheduled);
   }
 
-  public void PutSchedNode(SCAIEVNode node, int startCycle, AdjacentNode adjSignal) {
-    HashSet<AdjacentNode> adjSignals = new HashSet<AdjacentNode>();
-    adjSignals.add(adjSignal);
+  public Scheduled PutSchedNode(SCAIEVNode node, int startCycle, AdjacentNode... adjSignals) {
+    HashSet<AdjacentNode> adjSignalsSet = new HashSet<AdjacentNode>();
+    adjSignalsSet.addAll(Arrays.asList(adjSignals));
+    Scheduled new_scheduled = new Scheduled(startCycle, adjSignalsSet, new HashMap<AdjacentNode, Integer>());
+    return PutSchedNode(node, new_scheduled);
+  }
+
+  public Scheduled PutSchedNode(SCAIEVNode node, int startCycle, HashSet<AdjacentNode> adjSignals, Collection<ScheduledNodeTag> tags) {
     Scheduled new_scheduled = new Scheduled(startCycle, adjSignals, new HashMap<AdjacentNode, Integer>());
-    PutSchedNode(node, new_scheduled);
+    tags.forEach(tag->new_scheduled.AddTag(tag));
+    return PutSchedNode(node, new_scheduled);
   }
-
-  public void PutSchedNode(SCAIEVNode node, int startCycle, AdjacentNode adjSignal1, AdjacentNode adjSignal2) {
-    HashSet<AdjacentNode> adjSignals = new HashSet<AdjacentNode>();
-    adjSignals.add(adjSignal1);
-    adjSignals.add(adjSignal2);
+  public Scheduled PutSchedNode(SCAIEVNode node, int startCycle, HashSet<AdjacentNode> adjSignals) {
     Scheduled new_scheduled = new Scheduled(startCycle, adjSignals, new HashMap<AdjacentNode, Integer>());
-    PutSchedNode(node, new_scheduled);
-  }
-
-  public void PutSchedNode(SCAIEVNode node, int startCycle, boolean hasValid, boolean hasAddr) {
-    HashSet<AdjacentNode> adjSignals = new HashSet<AdjacentNode>();
-    if (hasValid)
-      adjSignals.add(AdjacentNode.validReq);
-    if (hasAddr)
-      adjSignals.add(AdjacentNode.addr);
-    Scheduled new_scheduled = new Scheduled(startCycle, adjSignals, new HashMap<AdjacentNode, Integer>());
-    PutSchedNode(node, new_scheduled);
-  }
-
-  public void PutSchedNode(SCAIEVNode node, int startCycle, HashSet<AdjacentNode> adjSignals) {
-    Scheduled new_scheduled = new Scheduled(startCycle, adjSignals, new HashMap<AdjacentNode, Integer>());
-    PutSchedNode(node, new_scheduled);
-  }
-
-  public void PutSchedNode(SCAIEVNode node, int startCycle, AdjacentNode adjSignal, AdjacentNode constAdjSignal,
-                           int constValue) { // for CSR
-    HashSet<AdjacentNode> adjSignals = new HashSet<AdjacentNode>();
-    adjSignals.add(adjSignal);
-    HashMap<AdjacentNode, Integer> constSig = new HashMap<AdjacentNode, Integer>();
-    constSig.put(constAdjSignal, constValue);
-    Scheduled new_scheduled = new Scheduled(startCycle, adjSignals, constSig);
-    PutSchedNode(node, new_scheduled);
-  }
-
-  public void PutSchedNode(SCAIEVNode node, int startCycle, AdjacentNode constAdjSignal, int constValue) { // for CSR
-    HashMap<AdjacentNode, Integer> constSig = new HashMap<AdjacentNode, Integer>();
-    constSig.put(constAdjSignal, constValue);
-    Scheduled new_scheduled = new Scheduled(startCycle, new HashSet<AdjacentNode>(), constSig);
-    PutSchedNode(node, new_scheduled);
-  }
-
-  public void PutSchedNode(SCAIEVNode node, int startCycle, HashSet<AdjacentNode> adjSignals,
-                           HashMap<AdjacentNode, Integer> constAdj) { // for CSR
-    Scheduled new_scheduled = new Scheduled(startCycle, adjSignals, constAdj);
-    PutSchedNode(node, new_scheduled);
+    return PutSchedNode(node, new_scheduled);
   }
 
   public void SetAsDecoupled(boolean decoupled) { this.decoupled = decoupled; }
@@ -343,8 +303,6 @@ public class SCAIEVInstr {
   public Set<InstrTag> getTags() { return Collections.unmodifiableSet(tags); }
 
   public String GetInstrType() { return instr_type; }
-
-  public HashMap<Integer, Integer> getRegs() { return regs; }
 
   public int getLoopDepth() { return zolLoopDepth; }
 

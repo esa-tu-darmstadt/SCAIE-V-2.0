@@ -71,6 +71,8 @@ public class Orca extends CoreBackend {
 
     int stage_execute = core.GetNodes().get(BNode.RdRS1).GetEarliest().asInt() + 1;
     core.PutNode(BNode.RdInStageValid, new CoreNode(0, 0, stage_execute, stage_execute + 1, BNode.RdInStageValid.name));
+
+    scalAPI.SetHasAdjSpawnAllowed(BNode.WrRD_spawn_allowed);
   }
 
   @Override
@@ -104,7 +106,7 @@ public class Orca extends CoreBackend {
   }
 
   private void IntegrateISAX_IOs(String topModule) { language.GenerateAllInterfaces(topModule, op_stage_instr, ISAXes, orca_core, null); }
-  
+
   private static class LocalSignalLocation {
     String module;
     String signalName;
@@ -128,9 +130,9 @@ public class Orca extends CoreBackend {
       return Objects.equals(module, other.module) && Objects.equals(signalName, other.signalName);
     }
   }
-  
+
   private HashSet<LocalSignalLocation> localSignals = new HashSet<>();
-  
+
   //For WrFlush, WrStall
   /**
    * Create a module-local declaration for WrFlush or WrStall in the given stage,
@@ -152,7 +154,6 @@ public class Orca extends CoreBackend {
         : "'0'";
     toFile.UpdateContent(this.ModFile(localWrSignal.module), Parse.behav,
                          new ToWrite(localWrSignal.signalName + " <= " + assignVal + ";\n", false, true, ""));
-    
   }
 
   private void IntegrateISAX_RdStall() {
@@ -293,19 +294,19 @@ public class Orca extends CoreBackend {
       //String addtext_ready = "from_decode_ready <= " + noStallCond + " and (to_stage1_ready or (not from_stage1_valid) );";
       //toFile.ReplaceContent(this.ModFile("decode"), "from_decode_ready <=", new ToWrite(addtext_ready, false, true, "", true));
       toFile.UpdateContent(this.ModFile("decode"), Parse.declare, new ToWrite("signal from_decode_ready_prescaiev: std_logic;\n", false, true, ""));
-      
+
       String replace_orig_ready = "from_decode_ready_prescaiev <= to_stage1_ready or (not from_stage1_valid);";
       toFile.ReplaceContent(this.ModFile("decode"), "from_decode_ready <=", new ToWrite(replace_orig_ready, false, true, "", true));
-      
+
       String decode_ready_assign = "from_decode_ready <= from_decode_ready_prescaiev and " + noStallCond + ";";
       toFile.UpdateContent(this.ModFile("decode"), Parse.behav, new ToWrite(decode_ready_assign, false, true, ""));
-      
+
       String grep_stage1_pipe_cond = "if from_decode_ready = '1' then";
       String pretext_stage1_pipe_cond = "from_stage1_valid                  <= '1';";
       String replace_stage1_pipe_cond = "if from_decode_ready_prescaiev = '1' then";
       toFile.ReplaceContent(this.ModFile("decode"), grep_stage1_pipe_cond,
                             new ToWrite(replace_stage1_pipe_cond, true, false, pretext_stage1_pipe_cond, true));
-      
+
       String grep_valid = "from_stage1_valid                                    <= to_decode_valid and (not to_decode_sixty_four_bit_instruction)";
       String addtext_valid = grep_valid + " and " + noStallCond + ";";
       toFile.ReplaceContent(this.ModFile("decode"), grep_valid, new ToWrite(addtext_valid, false, true, "", true));
@@ -348,9 +349,17 @@ public class Orca extends CoreBackend {
           new ToWrite("from_writeback_ready <= (not use_after_produce_stall) and (not writeback_stall_from_lsu) and  (not " +
                           language.CreateNodeName(BNode.WrStall, stages[4], "") + ");\n",
                       false, true, "", true));
+      //allow regfile writes during WrRD_spawn (i.e., delaying WrRD_spawn) for all but branch instructions
       toFile.ReplaceContent(
-          this.ModFile(NodeAssignM(BNode.WrStall, stages[4])), "to_rf_valid <= to_rf_select_writeable",
-          new ToWrite("to_rf_valid <= " + noStallCond + "to_rf_select_writeable and (from_syscall_valid or", false, true, "", true));
+          this.ModFile(NodeAssignM(BNode.WrStall, stages[4])), "from_branch_valid or",
+          new ToWrite("(" + noStallCond + "from_branch_valid) or", true, false, "to_rf_valid <= to_rf_select_writeable", true));
+      //branch_unit: Hold from_branch_valid until to_branch_ready.
+      toFile.ReplaceContent(
+          this.ModFile("branch_unit"), "from_branch_valid <= '0';",
+          new ToWrite("", false, true, "", true));
+      toFile.UpdateContent(
+          this.ModFile("branch_unit"), "if to_branch_ready = '1' then",
+          new ToWrite("from_branch_valid <= '0';", true, false, "from_branch_valid <= '0';", false));
     }
   }
   private void IntegrateISAX_WrRD() {
@@ -501,13 +510,16 @@ public class Orca extends CoreBackend {
       //		end if;
       String textToAdd = "";
       if (readRequired) {
-        textToAdd = "if(" + language.CreateNodeName(BNode.RdMem_validReq, stage, "") +
+        String rdValidReq = language.CreateNodeName(BNode.RdMem_validReq, stage, "");
+        textToAdd = "if(" + rdValidReq +
                     " = '1') then -- ISAX load \n" // CreateValidEncoding generates text to decode instructions in
                                                      // op_stage_instr.get(BNode.RdMem).get(stage)
                     + tab + "lsu_select <= '1';\n"
                     + "end if;\n";
         toFile.UpdateContent(this.ModFile("load_store_unit"), Parse.declare,
                              new ToWrite("signal read_s :std_logic; -- ISAX, signaling a read", false, true, ""));
+        toFile.UpdateContent(this.ModFile("load_store_unit"), Parse.declare,
+                             new ToWrite("signal load_is_isax : std_logic;", false, true, ""));
         toFile.UpdateContent(
             this.ModFile("load_store_unit"), Parse.behav,
             new ToWrite(language.CreateText1or0("read_s", language.CreateNodeName(BNode.RdMem_validReq, stage, "") +
@@ -520,6 +532,11 @@ public class Orca extends CoreBackend {
                               new ToWrite("if read_s = '1' then", false, true, ""));
         toFile.ReplaceContent(this.ModFile("load_store_unit"), "oimm_readnotwrite <= '1' when opcode(5) = LOAD_OP(5)",
                               new ToWrite("oimm_readnotwrite <= '1' when (read_s  = '1') else '0';", false, true, ""));
+
+        toFile.UpdateContent(this.ModFile("load_store_unit"), "load_in_progress <= '1'",
+                              new ToWrite("load_is_isax <= %s;".formatted(rdValidReq), false, true, ""));
+        toFile.ReplaceContent(this.ModFile("load_store_unit"), "from_lsu_valid <= oimm_readdatavalid;",
+                              new ToWrite("from_lsu_valid <= oimm_readdatavalid and (not load_is_isax);", false, true, ""));
       }
       if (writeRequired) {
         textToAdd += "if(" + language.CreateNodeName(BNode.WrMem_validReq, stage, "") + " = '1') then -- ISAX store \n" + tab +
@@ -540,6 +557,23 @@ public class Orca extends CoreBackend {
                            new ToWrite(textToAdd, true, false, "lsu_select <= '1';",
                                        true)); // ToWrite (text to add, requries prereq?, start value for prereq =false if prereq required,
                                                // prepreq text, text has to be added BEFORE grepped line?)
+
+      // Size logic
+      toFile.ReplaceContent(this.ModFile("load_store_unit"), "alias func3  : std_logic_vector(2 downto 0) is instruction(INSTR_FUNC3'range);",
+          new ToWrite("signal func3 : std_logic_vector(2 downto 0);", false, true, ""));
+      String func3_expr = "instruction(INSTR_FUNC3'range)";
+      if (ContainsOpInStage(BNode.WrMem_size, stage)) {
+        func3_expr = "%s when (%s = '1') else %s".formatted(language.CreateNodeName(BNode.WrMem_size, stage, ""),
+                                                            language.CreateNodeName(BNode.WrMem_addr_valid, stage, ""),
+                                                            func3_expr);
+      }
+      if (ContainsOpInStage(BNode.RdMem_size, stage)) {
+        func3_expr = "%s when (%s = '1') else %s".formatted(language.CreateNodeName(BNode.RdMem_size, stage, ""),
+                                                            language.CreateNodeName(BNode.RdMem_addr_valid, stage, ""),
+                                                            func3_expr);
+      }
+      toFile.UpdateContent(this.ModFile("load_store_unit"), Parse.behav,
+          new ToWrite("func3 <= %s;".formatted(func3_expr), false, true, ""));
 
       // Address logic
       String isaxAddr = "";
@@ -611,16 +645,17 @@ public class Orca extends CoreBackend {
         checkOngoingTransf = "isax_spawnRdReq <= 0;\n"
                              + "isax_RdStarted <= 0;\n";
       String setSignals = "lsu_oimm_address      <= " + language.CreateNodeName(BNode.WrMem_spawn_addr, spawnStage, "") + " when (" +
-                          language.CreateNodeName(BNode.WrMem_spawn_validReq, spawnStage, "") + " = '1')  else isax_lsu_oimm_address;\n"
-                          + "lsu_oimm_byteenable    <= \"1111\" when (" +
-                          language.CreateNodeName(BNode.WrMem_spawn_validReq, spawnStage, "") + " = '1') else isax_lsu_oimm_byteenable;\n"
-                          + "lsu_oimm_requestvalid  <= (not lsu_oimm_waitrequest and not isax_RdStarted) when (" +
+                          language.CreateNodeName(BNode.WrMem_spawn_validReq, spawnStage, "") + " = '1')  else isax_lsu_oimm_address;\n";
+      //TODO: Decode WrMem_spawn_size, process lower two bits of address for 1/2 byte accesses
+      setSignals +=       "lsu_oimm_byteenable    <= \"1111\" when (" +
+                          language.CreateNodeName(BNode.WrMem_spawn_validReq, spawnStage, "") + " = '1') else isax_lsu_oimm_byteenable;\n";
+      setSignals +=       "lsu_oimm_requestvalid  <= (not lsu_oimm_waitrequest and not isax_RdStarted) when (" +
                           language.CreateNodeName(BNode.WrMem_spawn_validReq, spawnStage, "") +
-                          " = '1') else isax_lsu_oimm_requestvalid; -- todo possible comb path in slave between valid and wait\n"
-                          + "lsu_oimm_readnotwrite  <= not " + language.CreateNodeName(BNode.WrMem_spawn_write, spawnStage, "") +
+                          " = '1') else isax_lsu_oimm_requestvalid; -- todo possible comb path in slave between valid and wait\n";
+      setSignals +=       "lsu_oimm_readnotwrite  <= not " + language.CreateNodeName(BNode.WrMem_spawn_write, spawnStage, "") +
                           " when (" + language.CreateNodeName(BNode.WrMem_spawn_validReq, spawnStage, "") +
-                          " = '1') else isax_lsu_oimm_readnotwrite;\n"
-                          + "lsu_oimm_writedata     <= " + language.CreateNodeName(BNode.WrMem_spawn, spawnStage, "") + " when (" +
+                          " = '1') else isax_lsu_oimm_readnotwrite;\n";
+      setSignals +=       "lsu_oimm_writedata     <= " + language.CreateNodeName(BNode.WrMem_spawn, spawnStage, "") + " when (" +
                           language.CreateNodeName(BNode.WrMem_spawn_validReq, spawnStage, "") + " = '1') else isax_lsu_oimm_writedata;\n";
       toFile.UpdateContent(this.ModFile("orca_core"), Parse.behav, new ToWrite(setSignals + checkOngoingTransf, false, true, ""));
 
@@ -645,11 +680,11 @@ public class Orca extends CoreBackend {
       if (this.ContainsOpInStage(BNode.WrPC, stage))
         array_PC_clause.put(stagePos, language.CreateNodeName(BNode.WrPC_valid, stage, ""));
     }
-    
+
     if (this.ContainsOpInStage(BNode.WrPC, stages[0])) {
       String addDecl = "signal program_counter_prescaiev : unsigned(REGISTER_SIZE-1 downto 0);\n";
       toFile.UpdateContent(this.ModFile("instruction_fetch"), Parse.declare, new ToWrite(addDecl, false, true, ""));
-      
+
       String[] program_counter_seqassigns = new String[] {
           "program_counter  <= to_pc_correction_data;",
           "program_counter <= predicted_program_counter;",
@@ -659,7 +694,6 @@ public class Orca extends CoreBackend {
         toFile.ReplaceContent(this.ModFile("instruction_fetch"), assign,
                               new ToWrite("program_counter_prescaiev" + assign.substring("program_counter".length()),
                                           false, true, ""));
-        
       }
       String wrpc0_valid_signal = language.CreateNodeName(BNode.WrPC_valid, stages[0], "");
       String wrpc0_signal = language.CreateNodeName(BNode.WrPC, stages[0], "");
@@ -912,9 +946,10 @@ public class Orca extends CoreBackend {
     this.PutNode("std_logic", "", "execute", BNode.WrFlush, stages[4]);
 
     this.PutNode("std_logic_vector", "", "orca_core", BNode.WrRD_spawn, stages[spawnStage]);
-    this.PutNode("std_logic", "'1'", "orca_core", BNode.WrRD_spawn_validResp, stages[spawnStage]);
+    this.PutNode("std_logic", "not execute_to_rf_valid", "orca_core", BNode.WrRD_spawn_validResp, stages[spawnStage]);
     this.PutNode("std_logic", "", "orca_core", BNode.WrRD_spawn_valid, stages[spawnStage]);
     this.PutNode("std_logic_vector", "", "orca_core", BNode.WrRD_spawn_addr, stages[spawnStage]);
+    this.PutNode("std_logic", "not execute_to_rf_valid", "orca_core", BNode.WrRD_spawn_allowed, stages[spawnStage]);
 
     this.PutNode("std_logic_vector", "lsu_oimm_readdata", "orca_core", BNode.RdMem_spawn, stages[spawnStage]);
     this.PutNode("std_logic", "", "orca_core", BNode.RdMem_spawn_validResp, stages[spawnStage]);

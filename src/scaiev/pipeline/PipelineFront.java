@@ -18,7 +18,7 @@ import scaiev.pipeline.PipelineStage.StageTag;
  *   a.isBefore(b) means that at least one stage in the PipelineFront a is ordered before stage b in the PipelineStage graph.
  * <p>
  * In most cases, a PipelineFront should only contain stages of the same stage position ({@link PipelineStage#getStagePos()}).
- *   However, generally, a PipelineFront can consist of several stage positions, such that even a.isBefore(b) && a.isAfter(b) can hold true.
+ *   However, generally, a PipelineFront can consist of several stage positions, such that even a.isBefore(b) &amp;&amp; a.isAfter(b) can hold true.
  * <p>
  * Ordering rules: <p>
  * - Before/After are based around {@link PipelineStage#prev} and {@link PipelineStage#next}

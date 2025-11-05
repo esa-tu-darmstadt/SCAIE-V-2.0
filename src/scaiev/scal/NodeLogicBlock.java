@@ -12,14 +12,15 @@ import java.util.stream.Collectors;
  * Defines logic inside a module that generates a set of SCAIE-V nodes. Output of {@link NodeLogicBuilder#apply(NodeRegistryRO, int)}.
  */
 public class NodeLogicBlock {
-  /** Default {@link #interfPins} key for SCAL<->ISAX pins. */
+  /** Default {@link #interfPins} key for SCAL&lt;-&gt;ISAX pins. */
   public static String InterfToISAXKey = "ISAX";
-  /** Default {@link #interfPins} key for SCAL<->Core pins. */
+  /** Default {@link #interfPins} key for SCAL&lt;-&gt;Core pins. */
   public static String InterfToCoreKey = "Core";
 
+  /** An input/output interface pin declaration */
   public static class InterfacePin {
     /** Interface pin declaration. Must contain a trailing comma if not empty. */
-    public String declaration; // Must contain a trailing comma if not empty
+    public String declaration;
     /**
      * The node, stage and signal name matching the interface pin.
      * Expression type must be ModuleOutput or ModuleInput.
@@ -27,6 +28,10 @@ public class NodeLogicBlock {
      */
     public NodeInstanceDesc nodeDesc;
 
+    /**
+     * @param declaration Interface pin declaration. Must contain a trailing comma if not empty.
+     * @param nodeDesc The node instance for the interface pin (ModuleOutput or ModuleInput).
+     */
     public InterfacePin(String declaration, NodeInstanceDesc nodeDesc) {
       this.declaration = declaration;
       this.nodeDesc = nodeDesc;
@@ -69,6 +74,9 @@ public class NodeLogicBlock {
   /** Set to make {@link NodeLogicBlock#isEmpty()} return false despite an otherwise empty NodeLogicBlock. */
   public boolean treatAsNotEmpty = false;
 
+  /**
+   * @return true iff the logic block should be considered empty
+   */
   public boolean isEmpty() {
     return !treatAsNotEmpty && interfPins.isEmpty() && declarations.isEmpty() && logic.isEmpty() && otherModules.isEmpty() &&
         outputs.isEmpty();
@@ -105,6 +113,7 @@ public class NodeLogicBlock {
     return outputsThis.equals(outputsOther);
   }
 
+  /** constructor */
   public NodeLogicBlock() {}
 
   /**

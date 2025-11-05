@@ -35,8 +35,12 @@ public class InterfaceRequestBuilder extends NodeLogicBuilder {
   public RequestedForSet requestedFor = new RequestedForSet();
 
   /**
-   * Apply the InterfaceRequestBuilder, but with the third parameter specifying if the interface pin is a required or an optional
+   * Apply the InterfaceRequestBuilder, but with the third parameter specifying if the interface pin is required or an optional
    * dependency.
+   * @param registry the registry providing the existing nodes and that collects a list of missing dependencies
+   * @param aux a unique value to tag accumulated nodes with - e.g. for WrStall, WrFlush
+   * @param optional true iff the interface pin is required or an optional dependency
+   * @return an empty NodeLogicBlock
    */
   public NodeLogicBlock applyOptional(NodeRegistryRO registry, int aux, boolean optional) {
     // explicitly request output

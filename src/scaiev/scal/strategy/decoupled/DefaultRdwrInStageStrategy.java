@@ -17,6 +17,7 @@ import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.util.Verilog;
 
@@ -113,14 +114,8 @@ public class DefaultRdwrInStageStrategy extends MultiNodeStrategy {
         // nodeHiddenReg 'clear' condition (semantically before 'set')
         String wrInStageExpr = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.WrInStageID_valid, stage, ""));
         // Also reset nodeHiddenReg on flush.
-        String flushExpr = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, stage, ""));
-        var flushWrNode = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrFlush, stage, ""));
-        if (flushWrNode.isPresent())
-          flushExpr += " || " + flushWrNode.get().getExpression();
-        String stallExpr = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, stage, ""));
-        var stallWrNode = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrStall, stage, ""));
-        if (stallWrNode.isPresent())
-          stallExpr += " || " + stallWrNode.get().getExpression();
+        String flushExpr = SCALUtil.buildCond_StageFlushing(bNodes, registry, stage);
+        String stallExpr = SCALUtil.buildCond_StageStalling(bNodes, registry, stage, false);
 
         ret.outputs.add(new NodeInstanceDesc(NodeInstanceDesc.Key.keyWithPurpose(wrDeqInstrKey, DefaultRdwrInStageInternalPurpose),
                                              instrHiddenReg, ExpressionType.WireName));
@@ -184,12 +179,9 @@ public class DefaultRdwrInStageStrategy extends MultiNodeStrategy {
           ret.declarations += String.format("wire %s;\n", outWire);
           ret.outputs.add(new NodeInstanceDesc(outFallbackNodeKey, outWire, ExpressionType.WireName, requestedFor));
 
-          String stallExpr = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, stage, ""));
-          var stallWrNode = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrStall, stage, ""));
-          if (stallWrNode.isPresent())
-            stallExpr += " || " + stallWrNode.get().getExpression();
+          String nostallExpr = SCALUtil.buildCond_StageNotStalling(bNodes, registry, stage, false);
 
-          ret.logic += String.format("assign %s = !(%s);\n", outWire, stallExpr);
+          ret.logic += String.format("assign %s = %s;\n", outWire, nostallExpr);
           return ret;
         }));
       }
@@ -223,12 +215,9 @@ public class DefaultRdwrInStageStrategy extends MultiNodeStrategy {
           ret.declarations += String.format("wire %s;\n", outWire);
           ret.outputs.add(new NodeInstanceDesc(outNodeKey, outWire, ExpressionType.WireName, requestedFor));
 
-          String stallBasepipeCond = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, nodeKey.getStage(), ""));
-          var wrstallBasepipe_opt = registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrStall, nodeKey.getStage(), ""));
-          if (wrstallBasepipe_opt.isPresent())
-            stallBasepipeCond += " || " + wrstallBasepipe_opt.get().getExpression();
+          String nostallBasepipeCond = SCALUtil.buildCond_StageNotStalling(bNodes, registry, nodeKey.getStage(), false);
 
-          ret.logic += String.format("assign %s = !(%s);\n", outWire, stallBasepipeCond);
+          ret.logic += String.format("assign %s = %s;\n", outWire, nostallBasepipeCond);
           return ret;
         }));
       }

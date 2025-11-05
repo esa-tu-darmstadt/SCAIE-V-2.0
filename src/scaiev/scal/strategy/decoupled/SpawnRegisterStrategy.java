@@ -56,12 +56,11 @@ public class SpawnRegisterStrategy extends SingleNodeStrategy {
         registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, spawnNode, spawnStage, ISAX));
     String mainSigReg = this.language.CreateBasicNodeName(spawnNode, spawnStage, ISAX, false) + "_reg";
 
-    SCAIEVNode parentNode = spawnNode;
-    if (spawnNode.isAdj())
-      parentNode = bNodes.GetSCAIEVNode(spawnNode.nameParentNode);
+    SCAIEVNode parentNode = bNodes.GetNonAdjNode(spawnNode);
 
     SCAIEVNode validNode = bNodes.GetAdjSCAIEVNode(parentNode, AdjacentNode.validReq).get();
-    Optional<SCAIEVNode> validRespNode_opt = bNodes.GetAdjSCAIEVNode(parentNode, AdjacentNode.validResp);
+    Optional<SCAIEVNode> validRespNode_opt = bNodes.GetAdjSCAIEVNode(parentNode, AdjacentNode.validHandshakeResp)
+                                                .or(() -> bNodes.GetAdjSCAIEVNode(parentNode, AdjacentNode.validResp));
     Optional<SCAIEVNode> cancelReqNode_opt = bNodes.GetAdjSCAIEVNode(parentNode, AdjacentNode.cancelReq);
     String validSig =
         registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, validNode, spawnStage, ISAX));

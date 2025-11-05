@@ -23,6 +23,7 @@ import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
 import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.NodeRegistryRO;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.SingleNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
@@ -117,7 +118,8 @@ public class DefaultRerunStrategy extends MultiNodeStrategy {
             nodeKey.getStage(),
             strategyMapKey
             -> strategyBuilders.buildNodeRegPipelineStrategy(language, bNodes, new PipelineFront(nodeKey.getStage()), false, false, false,
-                                                             _nodeKey -> true, _nodeKey -> false, MultiNodeStrategy.noneStrategy));
+                                                             _nodeKey -> true, _nodeKey -> false, MultiNodeStrategy.noneStrategy,
+                                                             false));
         pipelineStrategy.implement(out, new ListRemoveView<>(List.of(nodeKey)), false);
         return true;
       }
@@ -193,10 +195,7 @@ public class DefaultRerunStrategy extends MultiNodeStrategy {
             registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, nodeKey.getStage(), "")).getExpressionWithParens();
         Optional<String> wrFlushExpr_opt = registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrFlush, nodeKey.getStage(), ""))
                                                .map(desc -> desc.getExpressionWithParens());
-        String rdStallExpr =
-            registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdStall, nodeKey.getStage(), "")).getExpressionWithParens();
-        Optional<String> wrStallExpr_opt = registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrStall, nodeKey.getStage(), ""))
-                                               .map(desc -> desc.getExpressionWithParens());
+        String nostallExpr = SCALUtil.buildCond_StageNotStalling(bNodes, registry, nodeKey.getStage(), false);
         String rdInStageValidExpr =
             registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdInStageValid, nodeKey.getStage(), ""));
 
@@ -248,8 +247,7 @@ public class DefaultRerunStrategy extends MultiNodeStrategy {
         ret.logic += tab + tab + String.format("if (%s%s)\n", rdFlushExpr, wrFlushExpr_opt.map(expr -> " || " + expr).orElse(""));
         ret.logic += tab + tab + tab + String.format("%s <= 0;\n", rerunRegName);
         ret.logic += tab + "end\n";
-        ret.logic += tab + String.format("else if (!%s%s) begin\n", rdStallExpr,
-                                         wrStallExpr_opt.map(expr -> " && !" + expr).orElse("")); //! rerunRegName
+        ret.logic += tab + String.format("else if (%s) begin\n", nostallExpr); //! rerunRegName
         // Set from WrRerunNext
         ret.logic += tab + tab + String.format("%s <= %s;\n", rerunRegName, rerunNextCond); //! rerunRegName
         ret.logic += tab + "end\n";

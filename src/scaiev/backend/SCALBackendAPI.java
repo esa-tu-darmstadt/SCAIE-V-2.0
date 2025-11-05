@@ -9,6 +9,8 @@ import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.strategy.StrategyBuilders;
+import scaiev.ui.SCAIEVCmd;
+import scaiev.ui.SCAIEVConfig;
 import scaiev.util.GenerateText;
 
 /**
@@ -51,6 +53,11 @@ public interface SCALBackendAPI {
       return true;
     }
   }
+
+  /**
+   * Returns the configuration object that SCAL was set up with.
+   */
+  SCAIEVConfig getSVConfig();
 
   /**
    * Register a valid condition (with a stage and an optional ISAX name) to apply for all matching RdIValid outputs.

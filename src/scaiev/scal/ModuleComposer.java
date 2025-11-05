@@ -43,6 +43,7 @@ public class ModuleComposer {
      */
     int i;
     int aux;
+    /** The builder */
     public NodeLogicBuilder builder;
     /** The optional NodeLogicBlock from the builder. Should only be empty if the builder has not been called yet. */
     public Optional<NodeLogicBlock> block = Optional.empty(); // built by builder
@@ -85,7 +86,16 @@ public class ModuleComposer {
   private boolean initial_enableBuildLog = false;
   private boolean late_enableBuildLog = true;
 
+  /**
+   * Default constructor, equivalent to {@link #ModuleComposer(boolean, boolean)}
+   *   with initial_enableBuildLog=false, late_enableBuildLog=true
+   */
   public ModuleComposer() {}
+  /**
+   * Constructor with logging parameters (relevant for {@link #writeLogAsDot(Writer)}).
+   * @param initial_enableBuildLog if the build log should be collected from the first iteration
+   * @param late_enableBuildLog if the build log should be collected only after many iterations (e.g., 100)
+   */
   public ModuleComposer(boolean initial_enableBuildLog, boolean late_enableBuildLog) {
     this();
     this.initial_enableBuildLog = initial_enableBuildLog;
@@ -128,12 +138,10 @@ public class ModuleComposer {
    *   or that the builders always return the same set of nodes (regardless of missing dependencies).
    * @param rootStrategy Strategy that handles all dependencies that no builder exists for already
    * @param initialNodeRegistry A node registry containing statically provided nodes (e.g. predefined module inputs)
-   * @param initialLogicBuilders Initial logic builders (e.g. simple 'assign <module_output_pin> = <node dependency>;' logic blocks)
-   * @param trim If set to true, all logic blocks that are not part of the (final) inferred dependency graph from initialLogicBuilders will
-   *     be removed
-   *             (however, this also means that the strategy cannot add new root logic builders that nothing depends on internally,
-   *             e.g. for a new distinct module output port)
-   *
+   * @param initialLogicBuilders Initial logic builders (e.g. simple 'assign &lt;module_output_pin&gt; = &lt;node dependency&gt;;' logic blocks)
+   * @param trim If set to true, all logic blocks that are not part of the (final) inferred dependency graph from SCAL module outputs
+   *             will be removed before returning.
+   * @return the generated logic and dependencies as a list of {@link NodeBuilderEntry}
    */
   public ArrayList<NodeBuilderEntry> Generate(MultiNodeStrategy rootStrategy, NodeRegistry initialNodeRegistry,
                                               ArrayList<NodeLogicBuilder> initialLogicBuilders, boolean trim) {
@@ -575,9 +583,16 @@ public class ModuleComposer {
     return dependencySortedLogic;
   }
 
-  /** Returns if there is any data to export for a build log. */
+  /**
+   * Returns if there is any data to export for a build log.
+   * @return if there is any data to export
+   */
   public boolean hasLog() { return !buildLog.isEmpty(); }
-  /** Writes the DOT graph for the build log. */
+  /**
+   * Writes the DOT graph for the build log.
+   * @param writer the writer to output the dot file contents to
+   * @throws java.io.IOException any IOExceptions thrown in the writer
+   */
   public void writeLogAsDot(Writer writer) throws IOException {
     writer.write("digraph composition_updatelog {\n  compound=true;\n");
     String suffix = "";

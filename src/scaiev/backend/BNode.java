@@ -7,7 +7,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -16,10 +16,8 @@ import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
 import scaiev.frontend.SCAIEVNode.NodeTypeTag;
 
-/***********************
- *
- * Backend supported SCAIEV nodes. 'isInput' in nodes is from the core's point of view.
- *
+/**
+ * Backend-supported SCAIEV nodes. 'isInput' in nodes is from the core's point of view.
  */
 public class BNode extends FNode {
   // logging
@@ -59,6 +57,9 @@ public class BNode extends FNode {
       tags.add(NodeTypeTag.defaultNotprovidedByCore);
     }
   };
+  public SCAIEVNode RdMem_instrID = new SCAIEVNode(RdMem, AdjacentNode.instrID, 1, true, false) {
+    { validBy = AdjacentNode.validReq; }
+  };
   public SCAIEVNode RdMem_defaultAddr = new SCAIEVNode(RdMem, AdjacentNode.defaultAddr, datawidth, false, false) {
     {
       noInterfToISAX = true;
@@ -68,14 +69,17 @@ public class BNode extends FNode {
   public SCAIEVNode RdMem_addr = new SCAIEVNode(RdMem, AdjacentNode.addr, datawidth, true, false) {
     { validBy = AdjacentNode.addrReq; }
   };
-
+  /** Memory size funct3 value. */
   public SCAIEVNode RdMem_size = new SCAIEVNode(RdMem, AdjacentNode.size, 3, true, false) {
     {
       validBy = AdjacentNode.addrReq;
       mustToCore = true;
     }
-  }; // funct3 value
+  };
   public SCAIEVNode RdMem_addr_valid = new SCAIEVNode(RdMem, AdjacentNode.addrReq, 1, true, false);
+  public SCAIEVNode WrMem_instrID = new SCAIEVNode(WrMem, AdjacentNode.instrID, 1, true, false) {
+    { validBy = AdjacentNode.validReq; }
+  };
   public SCAIEVNode WrMem_defaultAddr = new SCAIEVNode(WrMem, AdjacentNode.defaultAddr, datawidth, false, false) {
     {
       noInterfToISAX = true;
@@ -85,12 +89,13 @@ public class BNode extends FNode {
   public SCAIEVNode WrMem_addr = new SCAIEVNode(WrMem, AdjacentNode.addr, datawidth, true, false) {
     { validBy = AdjacentNode.addrReq; }
   };
+  /** Memory size funct3 value. */
   public SCAIEVNode WrMem_size = new SCAIEVNode(WrMem, AdjacentNode.size, 3, true, false) {
     {
       validBy = AdjacentNode.addrReq;
       mustToCore = true;
     }
-  }; // funct3 value
+  };
   public SCAIEVNode WrMem_addr_valid = new SCAIEVNode(WrMem, AdjacentNode.addrReq, 1, true, false);
   // public static SCAIEVNode RdMem_validResp   = new SCAIEVNode(RdMem      , AdjacentNode.validResp, 1 , false, false) ; // valdir read
   // data
@@ -116,6 +121,7 @@ public class BNode extends FNode {
     }
   };
   public SCAIEVNode WrRD_spawn_valid = new SCAIEVNode(WrRD_spawn, AdjacentNode.validReq, 1, true, true);
+  public SCAIEVNode WrRD_spawn_cancel = new SCAIEVNode(WrRD_spawn, AdjacentNode.cancelReq, 1, true, true);
   public SCAIEVNode WrRD_spawn_validResp = new SCAIEVNode(WrRD_spawn, AdjacentNode.validResp, 1, false, true) {
     { oneInterfToISAX = false; }
   };
@@ -142,6 +148,9 @@ public class BNode extends FNode {
   public SCAIEVNode RdMem_spawn_validReq = new SCAIEVNode(RdMem_spawn, AdjacentNode.validReq, 1, true, true);
   public SCAIEVNode RdMem_spawn_validResp = new SCAIEVNode(RdMem_spawn, AdjacentNode.validResp, 1, false, true) {
     { oneInterfToISAX = false; }
+  };
+  public SCAIEVNode RdMem_spawn_validHandshakeResp = new SCAIEVNode(RdMem_spawn, AdjacentNode.validHandshakeResp, 1, false, true) {
+    { oneInterfToISAX = false; tags.add(NodeTypeTag.defaultNotprovidedByCore); }
   };
   public SCAIEVNode RdMem_spawn_addr = new SCAIEVNode(RdMem_spawn, AdjacentNode.addr, datawidth, true, true) {
     { validBy = AdjacentNode.validReq; }
@@ -199,6 +208,9 @@ public class BNode extends FNode {
       mustToCore = true;
     }
   };
+  public SCAIEVNode WrMem_spawn_validHandshakeResp = new SCAIEVNode(WrMem_spawn, AdjacentNode.validHandshakeResp, 1, false, true) {
+    { oneInterfToISAX = false; tags.add(NodeTypeTag.defaultNotprovidedByCore); }
+  };
   public SCAIEVNode WrMem_spawn_write = new SCAIEVNode(WrMem_spawn, AdjacentNode.isWrite, 1, true, true) {
     {
       noInterfToISAX = true;
@@ -207,12 +219,50 @@ public class BNode extends FNode {
   };
   public SCAIEVNode WrMem_spawn_allowed = new SCAIEVNode(WrMem_spawn, AdjacentNode.spawnAllowed, 1, false, true);
 
+  /**
+   * Decoding result, provides the GPR operand register numbers of the current instruction (rs1,rs2,... fields).
+   * Must work with ISAX instructions.
+   * The signal is a flattened array of rs1,rs2,&lt;possibly rs3 or rd-as-operand&gt;.
+   *     rs1 is at the least-significant bit position.
+   * The size field of the node refers to the overall size of the bit vector, size-per-element * elements.
+   * The elements field of the node refers to the number of operand registers.
+   * 
+   * The lower 5 bits of each element are the register number.
+   * If the size per element is 6, the bit position 5 is used as the condition for 'instruction has an rsN field';
+   *   some core implementations may also set this bit to 1'b0 if the rsN field is set to zero.
+   * <br/>
+   * Provided by SCAL in decode stage (RV32I), but the core should output its own version by adding the node to Core.
+   */
+  public SCAIEVNode RdInstr_RS = new SCAIEVNode("RdInstr_RS", 12, false) {
+    { tags.add(NodeTypeTag.staticReadResult); elements = 2; }
+  };
+  /**
+   * Decoding result, provides the GPR destination register number of the current instruction (rd field).
+   * Must work with ISAX instructions, is allowed not to work with decoupled writeback ISAXes.
+   * The lower 5 bits are the rd register number.
+   * If the node's size is 6, the bit position 5 is used as the condition for 'instruction has an rd field';
+   *   some core implementations may also set this bit to 1'b0 if the rd field is set to zero.
+   * <br/>
+   * Provided by SCAL in decode stage (RV32I), but the core should output its own version by adding the node to Core.
+   */
+  public SCAIEVNode RdInstr_RD = new SCAIEVNode("RdInstr_RD", 6, false) {
+    { tags.add(NodeTypeTag.staticReadResult); elements = 1; }
+  };
+
   // public static SCAIEVNode WrJump_spawn_valid  = new SCAIEVNode(WrJump		, AdjacentNode.validReq	, 1 , true, true)
   // {{this.oneInterfToISAX = true; this.allowMultipleSpawn = false;}};
 
-  public SCAIEVNode WrCSR_valid = new SCAIEVNode(WrCSR, AdjacentNode.validReq, 1, true, false);
-
+  /**
+   * The register number the current decoupled write request is being applied to.
+   * By default, generated by SCAL from the current WrRD_spawn's address.
+   * Can be overridden by the core if WrRD_spawn_addr carries additional metadata that is unrelated
+   *  to the register number used in hazard handling.
+   */
   public SCAIEVNode committed_rd_spawn = new SCAIEVNode("Committed_rd_spawn", 5, false);
+  /**
+   * Generated by SCAL.
+   * Whether a decoupled WrRD_spawn completes so the hazard handler can mark it as 'non-dirty'.
+   */
   public SCAIEVNode committed_rd_spawn_valid = new SCAIEVNode(committed_rd_spawn, AdjacentNode.validReq, 1, false, false);
   /**
    * For {@link scaiev.scal.strategy.decoupled.DecoupledDHStrategy}:
@@ -231,7 +281,10 @@ public class BNode extends FNode {
 
   public SCAIEVNode ISAX_spawnStall_regF_s = new SCAIEVNode("isax_spawnStall_regF_s", 1, false);
   public SCAIEVNode ISAX_spawnStall_mem_s = new SCAIEVNode("isax_spawnStall_mem_s", 1, false);
+
+  /** Deprecated */
   public SCAIEVNode IsBranch = new SCAIEVNode("IsBranch", 1, false);
+  /** Deprecated */
   public SCAIEVNode IsZOL = new SCAIEVNode("IsZOL", 1, false);
 
   // Deprecated
@@ -306,7 +359,7 @@ public class BNode extends FNode {
    * SCAL->core: The overridden instruction ID to commit / to leave the stage.
    *              If the core does not support having several instructions within the given stage, it can ignore this request (and commit
    * the current instruction eventually). Otherwise, the core should commit the instruction based on the given ID, comb. setting validResp
-   * once SCAL no longer needs to hold the signal&validReq. WrStall in the same stage must not prevent WrInStageID from completing. Note:
+   * once SCAL no longer needs to hold the signal&amp;validReq. WrStall in the same stage must not prevent WrInStageID from completing. Note:
    * The core should also set RdStall during WrInStageID if the overridden instruction ID is not the current instruction in the core
    * pipeline. Hint: SCAL only uses WrInStageID after a corresponding WrDeqInstr.
    */
@@ -316,9 +369,81 @@ public class BNode extends FNode {
   /**
    * core->SCAL: validResp for {@link BNode#WrInStageID};
    * is allowed to be 1 spuriously as long as WrInStageID_validReq is not set;
-   * when WrInStageID_validReq is set, must be equal to !RdStall&&!WrStall or !RdStall&&!WrStall&&!RdFlush&&!WrFlush
+   * when WrInStageID_validReq is set, must be equal to !RdStall&amp;&amp;!WrStall or !RdStall&amp;&amp;!WrStall&amp;&amp;!RdFlush&amp;&amp;!WrFlush
    * */
   public SCAIEVNode WrInStageID_validResp = new SCAIEVNode(WrInStageID, AdjacentNode.validResp, 1, false, false);
+
+  /**
+   * core->SCAL: The current instruction ID for commit tracking.
+   * Should be present from the CustReg.addr_constraint stage onwards and in all stages marked Issue.
+   * The core backend should set the size field to the width of the instruction ID,
+   *  and the elements field to the overall number of IDs (ID space = [0, ..., elements-1]).
+   * Should be listed in the core's datasheet, or added by the backend's Prepare call using {@link scaiev.coreconstr.Core#PutNode(SCAIEVNode, scaiev.coreconstr.CoreNode)}.
+   */
+  public SCAIEVNode RdIssueID = new SCAIEVNode("RdIssueID", 1, false) {
+    { tags.add(NodeTypeTag.staticReadResult); }
+  };
+  /**
+   * core->SCAL: The next issue ID after an issue-stage flush.
+   * Note: Is only meaningful for stages without the Issue tag.
+   */
+  public SCAIEVNode RdIssueFlushID = new SCAIEVNode("RdIssueFlushID", 1, false);
+  ///**
+  // * core->SCAL: Whether the current instruction ID {@link BNode#RdIssueID} is valid. Should be present from the CustReg.addr_constraint stage onwards.
+  // * Is only sampled if RdInStageValid is 1. Can be constant 1 if all instructions have an issue ID.
+  // * If SCAL needs to perform issue tracking and RdIssueIDValid is 0, it will show a simulation error.
+  // */
+  //public SCAIEVNode RdIssueIDValid = new SCAIEVNode("RdIssueIDValid", 1, false) {
+  //  { tags.add(NodeTypeTag.staticReadResult); }
+  //};
+  /**
+   * core->SCAL: The first instruction ID (corresponding to prior {@link BNode#RdIssueID}) to commit.
+   * To be defined in the core's root stage.
+   * The core backend should set the size field to the width of the instruction ID. The elements field must match {@link BNode#RdIssueID}'s.
+   */
+  public SCAIEVNode RdCommitID = new SCAIEVNode("RdCommitID", 1, false);
+  /**
+   * core->SCAL: How many instructions are being committed (0 = none), with IDs [{@link BNode#RdCommitID},...,RdCommitID+RdCommitIDCount-1].
+   * To be defined in the core's root stage.
+   * The core backend should set the elements field to the maximum number of concurrent commits,
+   *  and the size field to clog2(elements + 1).
+   * Assumed not present if elements == 0 or size == 0.
+   */
+  public SCAIEVNode RdCommitIDCount = new SCAIEVNode("RdCommitIDCount", 1, false) {
+    { elements = 0; }
+  };
+  /**
+   * core->SCAL: The first instruction ID (corresponding to prior {@link BNode#RdIssueID}) to flush.
+   * To be defined in the core's root stage.
+   * The core backend should set the size field to the width of the instruction ID. The elements field must match {@link BNode#RdIssueID}'s.
+   */
+  public SCAIEVNode RdCommitFlushID = new SCAIEVNode("RdCommitFlushID", 1, false);
+  /**
+   * core->SCAL: How many instructions are being flushed (0 = none), with IDs [{@link BNode#RdCommitFlushID},...,RdCommitFlushID+RdCommitFlushIDCount-1].
+   * To be defined in the core's root stage.
+   * The core backend should set the elements field to the maximum number of concurrent flushes,
+   *  and the size field to clog2(elements + 1).
+   * Assumed not present if elements == 0 or size == 0.
+   */
+  public SCAIEVNode RdCommitFlushIDCount = new SCAIEVNode("RdCommitFlushIDCount", 1, false) {
+    { elements = 0; }
+  };
+  /**
+   * core->SCAL: A bitmask of instruction IDs to flush (due to branch mispredict, exception during or before an instruction, etc.).
+   *  Assumed not present if size == 0.
+   */
+  public SCAIEVNode RdCommitFlushMask = new SCAIEVNode("RdCommitFlushMask", 0, false);
+
+  /**
+   * core->SCAL: A flag to flush all issued instructions (due to branch mispredict, exception during or before an instruction, etc.).
+   *  Assumed not present if size == 0.
+   */
+  public SCAIEVNode RdCommitFlushAll = new SCAIEVNode("RdCommitFlushAll", 0, false);
+  /**
+   * core->SCAL: The next issue/retire ID to reset to after {@link #RdCommitFlushAll}.
+   *  Assumed not present if size == 0.
+   */
+  public SCAIEVNode RdCommitFlushAllID = new SCAIEVNode("RdCommitFlushAllID", 0, false);
 
   /** ISAX->SCAL: ISAX commit marker */
   public SCAIEVNode WrCommit_spawn = new SCAIEVNode(WrCommit, AdjacentNode.none, 1, true, true) {
@@ -333,7 +458,7 @@ public class BNode extends FNode {
   public SCAIEVNode RdCustReg_data_constraint = new SCAIEVNode("RdCustReg.data_constraint", 0, false) {
     { tags.add(NodeTypeTag.constraintMarkerOnlyNode); }
   };
-  /** Pseudo-node for custom register read&write addr constraints. */
+  /** Pseudo-node for custom register read&amp;write addr constraints. */
   public SCAIEVNode CustReg_addr_constraint = new SCAIEVNode("CustReg.addr_constraint", 0, true) {
     { tags.add(NodeTypeTag.constraintMarkerOnlyNode); }
   };
@@ -346,7 +471,38 @@ public class BNode extends FNode {
   protected List<SCAIEVNode> core_BNode = new ArrayList<SCAIEVNode>();
 
   /**
-   * Adds a core-specific SCAIEVNode.
+   * Updates the instrID adjacent node size for instrID adjacent nodes (RdMem, WrMem and user nodes).
+   * @param size the bit-width of an instruction ID
+   * @param elements the number of possible instruction IDs
+   */
+  public void updateInstrIDSize(int size, int elements) {
+    Stream.concat(Stream.of(RdMem_instrID, WrMem_instrID), user_BNode.stream().filter(node -> node.getAdj() == AdjacentNode.instrID))
+          .forEach(node -> {
+                    node.size = size;
+                    node.elements = elements;
+                  });
+  }
+
+  @Override
+  public void updateBitness(int bitness) {
+    super.updateBitness(bitness);
+    RdMem_addr.size = bitness;
+    RdMem_defaultAddr.size = bitness;
+    RdMem_spawn_addr.size = bitness;
+    RdMem_spawn_defaultAddr.size = bitness;
+    RdMem_spawn.size = bitness;
+    RdOrigPC.size = bitness;
+    WrMem_addr.size = bitness;
+    WrMem_defaultAddr.size = bitness;
+    WrMem_spawn_addr.size = bitness;
+    WrMem_spawn_defaultAddr.size = bitness;
+    WrMem_spawn.size = bitness;
+    WrPC_spawn.size = bitness;
+    WrRD_spawn.size = bitness;
+  }
+
+  /**
+   * Adds a core-specific or SCAL-internal SCAIEVNode.
    */
   public void AddCoreBNode(SCAIEVNode coreNode) {
     core_BNode.add(coreNode);
@@ -376,6 +532,9 @@ public class BNode extends FNode {
     int addr_size = (int)Math.ceil((Math.log10(elements) / Math.log10(2)));
     user_BNode.add(new SCAIEVNode(WrNode, AdjacentNode.validReq, 1, true, false));
     user_BNode.add(new SCAIEVNode(WrNode, AdjacentNode.cancelReq, 1, true, false));
+    user_BNode.add(new SCAIEVNode(WrNode, AdjacentNode.instrID, RdIssueID.size, true, false) {
+      { noInterfToISAX = true; }
+    });
     user_BNode.add(new SCAIEVNode(RdNode, AdjacentNode.validReq, 1, true, false) {
       { noInterfToISAX = true; }
     });
@@ -429,6 +588,9 @@ public class BNode extends FNode {
           validBy = AdjacentNode.validReq;
         }
       });
+    user_BNode.add(new SCAIEVNode(WrNode_spawn, AdjacentNode.instrID, RdIssueID.size, true, false) {
+      { noInterfToISAX = true; validBy = AdjacentNode.validReq; }
+    });
     user_BNode.add(new SCAIEVNode(WrNode_spawn, AdjacentNode.validResp, 1, false, true) {
       { oneInterfToISAX = false; }
     });
@@ -500,31 +662,36 @@ public class BNode extends FNode {
     bnodes.add(RdMem_addr);
     bnodes.add(RdMem_size);
     bnodes.add(RdMem_addr_valid);
+    bnodes.add(RdMem_instrID);
     bnodes.add(WrMem_validReq);
     bnodes.add(WrMem_validResp);
     bnodes.add(WrMem_defaultAddr);
     bnodes.add(WrMem_addr);
     bnodes.add(WrMem_size);
     bnodes.add(WrMem_addr_valid);
+    bnodes.add(WrMem_instrID);
     bnodes.add(WrPC_valid);
     bnodes.add(WrPC_spawn_valid);
     bnodes.add(WrPC_spawn);
     bnodes.add(WrRD_spawn_valid);
+    bnodes.add(WrRD_spawn_cancel);
     bnodes.add(WrRD_spawn_addr);
     bnodes.add(WrRD_spawn_validResp);
     bnodes.add(WrRD_spawn);
     bnodes.add(WrRD_spawn_allowed);
+    bnodes.add(RdMem_spawn);
+    bnodes.add(RdMem_spawn_validReq);
     bnodes.add(RdMem_spawn_validResp);
+    bnodes.add(RdMem_spawn_validHandshakeResp);
     bnodes.add(RdMem_spawn_addr);
     bnodes.add(RdMem_spawn_size);
     bnodes.add(RdMem_spawn_defaultAddr);
-    bnodes.add(RdMem_spawn);
     bnodes.add(RdMem_spawn_write);
-    bnodes.add(RdMem_spawn_validReq);
     bnodes.add(RdMem_spawn_allowed);
     bnodes.add(WrMem_spawn);
     bnodes.add(WrMem_spawn_validReq);
     bnodes.add(WrMem_spawn_validResp);
+    bnodes.add(WrMem_spawn_validHandshakeResp);
     bnodes.add(WrMem_spawn_addr);
     bnodes.add(WrMem_spawn_size);
     bnodes.add(WrMem_spawn_defaultAddr);
@@ -532,7 +699,9 @@ public class BNode extends FNode {
     bnodes.add(WrMem_spawn_allowed);
     // bnodes.add(WrJump_spawn_valid);
 
-    bnodes.add(WrCSR_valid);
+    bnodes.add(RdInstr_RS);
+    bnodes.add(RdInstr_RD);
+
     bnodes.add(committed_rd_spawn);
     bnodes.add(committed_rd_spawn_valid);
     bnodes.add(ISAX_spawnAllowed);
@@ -561,6 +730,18 @@ public class BNode extends FNode {
     bnodes.add(WrCommit_spawn_validResp);
 
     bnodes.add(RdStallLegacy);
+
+    bnodes.add(RdIssueID);
+    bnodes.add(RdIssueFlushID);
+    //bnodes.add(RdIssueIDValid);
+    bnodes.add(RdCommitID);
+    bnodes.add(RdCommitIDCount);
+    bnodes.add(RdCommitFlushID);
+    bnodes.add(RdCommitFlushIDCount);
+    bnodes.add(RdCommitFlushMask);
+    bnodes.add(RdCommitFlushAll);
+    bnodes.add(RdCommitFlushAllID);
+
     bnodes.add(RdCustReg_data_constraint);
     bnodes.add(CustReg_addr_constraint);
     bnodes.add(WrCustReg_data_constraint);

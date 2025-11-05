@@ -60,7 +60,8 @@ public class DefaultMemAdjStrategy extends MultiNodeStrategy {
         -> key.getPurpose().matches(Purpose.PIPEDIN) &&
                (key.getNode().equals(bNodes.RdMem_size) || key.getNode().equals(bNodes.WrMem_size)) && key.getISAX().isEmpty() &&
                key.getStage().getKind() == StageKind.Core,
-        key -> false, new DefaultMemSizeStrategy());
+        key -> false, new DefaultMemSizeStrategy(),
+        false);
 
     this.regularPipelinedMemAddrStrategy = makePipelinedMemAddrStrategy(bNodes.RdMem_defaultAddr, bNodes.WrMem_defaultAddr).orElse(null);
     this.spawnPipelinedMemAddrStrategy =
@@ -101,13 +102,12 @@ public class DefaultMemAdjStrategy extends MultiNodeStrategy {
     if (!minAddrPipetoFront.asList().isEmpty()) {
       return Optional.of(strategyBuilders.buildNodeRegPipelineStrategy(
           language, bNodes, minAddrPipetoFront, false, false, false,
-          key
-          -> key.getPurpose().matches(Purpose.PIPEDIN) &&
+          key -> key.getPurpose().matches(Purpose.PIPEDIN) &&
                  (key.getNode().equals(readDefaultAddrNode) || key.getNode().equals(writeDefaultAddrNode)) && key.getISAX().isEmpty(),
-          key
-          -> false,
+          key -> false,
           coreProvidesDefaultMemAddr ? new RequestMemAddrFromCoreStrategy(readDefaultAddrNode, writeDefaultAddrNode, latestDefaultAddrFront)
-                                     : new DefaultMemAddrStrategy(readDefaultAddrNode, writeDefaultAddrNode)));
+                                     : new DefaultMemAddrStrategy(readDefaultAddrNode, writeDefaultAddrNode),
+          false));
     }
     return Optional.empty();
   }
@@ -196,7 +196,7 @@ public class DefaultMemAdjStrategy extends MultiNodeStrategy {
       if (nodeKey.getPurpose().matches(Purpose.WIREDIN) &&
           (nodeKey.getNode().equals(bNodes.RdMem_addr) || nodeKey.getNode().equals(bNodes.WrMem_addr)) && nodeKey.getISAX().isEmpty()) {
         var requestedFor = new RequestedForSet(nodeKey.getISAX());
-        out.accept(NodeLogicBuilder.fromFunction("DefaultAdjStrategy_" + nodeKey.toString(), registry -> {
+        out.accept(NodeLogicBuilder.fromFunction("DefaultMemAdjStrategy_" + nodeKey.toString(), registry -> {
           var ret = new NodeLogicBlock();
           ret.outputs.add(new NodeInstanceDesc(
               new NodeInstanceDesc.Key(Purpose.WIREDIN, nodeKey.getNode(), nodeKey.getStage(), nodeKey.getISAX()),

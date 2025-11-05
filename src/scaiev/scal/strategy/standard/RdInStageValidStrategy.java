@@ -23,7 +23,7 @@ import scaiev.util.Verilog;
 
 /**
  * Generates either default implementations or core interface pins for RdInStageValid, and aggregates WIREDIN_FALLBACK or REGULAR
- * subconditions aux nodes by '&&'.
+ * subconditions aux nodes by '&amp;&amp;'.
  */
 public class RdInStageValidStrategy extends MultiNodeStrategy {
 

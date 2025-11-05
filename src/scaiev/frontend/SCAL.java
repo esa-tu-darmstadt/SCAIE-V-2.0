@@ -45,7 +45,10 @@ import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.SingleNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
 import scaiev.scal.strategy.decoupled.DecoupledDHStrategy;
+import scaiev.scal.strategy.decoupled.DecoupledLateRetireStrategy;
 import scaiev.scal.strategy.decoupled.SpawnFenceStrategy;
+import scaiev.scal.strategy.decoupled.SpawnOptionalInputFIFOStrategy;
+import scaiev.scal.strategy.pipeline.IDRetireSerializerStrategy;
 import scaiev.scal.strategy.state.SCALStateContextStrategy;
 import scaiev.ui.SCAIEVConfig;
 import scaiev.util.FileWriter;
@@ -133,8 +136,8 @@ public class SCAL implements SCALBackendAPI {
   public boolean SETTINGenforceOrdering_Memory_Decoupled =
       false; // true = decoupled memory operations should be handled in ISAX issue order
   public boolean SETTINGenforceOrdering_User_Semicoupled =
-      true;                                                    // true = semi-coupled user operations should be handled in ISAX issue order
-  public boolean SETTINGenforceOrdering_User_Decoupled = true; // true = decoupled user operations should be handled in ISAX issue order
+      true;                                                     // true = semi-coupled user operations should be handled in ISAX issue order
+  public boolean SETTINGenforceOrdering_User_Decoupled = false; // true = decoupled user operations should be handled in ISAX issue order
 
   public HashSet<String> SETTINGdisableSpawnFireStall_families = new HashSet<>();
   public List<CustomCoreInterface> customCoreInterfaces = new ArrayList<>();
@@ -145,6 +148,11 @@ public class SCAL implements SCALBackendAPI {
     this.SETTINGWithScoreboard = cfg.decoupled_data_hazard_handling;
     this.SETTINGwithInputFIFO = cfg.decoupled_with_input_fifo;
     this.cfg = cfg;
+  }
+
+  @Override
+  public SCAIEVConfig getSVConfig() {
+    return this.cfg;
   }
 
   public void AddISAXInterfacePinRenames(Iterable<Map.Entry<NodeInstanceDesc.Key, NodeInstanceDesc.Key>> renames) {
@@ -319,7 +327,7 @@ public class SCAL implements SCALBackendAPI {
         NodeLogicBuilder.fromFunction("CutomToCorePin_" + interfaceKey.toString(false), registry -> {
           var ret = new NodeLogicBlock();
           // Add a placeholder to prevent other strategies.
-          ret.outputs.add(new NodeInstanceDesc(interfaceKey, "MISSING_" + interfaceKey.toString(), ExpressionType.AnyExpression));
+          ret.outputs.add(new NodeInstanceDesc(interfaceKey, NodeRegistry.MISSING_PREFIX + interfaceKey.toString(), ExpressionType.AnyExpression));
           return ret;
         })));
   }
@@ -410,28 +418,39 @@ public class SCAL implements SCALBackendAPI {
                                               ? new PipelineFront(core.GetRootStage().getChildrenTails())
                                               : core.TranslateStageScheduleNumber(core.GetNodes().get(operation).GetLatest());
         stages = new ArrayList<>(this.op_stage_instr.get(operation).keySet());
+        ArrayList<PipelineStage> stages_core_interface = new ArrayList<>();
         var stagesIter = stages.iterator();
         while (stagesIter.hasNext()) {
           PipelineStage stage = stagesIter.next();
           HashSet<String> instructionsSet = op_stage_instr.get(operation).get(stage);
           if (instructionsSet.isEmpty())
             continue;
+          // Only add new entries to op_stage_instr, strategies should notice the node is not present in the core.
+          // Netlist export requires the 'misscheduled' entries to remain in op_stage_instr.
           if (!coreOpEarliestFront.isAroundOrBefore(stage, false)) {
             for (PipelineStage stageInEarliest : coreOpEarliestFront.asList())
               if (new PipelineFront(stageInEarliest).isAfter(stage, false)) {
+                logger.debug("Resolving 'earliest' violation in {}: Moving {} to {}", stage.getName(), operation.name, stageInEarliest.getName());
                 op_stage_instr.get(operation).computeIfAbsent(stageInEarliest, stage_ -> new HashSet<>(List.of("")));
+                stages_core_interface.add(stageInEarliest);
+                PopulateVirtualCore(operation, stageInEarliest);
               }
             stagesIter.remove();
-            // op_stage_instr.get(operation).put(stage, new HashSet<>());
           } else if (!coreOpLatestFront.isAroundOrAfter(stage, false)) {
             for (PipelineStage stageInLatest : coreOpLatestFront.asList())
               if (new PipelineFront(stageInLatest).isBefore(stage, false)) {
+                logger.debug("Resolving 'latest' violation in {}: Adding {} to {}", stage.getName(), operation.name, stageInLatest.getName());
                 op_stage_instr.get(operation).computeIfAbsent(stageInLatest, stage_ -> new HashSet<>(List.of("")));
+                stages_core_interface.add(stageInLatest);
+                PopulateVirtualCore(operation, stageInLatest);
               }
             stagesIter.remove();
-            // op_stage_instr.get(operation).put(stage, new HashSet<>());
+          }
+          else {
+            stages_core_interface.add(stage);
           }
         }
+        stages = stages_core_interface;
       }
       for (PipelineStage stage : stages) {
         boolean isSemicoupledSpawn = operation.isSpawn() && stage.getKind() == StageKind.Core;
@@ -550,26 +569,32 @@ public class SCAL implements SCALBackendAPI {
                                .isAfter(key.getStage(), false)) /* ...and is not expensive in the given stage */
                    .orElse(false) &&
                key.getStage().getKind() == StageKind.Core && !BNode.IsUserBNode(key.getNode()),
-        MultiNodeStrategy.filter(readNodeStrategy_direct, key -> !BNode.IsUserBNode(key.getNode())));
+        MultiNodeStrategy.filter(readNodeStrategy_direct, key -> !BNode.IsUserBNode(key.getNode())),
+        false);
 
-    // Step 1: Generate Valid bits for earlier stages. For exp for mem operations, core needs to know if it.s a mem op before mem stage
+    // Generate Valid bits for earlier stages. For exp for mem operations, core needs to know if it.s a mem op before mem stage
     MultiNodeStrategy writeNodeEarlyValidStrategy =
         strategyBuilders.buildEarlyValidStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes, node_earliestStageValid);
 
-    // Step 2: generate Valid bits for all other nodes
-
+    Optional<IDRetireSerializerStrategy> idRetireSerializerStrategy_opt = BNode.RdIssueID.elements > 0
+        ? Optional.of(strategyBuilders.buildIDRetireSerializerStrategy_auto(myLanguage, BNode, core))
+        : Optional.empty();
     MultiNodeStrategy scalStateStrategy = strategyBuilders.buildSCALStateStrategy(myLanguage, BNode, core, op_stage_instr,
-                                                                                  spawn_instr_stage, ISAXes, cfg);
+                                                                                  spawn_instr_stage, ISAXes, cfg,
+                                                                                  idRetireSerializerStrategy_opt);
 
     MultiNodeStrategy scalStateContextStrategy =
         strategyBuilders.buildSCALStateContextStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes, cfg);
 
+    // generate normal Valid bits
     SingleNodeStrategy normalValidBitStrategy = strategyBuilders.buildValidMuxStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes);
 
     // Pipeline nodes that the ISAX provides before the core can handle them.
     MultiNodeStrategy pipelinedOpStrategy =
         strategyBuilders.buildNodeRegPipelineStrategy(myLanguage, BNode, generalMinPipelineFront, false, false, false, key -> {
-          if (!key.getPurpose().matches(Purpose.PIPEDIN) || key.getISAX().isEmpty() || !ISAXes.containsKey(key.getISAX()))
+          if (!key.getPurpose().matches(Purpose.PIPEDIN) || key.getNode().isSpawn())
+            return false;
+          if (!key.getISAX().isEmpty() && !ISAXes.containsKey(key.getISAX()))
             return false;
 
           SCAIEVNode baseNode = (key.getNode().isAdj() && !core.GetNodes().containsKey(key.getNode()))
@@ -580,23 +605,43 @@ public class SCAL implements SCALBackendAPI {
           PipelineFront baseNodeEarliest = core.GetNodes().containsKey(baseNode)
                                                ? core.TranslateStageScheduleNumber(core.GetNodes().get(baseNode).GetEarliest())
                                                : new PipelineFront();
-          // return op_stage_
-          return ISAXes.get(key.getISAX())
-              .HasSchedWith(baseNode,
-                            sched
-                            -> core.TranslateStageScheduleNumber(sched.GetStartCycle())
-                                   .asList()
-                                   .stream()
-                                   .allMatch(schedStartStage -> baseNodeEarliest.isAfter(schedStartStage, false)));
-        }, key_ -> false, MultiNodeStrategy.noneStrategy);
+          Stream<SCAIEVInstr> ISAXesToCheck;
+          if (key.getISAX().isEmpty())
+            ISAXesToCheck = ISAXes.values().stream();
+          else
+            ISAXesToCheck = Stream.ofNullable(ISAXes.get(key.getISAX()));
+          Optional<SCAIEVNode> spawnBaseNode_opt = BNode.GetEquivalentSpawnNode(baseNode);
+          return ISAXesToCheck.anyMatch(isaxInstr -> {
+            if (spawnBaseNode_opt.isPresent() && isaxInstr.HasNode(spawnBaseNode_opt.get())
+                && spawn_instr_stage.containsKey(spawnBaseNode_opt.get())) {
+              //Handle semi-coupled non-spawn nodes
+              // -> those aren't listed as such in the instruction,
+              //    so we need to check spawn_instr_stage to know where the non-spawn node is generated
+              SCAIEVNode spawnBaseNode = spawnBaseNode_opt.get();
+              PipelineStage spawnSubstageOrNull = spawn_instr_stage.get(spawnBaseNode).get(isaxInstr.GetName());
+              if (spawnSubstageOrNull != null) {
+                PipelineStage spawnSubParent = spawnSubstageOrNull.getParent().orElseThrow();
+                assert(spawnSubParent.getKind() != StageKind.Sub);
+                return baseNodeEarliest.isAfter(spawnSubParent, false);
+              }
+            }
+            return isaxInstr.HasSchedWith(baseNode,
+                                   sched
+                                   -> core.TranslateStageScheduleNumber(sched.GetStartCycle())
+                                       .asList()
+                                       .stream()
+                                       .allMatch(schedStartStage -> baseNodeEarliest.isAfter(schedStartStage, false)));
+          });
+        }, key_ -> false, MultiNodeStrategy.noneStrategy, true);
 
-    //////////////////////////  WrStall, RdStall //////////////////////////
     SingleNodeStrategy rdwrStallFlushDeqStrategy = strategyBuilders.buildStallFlushDeqStrategy(myLanguage, BNode, core);
     SingleNodeStrategy SCALInputOutputStrategy = strategyBuilders.buildSCALInputOutputStrategy(myLanguage, BNode);
     SingleNodeStrategy pipeoutRegularStrategy = strategyBuilders.buildPipeoutRegularStrategy();
     MultiNodeStrategy defaultMemAdjStrategy = strategyBuilders.buildDefaultMemAdjStrategy(myLanguage, BNode, core);
+    MultiNodeStrategy defaultIDAdjStrategy = strategyBuilders.buildDefaultIDAdjStrategy(myLanguage, BNode, core);
     SingleNodeStrategy defaultValidCancelReqStrategy = strategyBuilders.buildDefaultValidCancelReqStrategy(myLanguage, BNode, core, ISAXes);
     MultiNodeStrategy defaultRerunStrategy = strategyBuilders.buildDefaultRerunStrategy(myLanguage, BNode, core);
+    MultiNodeStrategy defaultRdinstrRSRDStrategy = strategyBuilders.buildDefaultRdInstrRSRDStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes);
 
     //////////////////////////  Spawn/Decoupled //////////////////////////
     Map<SCAIEVNode, Collection<String>> isaxPriorities = new HashMap<>();
@@ -629,7 +674,8 @@ public class SCAL implements SCALBackendAPI {
     SingleNodeStrategy decoupledStandardModulesStrategy = strategyBuilders.buildDecoupledStandardModulesStrategy();
     MultiNodeStrategy decoupledDHStrategy = strategyBuilders.buildDecoupledDHStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes);
     MultiNodeStrategy decoupledPipeStrategy = strategyBuilders.buildDecoupledPipeStrategy(myLanguage, BNode, core, op_stage_instr,
-                                                                                          spawn_instr_stage, ISAXes, spawnRDAddrOverrides);
+                                                                                          spawn_instr_stage, ISAXes, spawnRDAddrOverrides,
+                                                                                          this.cfg);
     MultiNodeStrategy decoupledKillStrategy = strategyBuilders.buildDecoupledKillStrategy(myLanguage, BNode, core, ISAXes);
     MultiNodeStrategy spawnRdIValidStrategy =
         strategyBuilders.buildSpawnRdIValidStrategy(myLanguage, BNode, core, op_stage_instr, spawn_instr_stage, ISAXes);
@@ -644,12 +690,68 @@ public class SCAL implements SCALBackendAPI {
     SingleNodeStrategy spawnRegisterStrategy =
         strategyBuilders.buildSpawnRegisterStrategy(myLanguage, BNode, core, op_stage_instr, isaxPriorities);
     MultiNodeStrategy spawnOutputSelectStrategy =
-        strategyBuilders.buildSpawnOutputSelectStrategy(myLanguage, BNode, core, op_stage_instr, isaxPriorities);
+        strategyBuilders.buildSpawnOutputSelectStrategy(myLanguage, BNode, core, op_stage_instr, isaxPriorities, this.cfg);
     MultiNodeStrategy spawnOptionalInputFIFOStrategy = strategyBuilders.buildSpawnOptionalInputFIFOStrategy(
         myLanguage, BNode, core, op_stage_instr, ISAXes, this.SETTINGwithInputFIFO, this.cfg);
     MultiNodeStrategy spawnFenceStrategy = strategyBuilders.buildSpawnFenceStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes,
                                                                                     SETTINGWithScoreboard || hasCustomWrRDSpawnDH);
 
+    //Late retire handling for decoupled operations
+    MultiNodeStrategy decoupledLateRetireStrategy_ = null;
+    if (this.SETTINGwithInputFIFO && idRetireSerializerStrategy_opt.isPresent()) {
+      decoupledLateRetireStrategy_ = strategyBuilders.buildDecoupledLateRetireStrategy(
+          myLanguage, BNode, core, op_stage_instr, spawn_instr_stage, ISAXes, idRetireSerializerStrategy_opt.get(), this.cfg);
+
+      //Request the late retire handling for all used spawn nodes in decoupled stages.
+      var spawnStages = this.core.GetSpawnStages();
+      for (SCAIEVNode bnode : BNode.GetAllBackNodes()) {
+        if (!bnode.isSpawn()) continue;
+        if (bnode.isAdj()) continue;
+        if (BNode.IsUserBNode(bnode))
+          continue; //Separate handling implemented for custom registers
+        if (bnode.equals(BNode.RdMem_spawn)
+            && spawnStages.asList().stream().anyMatch(spawnStage -> ContainsOpInStage(bnode, spawnStage))) {
+          //FIXME: Dynamic decoupled ISAXes aren't told that/if they are being discarded.
+          // ISAXes with RdMem_spawn -> computation -> WrMem_spawn would break waiting for the read result.
+          //Workaround: Allow RdMem_spawn to pass regardless of discards.
+          // May cause trouble if the address is invalid (if the core does not have sound RdMem_spawn exception handling)
+          // May also lead to speculation side-channels (e.g., RdMem_spawn instr after branch)
+          logger.warn("Disabling instruction discard handling for RdMem_spawn");
+
+          //Without late-retire handling, SpawnOptionalInputFIFO defaults to opportunistic request reordering.
+          //Disable that explicitly, since the ISAX still assumes that RdMem request order = response order.
+          SCAIEVNode inorderMarkerNode = SpawnOptionalInputFIFOStrategy.makeMustBeInorderMarkerNode(BNode, bnode);
+          globalLogicBuilders.add(NodeLogicBuilder.fromFunction("Force in-order Input FIFOs for " + bnode.name,
+                                                                (registry, aux) -> {
+                var ret = new NodeLogicBlock();
+                for (PipelineStage spawnStage : spawnStages.asList()) if (ContainsOpInStage(bnode, spawnStage)) {
+                    ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, inorderMarkerNode, spawnStage, "", aux),
+                                    "1", ExpressionType.AnyExpression));
+                }
+                return ret;
+          }));
+          continue;
+        }
+        boolean foundSpawnStage = false;
+        for (PipelineStage spawnStage : spawnStages.asList()) if (ContainsOpInStage(bnode, spawnStage)) {
+          globalLogicBuilders.add(NodeLogicBuilder.fromFunction("Request late retire handling for " + bnode.name + " in " + spawnStage.getName(),
+                                                                registry -> {
+            registry.lookupExpressionRequired(new NodeInstanceDesc.Key(
+                DecoupledLateRetireStrategy.purpose_MARKER_BUILT_DEC_LATE_RETIRE, bnode, spawnStage, ""));
+            return new NodeLogicBlock();
+          }));
+          if (foundSpawnStage) {
+            //Note: At time of writing this, DecoupledLateRetireStrategy can't know which decoupled/spawn stage an issue goes to.
+            // -> may break the tracking logic.
+            logger.warn("Building decoupled late retire handling across several spawn stages; problems may be ahead.");
+          }
+          foundSpawnStage = true;
+        }
+      }
+    }
+    Optional<MultiNodeStrategy> decoupledLateRetireStrategy_opt = Optional.ofNullable(decoupledLateRetireStrategy_);
+
+    MultiNodeStrategy defaultHandshakeRespStrategy = strategyBuilders.buildDefaultHandshakeRespStrategy(myLanguage, BNode, core);
     MultiNodeStrategy defaultRdwrInStageStrategy = strategyBuilders.buildDefaultRdwrInStageStrategy(myLanguage, BNode, core);
     MultiNodeStrategy defaultWrCommitStrategy = strategyBuilders.buildDefaultWrCommitStrategy(myLanguage, BNode, core);
 
@@ -690,6 +792,8 @@ public class SCAL implements SCALBackendAPI {
           backendPreStrategies.forEach((s) -> s.implement(out, nodeKeys, isLast));
 
         // execute common strategies
+        if (idRetireSerializerStrategy_opt.isPresent())
+          idRetireSerializerStrategy_opt.get().implement(out, nodeKeys, isLast);
         scalStateStrategy.implement(out, nodeKeys, isLast);
         scalStateContextStrategy.implement(out, nodeKeys, isLast);
         
@@ -699,6 +803,8 @@ public class SCAL implements SCALBackendAPI {
         spawnCommittedRdStrategy.implement(out, nodeKeys, isLast);
         spawnOutputSelectStrategy.implement(out, nodeKeys, isLast);
         spawnOptionalInputFIFOStrategy.implement(out, nodeKeys, isLast);
+        if (decoupledLateRetireStrategy_opt.isPresent())
+          decoupledLateRetireStrategy_opt.get().implement(out, nodeKeys, isLast);
         decoupledPipeStrategy.implement(out, nodeKeys, isLast);
         decoupledKillStrategy.implement(out, nodeKeys, isLast);
         spawnRdIValidStrategy.implement(out, nodeKeys, isLast);
@@ -706,6 +812,7 @@ public class SCAL implements SCALBackendAPI {
         decoupledStandardModulesStrategy.implement(out, nodeKeys, isLast);
         spawnRegisterStrategy.implement(out, nodeKeys, isLast);
         spawnFenceStrategy.implement(out, nodeKeys, isLast);
+        defaultHandshakeRespStrategy.implement(out, nodeKeys, isLast);
         defaultRdwrInStageStrategy.implement(out, nodeKeys, isLast);
         defaultRerunStrategy.implement(out, nodeKeys, isLast);
 
@@ -722,13 +829,15 @@ public class SCAL implements SCALBackendAPI {
           pipelinedOpStrategy.implement(out, nodeKeys, isLast);
           pipeoutRegularStrategy.implement(out, nodeKeys, isLast);
           defaultMemAdjStrategy.implement(out, nodeKeys, isLast);
+          defaultIDAdjStrategy.implement(out, nodeKeys, isLast);
           defaultValidCancelReqStrategy.implement(out, nodeKeys, isLast);
+          defaultRdinstrRSRDStrategy.implement(out, nodeKeys, isLast);
           defaultWrCommitStrategy.implement(out, nodeKeys, isLast);
         }
 
         // execute additional coreBackend strategies to run after common ones
-        if (backendPreStrategies != null)
-          backendPreStrategies.forEach((s) -> s.implement(out, nodeKeys, isLast));
+        if (backendPostStrategies != null)
+          backendPostStrategies.forEach((s) -> s.implement(out, nodeKeys, isLast));
       }
     };
 
@@ -884,6 +993,19 @@ public class SCAL implements SCALBackendAPI {
         otherModules += logicBlock.otherModules + "\n";
       }
     }
+    //Explicit checks for MISSING~... (from NodeRegistry)
+    if (logic.contains(NodeRegistry.MISSING_PREFIX)) {
+      logger.warn("Found the string \"%s\" in CommonLogicModule HDL output (logic) after generation.".formatted(NodeRegistry.MISSING_PREFIX)
+                  + "Check the output files for more information, this is most likely a problem.");
+    }
+    if (declarations.contains(NodeRegistry.MISSING_PREFIX)) {
+      logger.warn("Found the string \"%s\" in CommonLogicModule HDL output (declarations) after generation.".formatted(NodeRegistry.MISSING_PREFIX)
+                  + "Check the output files for more information, this is most likely a problem.");
+    }
+    if (otherModules.contains(NodeRegistry.MISSING_PREFIX)) {
+      logger.warn("Found the string \"%s\" in CommonLogicModule HDL output (other modules) after generation.".formatted(NodeRegistry.MISSING_PREFIX)
+                  + "Check the output files, this is most likely a problem.");
+    }
 
     op_stage_instr.clear();
     for (NodeBuilderEntry builderEntry : builtNodes) {
@@ -931,18 +1053,21 @@ public class SCAL implements SCALBackendAPI {
     if (!op_stage_instr.isEmpty()) {
       for (SCAIEVNode operation : this.op_stage_instr.keySet()) {
         for (PipelineStage stage : this.op_stage_instr.get(operation).keySet()) {
-          if (operation.isInput && operation != BNode.WrFlush)
-            this.virtualBackend.PutNode("reg", "", "", operation, stage);
-          else
-            this.virtualBackend.PutNode("", "", "", operation, stage);
-          for (SCAIEVNode adjNode : BNode.GetAdjSCAIEVNodes(operation)) {
-            if (adjNode.isInput)
-              this.virtualBackend.PutNode("reg", "", "", adjNode, stage);
-            else
-              this.virtualBackend.PutNode("", "", "", adjNode, stage);
-          }
+          PopulateVirtualCore(operation, stage);
         }
       }
+    }
+  }
+  private void PopulateVirtualCore(SCAIEVNode operation, PipelineStage stage) {
+    if (operation.isInput && operation != BNode.WrFlush)
+      this.virtualBackend.PutNode("reg", "", "", operation, stage);
+    else
+      this.virtualBackend.PutNode("", "", "", operation, stage);
+    for (SCAIEVNode adjNode : BNode.GetAdjSCAIEVNodes(operation)) {
+      if (adjNode.isInput)
+        this.virtualBackend.PutNode("reg", "", "", adjNode, stage);
+      else
+        this.virtualBackend.PutNode("", "", "", adjNode, stage);
     }
   }
 
@@ -956,7 +1081,7 @@ public class SCAL implements SCALBackendAPI {
    */
   private void GenerateAllInterfToCore(SCAIEVNode operation, PipelineStage stage, HashSet<String> interfaceText, NodeRegistry registry,
                                        List<NodeLogicBuilder> interfaceBuilders) {
-    if (operation.equals(BNode.RdIValid)) // SCAL handles RdIValid and ISAX Internal state
+    if (operation.equals(BNode.RdIValid) || operation.equals(BNode.RdAnyValid)) // SCAL handles RdIValid and ISAX Internal state
       return;
 
     String newinterf = "";

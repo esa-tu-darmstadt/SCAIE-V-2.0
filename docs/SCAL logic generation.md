@@ -9,7 +9,7 @@ The revised implementation has two main goals:
 - Automatic construction of dependencies: Reduce static rule complexity by having component builders report their dependencies and having a mechanism that constructs/resolves the logic components and interfaces accordingly. Assumptions on the specific naming of another component's HDL variables should be avoided.
 
 ## Concepts
-- Node Key: The identifier of a node, consisting of a `SCAIEVNode`, a stage, an optional ISAX name, and an optional unique counter (`aux`) to enable reduction (e.g., stall requests). Also a Purpose field to mark the way a node overrides others and to support marker nodes.
+- Node key: The identifier of a node, consisting of a `SCAIEVNode`, a stage, an optional ISAX name, and an optional unique counter (`aux`) to enable reduction (e.g., stall requests). Also a Purpose field to mark the stage of processing a node is in (with associated priority/visibility semantics) or for meta-requests.
 - Node Strategies: Objects that decide whether (and how) to construct one or several nodes, given their keys, optionally emitting Builders. Strategies are passed a key only if no node matching that key exists yet.
 - Node Logic Builders: Objects that can emit HDL declarations and logic (as strings), output node keys for use by other builders with corresponding expression strings and lookup nodes output by other builders. Builders also can be used in a meta sense, e.g., as markers for the existence or properties of some component that drive other builders.
 

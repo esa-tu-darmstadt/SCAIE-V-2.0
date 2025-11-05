@@ -115,7 +115,7 @@ public class VHDL extends GenerateText {
 
   /**
    * Generates text like : signal signalName_s  :  std_logic_vector(1 downto 0);
-   * signalName created from <operation,  stage,  instr>
+   * signalName created from &lt;operation, stage, instr&gt;
    */
   public String CreateDeclSig(SCAIEVNode operation, PipelineStage stage, String instr) {
     String decl = "";
@@ -129,7 +129,7 @@ public class VHDL extends GenerateText {
 
   /**
    * Generates text like : signal signalName_reg  :  std_logic_vector(1 downto 0);
-   * signalName created from <operation,  stage,  instr>
+   * signalName created from &lt;operation, stage, instr&gt;
    */
   public String CreateDeclReg(SCAIEVNode operation, PipelineStage stage, String instr) {
     String decl = "";

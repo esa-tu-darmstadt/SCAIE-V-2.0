@@ -21,14 +21,14 @@ import scaiev.scal.NodeInstanceDesc.RequestedForSet;
  * Class that manages nodes during HDL generation.
  */
 public class NodeRegistry implements NodeRegistryRO {
-  // logging
+  /** logger */
   protected static final Logger logger = LogManager.getLogger();
 
-  // Fully anonymized Purpose. Only for quick HashMap lookups.
+  /** Fully anonymized Purpose. Only for quick HashMap lookups. */
   private static NodeInstanceDesc.Purpose MAP_ANONYMIZED =
       new NodeInstanceDesc.Purpose("MAP_ANONYMIZED", false, Optional.empty(), List.of());
 
-  // Stores nodes by their anonymized key (i.e. regardless of key.isax)
+  /** Stores nodes by their anonymized key (i.e. regardless of key.isax) */
   HashMap<NodeInstanceDesc.Key, ArrayList<NodeInstanceDesc>> map = new HashMap<>();
   HashSet<String> signalNames = new HashSet<>();
 
@@ -38,12 +38,18 @@ public class NodeRegistry implements NodeRegistryRO {
 
   AtomicInteger auxCounter;
 
+  /** The prefix to the expressions of failed lookups by {@link #lookupRequired(Key)} */
+  public static final String MISSING_PREFIX = "MISSING~"; 
+
+  /** Constructs an empty NodeRegistry without any tracking sets to output to. */
   public NodeRegistry() { this(null, null, null, null); }
+  /** Constructs a NodeRegistry from an existing one, without any tracking sets to output to. */
   public NodeRegistry(NodeRegistry other) { this(null, null, null, other); }
   /**
    * Constructs a NodeRegistry with an attached set of missing nodes.
    * @param missingDependencySet the set to be filled with encountered missing nodes from required expression lookups
    * @param weakDependencySet the set to be filled with encountered weak or already fulfilled dependencies
+   * @param resolvedSet the set to be filled with encountered resolved dependencies
    */
   public NodeRegistry(Set<NodeInstanceDesc.Key> missingDependencySet, Set<NodeInstanceDesc.Key> weakDependencySet,
                       Set<NodeInstanceDesc> resolvedSet) {
@@ -53,6 +59,7 @@ public class NodeRegistry implements NodeRegistryRO {
    * Constructs a NodeRegistry with an attached set of missing nodes.
    * @param missingDependencySet the set to be filled with encountered missing nodes from required expression lookups, or null
    * @param weakDependencySet the set to be filled with encountered weak or already fulfilled dependencies, or null
+   * @param resolvedSet the set to be filled with encountered resolved dependencies
    * @param other an existing NodeRegistry whose nodes will be added to the new object, or null
    */
   public NodeRegistry(Set<NodeInstanceDesc.Key> missingDependencySet, Set<NodeInstanceDesc.Key> weakDependencySet,
@@ -71,6 +78,7 @@ public class NodeRegistry implements NodeRegistryRO {
   /**
    * Looks up all node instances associated with a key, but does not touch weakDependencySet.
    * @param key the key that identifies the node
+   * @param fullMatch whether to compare keys or anonymized keys (see {@link #anonymizeKey(Key)})
    * @return an Iterable over the node instances
    */
   protected Iterable<NodeInstanceDesc> lookupAllIndep(NodeInstanceDesc.Key key, boolean fullMatch) {
@@ -197,7 +205,7 @@ public class NodeRegistry implements NodeRegistryRO {
   /**
    * Looks up the node instance associated with a key. Assumes a strong dependency (noting missing nodes internally).
    * @param key the key that identifies the node
-   * @return the resolved node instance, or a placeholder with expression value starting with "MISSING_"
+   * @return the resolved node instance, or a placeholder with expression value starting with {@link #MISSING_PREFIX}
    */
   public NodeInstanceDesc lookupRequired(NodeInstanceDesc.Key key) {
     if ((key.isax == null) ^ (key.aux == Integer.MIN_VALUE)) {
@@ -249,7 +257,7 @@ public class NodeRegistry implements NodeRegistryRO {
       return retEntry;
     }
     missingDependencySet.add(key);
-    return new NodeInstanceDesc(key, "MISSING_" + key.toString(), ExpressionType.AnyExpression_Noparen, new RequestedForSet());
+    return new NodeInstanceDesc(key, MISSING_PREFIX + key.toString(), ExpressionType.AnyExpression_Noparen, new RequestedForSet());
   }
 
   /**

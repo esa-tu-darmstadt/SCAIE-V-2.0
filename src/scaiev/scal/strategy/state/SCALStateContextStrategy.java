@@ -49,7 +49,7 @@ public class SCALStateContextStrategy extends SingleNodeStrategy {
    * @param core The core nodes description
    * @param op_stage_instr The Node-Stage-ISAX mapping
    * @param allISAXes The ISAX descriptions
-   * @param hasWrRD_datahazard If set, ignores WrRD_spawn nodes for fence
+   * @param cfg The SCAIE-V global config
    */
   public SCALStateContextStrategy(Verilog language, BNode bNodes, Core core,
                                   HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,

@@ -4,11 +4,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
+/** A builder repeatedly outputting NodeLogicBlocks */
 public abstract class NodeLogicBuilder {
   private static AtomicInteger nextUniqueID = new AtomicInteger(0);
 
   private int uniqueID;
+  /** name of the builder */
   protected String name;
+  /**
+   * Creates a NodeLogicBuilder with a new unique ID
+   * @param name a short, descriptive name for the builder
+   */
   public NodeLogicBuilder(String name) {
     this.uniqueID = nextUniqueID.getAndIncrement();
     this.name = name;
@@ -36,7 +42,7 @@ public abstract class NodeLogicBuilder {
    * Convenience method that creates a NodeLogicBuilder for a lambda expression
    * @param name name for toString
    * @param fn with args (NodeRegistryRO registry, int aux), implements {@link NodeLogicBuilder#apply(NodeRegistryRO, int)}
-   * @return
+   * @return a NodeLogicBuilder for fn
    */
   public static NodeLogicBuilder fromFunction(String name, BiFunction<NodeRegistryRO, Integer, NodeLogicBlock> fn) {
     return new NodeLogicBuilder(name) {
@@ -51,7 +57,7 @@ public abstract class NodeLogicBuilder {
    * @param name name for toString
    * @param fn with args (NodeRegistryRO registry), implements {@link NodeLogicBuilder#apply(NodeRegistryRO, int)} ignoring the aux
    *     parameter
-   * @return
+   * @return a NodeLogicBuilder for fn
    */
   public static NodeLogicBuilder fromFunction(String name, Function<NodeRegistryRO, NodeLogicBlock> fn) {
     return new NodeLogicBuilder(name) {
@@ -64,6 +70,7 @@ public abstract class NodeLogicBuilder {
 
   /**
    * Convenience method that creates a NodeLogicBuilder that returns empty NodeLogicBlocks.
+   * @return a NodeLogicBuilder
    */
   public static NodeLogicBuilder makeEmpty() { return fromFunction("(empty builder)", registry -> new NodeLogicBlock()); }
 }

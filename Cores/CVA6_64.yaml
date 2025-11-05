@@ -1,0 +1,46 @@
+# CVA6. 0: Fetch, 1: Realign, 2: Decode, 3: Issue, 4: Execute
+!SerialCoreDescription
+tags: [RV64]
+pipeline:
+  name: root
+  kind: root
+  tags: []
+  externalID: -1
+  continuous: false
+  nextStages: []
+  children:
+  - {name: fetch,      kind: core,          externalID: 0,  continuous: true,  tags: [inorder], nextStages: [realign], children: []}
+  - {name: realign,    kind: core,          externalID: 1,  continuous: false, tags: [inorder], nextStages: [decode], children: []}
+  - {name: decode,     kind: core,          externalID: 2,  continuous: false, tags: [inorder], nextStages: [issue], children: []}
+  - {name: issue,      kind: core,          externalID: 3,  continuous: true,  tags: [inorder, issue], nextStages: [executesv1, executecva], children: []}
+  - {name: executesv1, kind: core,          externalID: 4,  continuous: true,  tags: [inorder, execute], nextStages: [decoupled1], children: []} #commit
+  - {name: decoupled1, kind: decoupled,     externalID: 5,  continuous: true,  tags: [inorder], nextStages: [], children: []} #commit
+  # Internal stage invisible to the ISAX; placeholder to indicate that not all instructions (i.e. only ISAX instructions) from issue enter executesv1.
+  - {name: executecva, kind: core_internal, externalID: -1, continuous: true,  tags: [inorder, noisax], nextStages: [], children: []} #commit
+  # Internal stage invisible to the ISAX; successor to executesv1 for non-decoupled ISAXes, internally used for custom register commit.
+  #- {name: commitsv1,  kind: core_internal, externalID: -1, continuous: true,  tags: [inorder, commit], nextStages: [], children: []}
+  ## Internal stage invisible to the ISAX; successor to decoupled1, internally used for custom register commit.
+  #- {name: commitsv2,  kind: core_internal, externalID: -1, continuous: true,  tags: [inorder, commit], nextStages: [], children: []}
+operations:
+- {operation: RdCustReg, earliest: 3, latency: 0, latest: 3}
+- {operation: WrCustReg.addr, earliest: 3, latency: 0, latest: 3}
+- {operation: WrCustReg.data, earliest: 3, latency: 1, costly: 4}
+- {operation: RdRS1, earliest: 3, latency: 0, latest: 4, costly: 5}
+- {operation: RdRS2, earliest: 3, latency: 0, latest: 4, costly: 5}
+- {operation: RdRD, earliest: 4, latency: 0, latest: 4, costly: 4}
+- {operation: WrRD, earliest: 4, latency: 1, latest: 4, costly: 5}
+- {operation: RdPC, earliest: 0, latency: 0, latest: 4, costly: 5}
+- {operation: WrPC, earliest: 0, latency: 0, latest: 4, costly: 2}
+- {operation: RdMem, earliest: 4, latency: 0, latest: 4, costly: 5}
+- {operation: RdMem_validResp, earliest: 4, latency: 0, latest: 4, costly: 5}
+- {operation: WrMem, earliest: 4, latency: 0, latest: 4, costly: 5}
+- {operation: WrMem_validResp, earliest: 4, latency: 0, latest: 4, costly: 5}
+- {operation: RdInstr, earliest: 2, latency: 0, latest: 4, costly: 5}
+- {operation: RdStall, earliest: 0, latency: 0, latest: 4, costly: 5}
+- {operation: WrStall, earliest: 0, latency: 0, latest: 4, costly: 5}
+- {operation: RdFlush, earliest: 0, latency: 0, latest: 4, costly: 5}
+- {operation: WrFlush, earliest: 2, latency: 0, latest: 4, costly: 5}
+#Actually provided by SCAL, not by the core
+- {operation: RdIValid, earliest: 2, latency: 0, latest: 4, costly: 5}
+#Actually provided by SCAL, not by the core
+- {operation: RdAnyValid, earliest: 4, latency: 0, latest: 4, costly: 5}

@@ -7,6 +7,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import scaiev.backend.BNode;
@@ -32,7 +34,7 @@ import scaiev.util.Verilog;
 
 /**
  * Adds a bypassing FIFO to buffer backpressure from spawn operations.
- * Takes all Purpose.match_WIREDIN_OR_PIPEDIN spawn nodes with isInput and outputs corresponding REGULAR nodes.
+ * Takes all Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN_NONLATCH spawn nodes with isInput and outputs corresponding REGULAR_LATCHING nodes.
  */
 public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
 
@@ -93,12 +95,47 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
     int width = (fifoDepth == 0) ? 0 : Log2.clog2(fifoDepth);
     return makeSpawnInputFIFOSubNode(bNodes, spawnNode, "level", width);
   }
+  /** The node to which the input FIFO 'read'/pop request bit is supplied. */
+  public static SCAIEVNode makeReadNode(BNode bNodes, SCAIEVNode spawnNode) {
+    return makeSpawnInputFIFOSubNode(bNodes, spawnNode, "read", 1);
+  }
   /**
    * A marker node that, if there is a reason the input FIFO has to keep ordering intact,
-   * should be registered in the spawn stage with expression value "1" and a unique aux/ISAX.
+   * should be output in the spawn stage with expression value "1" and a unique aux/ISAX.
    */
   public static SCAIEVNode makeMustBeInorderMarkerNode(BNode bNodes, SCAIEVNode spawnNode) {
     return makeSpawnInputFIFOSubNode(bNodes, spawnNode, "mustBeInorderMarker", 1);
+  }
+  /**
+   * A node to indicate that the current request must be cancelled (being discarded in the core).
+   * Should be output in the spawn stage with a 1-bit conditional expression and the associated ISAX.
+   * If not present, assumes there are no cancellations.
+   * Note: This node also enforces the in-order mode.
+   * Note: The current request is finishing iff {@link #makeReadNode(BNode, SCAIEVNode)}.
+   */
+  public static SCAIEVNode makeCommitCancelledNode(BNode bNodes, SCAIEVNode spawnNode) {
+    return makeSpawnInputFIFOSubNode(bNodes, spawnNode, "commitCancelled", 1);
+  }
+  /**
+   * A node to indicate that the current request is confirmed (i.e., committed in the core).
+   * Should be output in the spawn stage with a 1-bit conditional expression and the associated ISAX.
+   * If not present, assumes the next (latched) input is already confirmed.
+   * If there is a cancellation set via {@link #makeCommitCancelledNode(BNode, SCAIEVNode)},
+   *  this node can be either 0 or 1.
+   * Note: This node also enforces the in-order mode.
+   * Note: The current request is finishing iff {@link #makeReadNode(BNode, SCAIEVNode)}.
+   */
+  public static SCAIEVNode makeCommitConfirmedNode(BNode bNodes, SCAIEVNode spawnNode) {
+    return makeSpawnInputFIFOSubNode(bNodes, spawnNode, "commitConfirmed", 1);
+  }
+  /**
+   * A node to indicate that the next request is confirmed (i.e., committed in the core),
+   *  even if the directly preceding request still is on the FIFO's output.
+   * Should be output in the spawn stage with a 1-bit conditional expression and the associated ISAX.
+   * If the makeCommitNextConfirmedNode node is supplied, this node is required for maximum throughput (FIFO readahead during validResp).
+   */
+  public static SCAIEVNode makeCommitReadaheadConfirmedNode(BNode bNodes, SCAIEVNode spawnNode) {
+    return makeSpawnInputFIFOSubNode(bNodes, spawnNode, "commitReadaheadConfirmed", 1);
   }
 
   Purpose purpose_markerNEEDSFIFO_spawn = new Purpose("markerNEEDSFIFO_spawn", true, Optional.empty(), List.of());
@@ -130,6 +167,7 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
       boolean fifoReadAsValidReq;
     }
     List<InOutDesc> fifoElements = new ArrayList<>();
+    Optional<InOutDesc> validFifoIO = Optional.empty();
     Optional<InOutDesc> cancelFifoIO = Optional.empty();
     int totalNumBits = 0;
 
@@ -151,8 +189,14 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
         newIO.numBits = newIO.fifoReadAsValidReq ? 0 : node.size;
         fifoElements.add(newIO);
         totalNumBits += newIO.numBits;
-        if (node.getAdj() == AdjacentNode.cancelReq)
+        if (newIO.fifoReadAsValidReq) {
+          assert(validFifoIO.isEmpty());
+          validFifoIO = Optional.of(newIO);
+        }
+        if (node.getAdj() == AdjacentNode.cancelReq) {
+          assert(cancelFifoIO.isEmpty());
           cancelFifoIO = Optional.of(newIO);
+        }
       } else {
         logicBlock.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR_LATCHING, node, spawnStage, ISAX),
                                                     inExpressionName, ExpressionType.AnyExpression));
@@ -170,7 +214,8 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
 
     if (implementAsFIFO) {
       SCAIEVNode validReq = bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.validReq).get();
-      SCAIEVNode validResp = bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.validResp).get();
+      SCAIEVNode validResp = bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.validHandshakeResp)
+                               .or(() -> bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.validResp)).get();
       Optional<SCAIEVNode> cancelReq_opt = bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.cancelReq);
       String validReqVal = registry.lookupExpressionRequired(
           new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN_NONLATCH, validReq, spawnStage, ISAX));
@@ -181,7 +226,12 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
                             -> registry.lookupExpressionRequired(
                                 new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN_NONLATCH, cancelReq, spawnStage, ISAX)));
 
+      NodeInstanceDesc isaxValidCounterInst =
+          registry.lookupRequired(new NodeInstanceDesc.Key(SpawnRdIValidStrategy.ISAXValidCounter, spawnStage, ISAX));
       int fifoDepth = cfg.spawn_input_fifo_depth;
+      if (isaxValidCounterInst.getKey().getNode().elements > 0)
+        fifoDepth = Math.min(isaxValidCounterInst.getKey().getNode().elements, fifoDepth);
+      fifoDepth = Math.min(cfg.decoupled_parallel_max, fifoDepth);
 
       boolean mustBeInorder = false;
       for (var nodeInst :
@@ -191,13 +241,19 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
           break;
         }
       }
-      boolean hasReadahead = mustBeInorder && fifoDepth > 1;
+      var isCancelled_inst = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(makeCommitCancelledNode(bNodes, baseNode), spawnStage, ISAX));
+      var isConfirmed_inst = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(makeCommitConfirmedNode(bNodes, baseNode), spawnStage, ISAX));
+      var nextIsConfirmed_inst = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(makeCommitReadaheadConfirmedNode(bNodes, baseNode), spawnStage, ISAX));
+      if (isCancelled_inst.isPresent() || isConfirmed_inst.isPresent())
+        mustBeInorder = true;
+      boolean hasReadahead = mustBeInorder && fifoDepth > 1 && (nextIsConfirmed_inst.isPresent() || !isConfirmed_inst.isPresent());
 
       String fifoNameBase = "INPUTFIFO_" + baseNode.name + "_" + ISAX;
       // Declare Signals and Instantiate Module
       String fifo_in_wireName = fifoNameBase + "_in_s";
       String fifo_out_wireName = fifoNameBase + "_out_s";
       String fifo_write_wireName = fifoNameBase + "_write_s";
+      String fifo_skipWrite_wireName = fifoNameBase + "_skipWrite_s";
       String fifo_writeFrontNotBack_wireName = fifoNameBase + "_writeFrontNotBack_s";
       String fifo_read_wireName = fifoNameBase + "_read_s";
       String fifo_readahead_wireName = fifoNameBase + "_readahead_s";
@@ -208,10 +264,12 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
       String fifo_stallIntoSpawn_early_wireName = fifoNameBase + "_stallIntoSpawn_early_s";
       logicBlock.declarations += "wire [" + (totalNumBits == 0 ? 1 : totalNumBits) + "-1:0] " + fifo_in_wireName + ";\n"
                                  + "wire [" + (totalNumBits == 0 ? 1 : totalNumBits) + "-1:0] " + fifo_out_wireName + ";\n"
-                                 + "wire " + fifo_write_wireName + ";\n" +
-                                 (!mustBeInorder ? "logic " + fifo_writeFrontNotBack_wireName + ";\n" : "") + "reg " + fifo_read_wireName +
-                                 ";\n" + (hasReadahead ? "logic " + fifo_readahead_wireName + ";\n" : "") + "wire " +
-                                 fifo_notEmpty_wireName + ";\n"
+                                 + "wire " + fifo_write_wireName + ";\n"
+                                 + "logic " + fifo_skipWrite_wireName + ";\n"
+                                 + (!mustBeInorder ? "logic " + fifo_writeFrontNotBack_wireName + ";\n" : "")
+                                 + "reg " + fifo_read_wireName + ";\n"
+                                 + (hasReadahead ? "logic " + fifo_readahead_wireName + ";\n" : "")
+                                 + "wire " + fifo_notEmpty_wireName + ";\n"
                                  + "wire " + fifo_notFull_wireName + ";\n"
                                  + "wire [$clog2(" + fifoDepth + ")-1:0] " + fifo_level_wireName + ";\n"
                                  + "wire " + fifo_stallIntoSpawn_wireName + ";\n"
@@ -231,7 +289,7 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
             new NodeInstanceDesc.Key(new SCAIEVNode("SpawnInputFIFO_writeFrontNotBack_" + baseNode.name), spawnStage, ISAX),
             fifo_writeFrontNotBack_wireName, ExpressionType.WireName));
       logicBlock.outputs.add(
-          new NodeInstanceDesc(new NodeInstanceDesc.Key(new SCAIEVNode("SpawnInputFIFO_read_" + baseNode.name), spawnStage, ISAX),
+          new NodeInstanceDesc(new NodeInstanceDesc.Key(makeReadNode(bNodes, baseNode), spawnStage, ISAX),
                                fifo_read_wireName, ExpressionType.WireName));
       if (hasReadahead)
         logicBlock.outputs.add(
@@ -245,13 +303,11 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
       logicBlock.outputs.add(
           new NodeInstanceDesc(new NodeInstanceDesc.Key(fifoLevelNode, spawnStage, ISAX), fifo_level_wireName, ExpressionType.WireName));
 
-      // Backpressure: Since the ISAX may commit before it leaves the SpawnInputFIFO is empty (decreasing ISAXValidCounter),
+      // Backpressure: Since the ISAX may commit before it leaves the SpawnInputFIFO (decreasing ISAXValidCounter),
       //  dynamically reduce the concurrent ISAX limit by the FIFO level.
       logicBlock.outputs.add(
           new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, SpawnRdIValidStrategy.ISAXValidCounterMax, spawnStage, ISAX, aux),
                                "" + fifoDepth, ExpressionType.AnyExpression));
-      NodeInstanceDesc isaxValidCounterInst =
-          registry.lookupRequired(new NodeInstanceDesc.Key(SpawnRdIValidStrategy.ISAXValidCounter, spawnStage, ISAX));
       int isaxValidCounterWidth = isaxValidCounterInst.getKey().getNode().size;
       String isaxValidCounterExpr = isaxValidCounterInst.getExpression();
       // Zero-extend fifo_level_wireName to the width of isaxValidCounterExpr.
@@ -288,12 +344,19 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
                                    requestedForISAXSet)
                              : "0";
       logicBlock.logic += String.format("%s#(%d,%d) %s_valid_INPUTs_inst (\n", FIFOmoduleName, fifoDepth,
-                                        (totalNumBits == 0 ? 1 : totalNumBits), fifoNameBase) +
-                          tab + language.clk + ",\n" + tab + language.reset + ",\n" + tab + clearCond + ",\n" + tab + fifo_write_wireName +
-                          ",\n" + (!mustBeInorder ? tab + fifo_writeFrontNotBack_wireName + ",\n" : "") + tab + fifo_read_wireName +
-                          ",\n" + tab + fifo_in_wireName + ",\n" + tab + fifo_notEmpty_wireName + ",\n" + tab + fifo_notFull_wireName +
-                          ",\n" + tab + fifo_level_wireName + ",\n" + (hasReadahead ? tab + fifo_readahead_wireName + ",\n" : "") + tab +
-                          fifo_out_wireName + "\n"
+                                        (totalNumBits == 0 ? 1 : totalNumBits), fifoNameBase)
+                          + tab + language.clk + ",\n"
+                          + tab + language.reset + ",\n"
+                          + tab + clearCond + ",\n"
+                          + tab + fifo_write_wireName + ",\n"
+                          + (!mustBeInorder ? tab + fifo_writeFrontNotBack_wireName + ",\n" : "")
+                          + tab + fifo_read_wireName + ",\n"
+                          + tab + fifo_in_wireName + ",\n"
+                          + tab + fifo_notEmpty_wireName + ",\n"
+                          + tab + fifo_notFull_wireName + ",\n"
+                          + tab + fifo_level_wireName + ",\n"
+                          + (hasReadahead ? tab + fifo_readahead_wireName + ",\n" : "")
+                          + tab + fifo_out_wireName + "\n"
                           + ");\n";
 
       // FIFO write condition
@@ -306,7 +369,7 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
         // writeCondition += String.format(" || %s && %s", cancelReqVal_opt.get(), fifo_notEmpty_wireName);
         writeCondition += String.format(" || %s", cancelReqVal_opt.get());
       }
-      logicBlock.logic += String.format("assign %s = %s;\n", fifo_write_wireName, writeCondition);
+      logicBlock.logic += String.format("assign %s = !%s && (%s);\n", fifo_write_wireName, fifo_skipWrite_wireName, writeCondition);
 
       // FIFO input data
       if (totalNumBits == 0)
@@ -317,20 +380,114 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
             fifoElements.stream().filter(inp -> inp.numBits > 0).map(inp -> inp.inExpression).reduce((a, b) -> a + "," + b).orElse(""));
       }
 
+      // Determine extra conditions from the external nodes; apply to the request that has not yet left the BypassFIFO.
+      String validExtraCond_current = "";
+      if (isConfirmed_inst.isPresent())
+        validExtraCond_current = isConfirmed_inst.get().getExpressionWithParens();
+      if (isCancelled_inst.isPresent())
+        validExtraCond_current += (validExtraCond_current.isEmpty() ? "" : " && ") + "!" + isCancelled_inst.get().getExpressionWithParens();
+
       // Readahead condition
       if (hasReadahead) {
         logicBlock.logic += String.format("assign %s = %s;\n", fifo_readahead_wireName, validRespVal);
       }
 
+      //Register the 'is confirmed' condition on the currently supplied request, taking FIFO deq into consideration.
+      String isConfirmed_regName = "";
+      if (isConfirmed_inst.isPresent()) {
+        isConfirmed_regName = fifoNameBase + "_commitConfirmed_r";
+        String confirmedNextVal;
+        //isConfirmed_inst is updated only after FIFO read/deq
+        // -> During FIFO read/deq, check on nextIsConfirmed_inst instead
+        if (nextIsConfirmed_inst.isPresent()) {
+          confirmedNextVal = "%s ? %s : %s".formatted(fifo_read_wireName,
+                                                      nextIsConfirmed_inst.get().getExpressionWithParens(),
+                                                      isConfirmed_inst.get().getExpressionWithParens());
+        }
+        else {
+          //Fall-back to assuming no registered confirmation after FIFO read/deq.
+          confirmedNextVal = "%s && !%s".formatted(isConfirmed_inst.get().getExpressionWithParens(), fifo_read_wireName);
+        }
+        logicBlock.declarations += "logic %s;\n".formatted(isConfirmed_regName);
+        logicBlock.logic += """
+            always_ff @(posedge %1$s) begin
+                if (%2$s) %3$s <= 1'b0;
+                else begin
+                    %3$s <= %4$s;
+                end
+            end
+            """.formatted(language.clk, language.reset,
+                          isConfirmed_regName, confirmedNextVal);
+      }
+      //Register to track if a request is currently active.
+      String reqIsRegistered_regName = fifoNameBase + "_reqIsRegistered_r";
+      //Register to track if a request is currently active and is a cancellation.
+      String reqIsRegisteredCancel_regName = fifoNameBase + "_reqIsRegisteredAndCancel_r";
+      String reqIsCompleting_wireName = fifoNameBase + "_reqIsCompleting_s";
+      //.. extra condition 'the request being registered is valid'
+      String reqIsRegistering_wireName = fifoNameBase + "_reqIsRegistering_s";
+      //.. extra condition 'the request being registered is a cancellation'
+      String reqIsRegisteringCancel_wireName = fifoNameBase + "_reqIsRegisteringCancel_s";
+      logicBlock.declarations += "logic %s;\n".formatted(reqIsRegistered_regName);
+      logicBlock.declarations += "logic %s;\n".formatted(reqIsRegisteredCancel_regName);
+      logicBlock.declarations += "logic %s;\n".formatted(reqIsCompleting_wireName);
+      logicBlock.logic += "assign %s = %s;\n".formatted(reqIsCompleting_wireName, validRespVal);
+      logicBlock.declarations += "logic %s;\n".formatted(reqIsRegistering_wireName);
+      logicBlock.declarations += "logic %s;\n".formatted(reqIsRegisteringCancel_wireName);
+      //Logic for the 'registered' tracking regs (set and reset based on the various wires)
+      //Cancel does not stick, as we're not waiting for validResp there.
+      logicBlock.logic += """
+          always_ff @(posedge %1$s) begin
+              if (%2$s) begin
+                  %3$s <= 1'b0;
+                  %4$s <= 1'b0;
+              end
+              else begin
+                  %3$s <= %3$s && !%5$s || %6$s;
+                  %4$s <= %7$s;
+              end
+          end
+          """.formatted(language.clk, language.reset, //1,2
+                        reqIsRegistered_regName, reqIsRegisteredCancel_regName, //3,4
+                        reqIsCompleting_wireName, reqIsRegistering_wireName, reqIsRegisteringCancel_wireName); //5,6,7
+
       // FIFO output data and read condition
       String readLogic = "";
+
       readLogic += "//Default: Pass through the new request\n";
       readLogic += fifoElements.stream().map(io -> String.format("%s = %s;\n", io.outDest, io.inExpression)).reduce("", (a, b) -> a + b);
-      readLogic += String.format("%s = 0;\n", fifo_read_wireName);
+      readLogic += String.format("%s = 1'b0;\n", fifo_read_wireName);
       if (!mustBeInorder)
-        readLogic += String.format("%s = 0;\n", fifo_writeFrontNotBack_wireName);
+        readLogic += String.format("%s = 1'b0;\n", fifo_writeFrontNotBack_wireName);
+      //Apply combinational input for the 'registered' tracking signals.
+      readLogic += String.format("%s = %s;\n", reqIsRegistering_wireName, validFifoIO.map(a->a.inExpression).orElse("1'b0"));
+      readLogic += String.format("%s = %s;\n", reqIsRegisteringCancel_wireName, cancelFifoIO.map(a->a.inExpression).orElse("1'b0"));
+      //Cancellation is applied immediately, no need to wait for validResp
+      readLogic += String.format("%s = %s;\n", fifo_skipWrite_wireName, cancelFifoIO.map(a->a.inExpression).orElse("1'b0"));
       readLogic += "\n";
+      if (isConfirmed_inst.isPresent()) {
+        //Defer new request (or cancel from ISAX) while it is not yet confirmed.
+        //If we are getting a commit cancellation, keep the original ISAX valid/cancel signals
+        //  so the dedicated commit cancel logic (further down) knows if there is a request to be cancelled.
+        String keepReqWiresCond = isCancelled_inst.map(a->a.getExpressionWithParens()).orElse("1'b0");
+        readLogic += """
+            if (!%s) begin
+                %s = 1'b0;
+                %s = 1'b0;
+                %s = 1'b0;%s%s
+            end
+            """.formatted(isConfirmed_inst.get().getExpressionWithParens(),
+                          reqIsRegistering_wireName, reqIsRegisteringCancel_wireName, fifo_skipWrite_wireName,
+                          validFifoIO.map(a->"\n"+tab+"%1$s = %1$s && %2$s;".formatted(a.outDest,keepReqWiresCond)).orElse(""),
+                          cancelFifoIO.map(a->"\n"+tab+"%1$s = %1$s && %2$s;".formatted(a.outDest,keepReqWiresCond)).orElse(""));
+      }
+      //Condition expression to check if either the validReq or cancelReq output is set
+      // (-> result depends on the current location in readLogic)
+      String outgoingReqIsPresentCond = Stream.concat(validFifoIO.stream(), cancelFifoIO.stream())
+          .map(a->a.outDest).reduce((a,b)->a+" || "+b)
+          .orElse("1'b0");
 
+      //Dequeue from FIFO if cancelled (i.e., no registered validReq); dequeue if we got a response.
       String mayPushRequestCond = String.format("!%s || %s", validReqRegVal, validRespVal);
 
       readLogic += String.format("if (%s) begin\n", fifo_notEmpty_wireName);
@@ -339,65 +496,124 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
                    "still output the new request.\n";
       if (hasReadahead) {
         // We can implicitly read either from the front of the FIFO or the element after the front (-> readahead FIFO feature).
+        //-> If the request is ending AND the FIFO has no other element yet, pass through the new request instead.
         readLogic += tab + String.format("if (!%s || %s != %d'd1) begin\n", validRespVal, fifo_level_wireName, fifoLevelNode.size);
       } else {
         // We can only read from the front of the FIFO,
         //  i.e. there is no way to combinationally dequeue and read the request after that from FIFO.
+        // -> If the request is ending and the FIFO, pass through the new request instead.
         readLogic += tab + String.format("if (!%s) begin\n", validRespVal);
       }
-      //-> If the request is ending and the FIFO has no other element yet, pass through the new request instead.
       for (int iElem = fifoElements.size() - 1; iElem >= 0; --iElem) {
         var io = fifoElements.get(iElem);
         if (io.fifoReadAsValidReq) {
+          //Special handling for validReq from the FIFO.
+          String validExtraCond = "";
           if (cancelFifoIO.isPresent())
-            readLogic += tab + tab + String.format("%s = !%s[%d];\n", io.outDest, fifo_out_wireName, cancelFifoIO.get().bitPos);
+            validExtraCond = String.format("!%s[%d]", fifo_out_wireName, cancelFifoIO.get().bitPos);
+
+          if (validExtraCond.isEmpty())
+            readLogic += tab + tab + String.format("%s = 1'b1;\n", io.outDest);
           else
-            readLogic += tab + tab + String.format("%s = 1;\n", io.outDest);
+            readLogic += tab + tab + String.format("%s = %s;\n", io.outDest, validExtraCond);
         } else if (io.numBits > 0) {
           readLogic += tab + tab + String.format("%s = %s[%d+%d-1:%d];\n", io.outDest, fifo_out_wireName, io.bitPos, io.numBits, io.bitPos);
         }
       }
+      //reading from FIFO, so do buffer the new request
+      readLogic += tab + String.format("%s = 1'b0;\n", fifo_skipWrite_wireName);
       readLogic += tab + "end\n";
       readLogic += tab + String.format("if (%s && %s != %d'd1) begin\n", validRespVal, fifo_level_wireName, fifoLevelNode.size);
       if (mustBeInorder) {
         // If there is another FIFO element, output it directly; else, pass through the new input.
-        //  -> Needs SimpleFIFO support: read at wrap(read_ptr+1)
+        //  -> Needs ScaievFIFO support: read at wrap(read_ptr+1)
         //     (maybe a shiftreg over the two next FIFO elements would do)
 
         if (!hasReadahead) {
           // For now: Simply set the validReq output to 0, so any new input will not be sampled (= stall cycle).
           readLogic +=
               tab + tab + "//There is another FIFO element that needs to be passed on before any new request. Stall to preserve ordering\n";
-          for (InOutDesc io : fifoElements)
-            if (io.fifoReadAsValidReq) {
-              readLogic += tab + tab + String.format("%s = 0;\n", io.outDest);
-            }
+          if (validFifoIO.isPresent())
+            readLogic += tab + tab + String.format("%s = 1'b0;\n", validFifoIO.get().outDest);
           if (cancelFifoIO.isPresent())
-            readLogic += tab + tab + String.format("%s = 0;\n", cancelFifoIO.get().outDest);
+            readLogic += tab + tab + String.format("%s = 1'b0;\n", cancelFifoIO.get().outDest);
+          readLogic += tab + tab + String.format("%s = 1'b0;\n", fifo_skipWrite_wireName);
         } else {
           readLogic += tab + tab + "//Readahead already ensures the next request from the FIFO will be used (preserving ordering).\n";
         }
       } else {
+        assert(!isConfirmed_inst.isPresent() && !isCancelled_inst.isPresent());
+        assert(!hasReadahead);
         readLogic += tab + tab + "//Still pass through the new request immediately (if present), but write it to the front\n";
-        readLogic += tab + tab + String.format("%s = 1;\n", fifo_writeFrontNotBack_wireName);
+        readLogic += tab + tab + String.format("%s = 1'b1;\n", fifo_writeFrontNotBack_wireName);
       }
       readLogic += tab + "end\n";
-      String pushingRequestOrCancelCond = mayPushRequestCond;
+
+      if (hasReadahead && (isConfirmed_inst.isPresent() || isCancelled_inst.isPresent())) {
+        //If we apply commit tracking, conditionally delay readahead.
+        String stallRequestOnReadahead = nextIsConfirmed_inst.map(a->"!"+a.getExpressionWithParens()).orElse("1'b1");
+        readLogic += tab + "if (%s && %s) begin\n".formatted(fifo_readahead_wireName, stallRequestOnReadahead);
+        readLogic += tab + tab + "//Delay readahead if the next request is still pending commit confirmation.\n";
+        if (validFifoIO.isPresent())
+          readLogic += tab + tab + String.format("%s = 1'b0;\n", validFifoIO.get().outDest);
+        if (cancelFifoIO.isPresent())
+          readLogic += tab + tab + String.format("%s = 1'b0;\n", cancelFifoIO.get().outDest);
+        readLogic += tab + tab + String.format("%s = 1'b0;\n", fifo_skipWrite_wireName);
+        readLogic += tab + "end\n";
+      }
+      //Note: The FIFO read logic ensures validReq=0 if cancelReq=1.
+      readLogic += tab + "//Check if this is the first cycle the request is on the INPUTFIFO's output.\n";
+      readLogic += tab + String.format("if ((!%s && !%s || %s) && %s) begin\n",
+                                             reqIsRegistered_regName, reqIsRegisteredCancel_regName, validRespVal,
+                                             outgoingReqIsPresentCond);
+      readLogic += tab + tab + String.format("%s = %s;\n", reqIsRegistering_wireName,
+                                                   validFifoIO.map(a->a.outDest).orElse("1'b0"));
+      readLogic += tab + tab + String.format("%s = %s;\n", reqIsRegisteringCancel_wireName,
+                                                   cancelFifoIO.map(a->a.outDest).orElse("1'b0"));
+      readLogic += tab + "end\n";
+      readLogic += tab + "else begin\n";
+      readLogic += tab + tab + String.format("%s = 1'b0;\n", reqIsRegistering_wireName);
+      readLogic += tab + tab + String.format("%s = 1'b0;\n", reqIsRegisteringCancel_wireName);
+      readLogic += tab + "end\n";
+      readLogic += "end\n";
+      //Assign the read/pop condition if the FIFO is not empty.
+      readLogic += String.format("if (%s) begin\n", fifo_notEmpty_wireName);
+      String pushingRequestOrCancelCond = "(%s || %s) && (%s)".formatted(reqIsRegistered_regName, reqIsRegisteredCancel_regName, mayPushRequestCond);
       if (cancelFifoIO.isPresent()) {
         // When canceling, immediately pop from the FIFO (no need to / must not wait for validResp).
         pushingRequestOrCancelCond += String.format(" || %s", cancelFifoIO.get().outDest);
       }
+      if (isCancelled_inst.isPresent()) {
+        // Same behavior for commit cancellation.
+        pushingRequestOrCancelCond += String.format(" || %s", isCancelled_inst.get().getExpressionWithParens());
+      }
       readLogic += language.tab + String.format("%s = %s;\n", fifo_read_wireName, pushingRequestOrCancelCond);
       readLogic += "end\n";
 
-      readLogic += String.format("if (!(%s)) begin\n", mayPushRequestCond);
+      readLogic += String.format("if (%s && !(%s)) begin\n", reqIsRegistered_regName, mayPushRequestCond);
       readLogic += tab + "//Clear validReq if downstream has already received the pending request.\n";
       readLogic += tab + "//validReq should only be set for one cycle per request.\n";
       for (InOutDesc io : fifoElements)
         if (io.fifoReadAsValidReq) {
-          readLogic += tab + String.format("%s = 0;\n", io.outDest);
+          readLogic += tab + String.format("%s = 1'b0;\n", io.outDest);
         }
       readLogic += "end\n";
+      if (isCancelled_inst.isPresent()) {
+        //The commit of the current request is cancelled
+        // -> set cancel tracking signal, clear outgoing validReq, set outgoing cancelReq.
+        //However, if there currently is no request in the bypass-FIFO, nothing is to be done.
+        // -> in that case, clear the cancel tracking signal.
+        readLogic += """
+            if (%s) begin
+                %s = 1'b0;
+                %s = %s;%s%s
+            end
+            """.formatted(isCancelled_inst.get().getExpressionWithParens(),
+                          reqIsRegistering_wireName,
+                          reqIsRegisteringCancel_wireName, outgoingReqIsPresentCond,
+                          validFifoIO.map(a->"\n"+tab+a.outDest+" = 1'b0;").orElse(""),
+                          cancelFifoIO.map(a->"\n"+tab+"%s = %s;".formatted(a.outDest,reqIsRegisteringCancel_wireName)).orElse(""));
+      }
 
       logicBlock.logic += language.CreateInAlways(false, readLogic);
 

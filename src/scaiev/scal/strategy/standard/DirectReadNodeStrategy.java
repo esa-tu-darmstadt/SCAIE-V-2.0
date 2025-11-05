@@ -41,7 +41,7 @@ public class DirectReadNodeStrategy extends SingleNodeStrategy {
     CoreNode coreNode = this.core.GetNodes().get(node);
     if (coreNode == null)
       return false;
-    if (stage.getKind() != StageKind.Core && stage.getKind() != StageKind.CoreInternal)
+    if (stage.getKind() != StageKind.Core && stage.getKind() != StageKind.CoreInternal && stage.getKind() != StageKind.Root)
       return false;
     if (!nodeKey.getPurpose().matches(NodeInstanceDesc.Purpose.REGULAR))
       return false;
@@ -52,7 +52,7 @@ public class DirectReadNodeStrategy extends SingleNodeStrategy {
         node.equals(bNodes.RdIValid) /* Handled separately (check not needed assuming the RdIValid strategy is always called first) */)
       return false;
     return (core.TranslateStageScheduleNumber(coreNode.GetEarliest()).isAroundOrBefore(stage, false)) &&
-        core.TranslateStageScheduleNumber(coreNode.GetExpensive()).isAfter(stage, false) &&
+        (stage.getKind() == StageKind.Root || core.TranslateStageScheduleNumber(coreNode.GetExpensive()).isAfter(stage, false)) &&
         core.TranslateStageScheduleNumber(coreNode.GetLatest()).isAroundOrAfter(stage, false);
   }
 

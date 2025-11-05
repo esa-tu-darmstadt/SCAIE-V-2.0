@@ -38,9 +38,11 @@ import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
 import scaiev.scal.strategy.pipeline.IDBasedPipelineStrategy;
+import scaiev.scal.strategy.pipeline.IDRetireSerializerStrategy;
 import scaiev.scal.strategy.pipeline.NodeRegPipelineStrategy;
 import scaiev.util.FileWriter;
 import scaiev.util.Lang;
+import scaiev.util.Log2;
 import scaiev.util.ToWrite;
 import scaiev.util.Verilog;
 
@@ -58,6 +60,17 @@ public class CVA5 extends CoreBackend {
   static final String targetModule = "scaiev_glue";
   static final String configPackage = "scaiev_config";
   static final String tab = "    ";
+
+  private boolean use_native_RdRD = true;
+  private boolean use_wbdecoupled_cva5alloc = true; // Set if decoupled writeback should use CVA5's allocator.
+  private boolean use_reduced_fetchdecode_pipebuffers = true;
+
+  /** The number of commit ports CVA5 has */
+  static final int num_commit_ports = 2;
+  /** The width of the core's issue ID space */
+  static final int id_space_width = 3;
+  /** The number of issue IDs, most commonly 2**(id_space_width) */
+  static final int id_count = 8;
 
   static final int stagePos_fetch = 0;
   static final int stagePos_decode = 1;
@@ -108,10 +121,6 @@ public class CVA5 extends CoreBackend {
   private FileWriter toFile = new FileWriter(pathCore.toString());
   private Verilog language = null;
 
-  private boolean use_native_RdRD = true;
-  private boolean use_wbdecoupled_cva5alloc = true; // Set if decoupled writeback should use CVA5's allocator.
-  private int cva5_config_LOG2_MAX_IDS = 3;         // Must match $clog2(MAX_IDS) in cva5_config.sv.
-
   private HashMap<String, Boolean> configFlags = new HashMap<>();
 
   private void addLogic(String text) {
@@ -126,6 +135,10 @@ public class CVA5 extends CoreBackend {
       toFile.ReplaceContent(this.ModFile(configPackage), "localparam " + name + " = ",
                             new ToWrite("localparam " + name + " = " + (newval ? "1" : "0") + ";", true, false, ""));
     });
+  }
+  private boolean ContainsOp(SCAIEVNode operation) {
+    return op_stage_instr.containsKey(operation)
+        && op_stage_instr.get(operation).values().stream().anyMatch(instrSet -> !instrSet.isEmpty());
   }
   private boolean ContainsOpInStage(SCAIEVNode operation, PipelineStage stage) {
     return op_stage_instr.containsKey(operation) && op_stage_instr.get(operation).containsKey(stage) &&
@@ -190,7 +203,7 @@ public class CVA5 extends CoreBackend {
             ret = Stream.concat(ret, Stream.of(new NodeInstanceDesc.Key(BNode.RdIValid, stage_execute, isaxName)));
           return ret;
         }));
-    
+
     //Call the consumer for each _unique_ pin.
     ivalidKeyStream.distinct().forEach(ivalidKey -> {
       consumer.accept(ivalidKey.getNode(), ISAXes.get(ivalidKey.getISAX()), ivalidKey.getStage());
@@ -204,9 +217,12 @@ public class CVA5 extends CoreBackend {
   public void Prepare(HashMap<String, SCAIEVInstr> ISAXes, HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
                       Core core, SCALBackendAPI scalAPI, BNode user_BNode) {
     super.Prepare(ISAXes, op_stage_instr, core, scalAPI, user_BNode);
+    use_wbdecoupled_cva5alloc = !scalAPI.getSVConfig().cva5_wrrdspawn_injectmode;
+    use_reduced_fetchdecode_pipebuffers = !scalAPI.getSVConfig().cva5_fetchdecodepipe_wideid;
     this.BNode = user_BNode;
     this.BNode.AddCoreBNode(node_RdFetchID);
     this.BNode.AddCoreBNode(node_RdFetchPostFlushID);
+    this.BNode.AddCoreBNode(node_RdFetchFlushCount);
     this.language = new Verilog(user_BNode, toFile, this);
     this.cva5_core = core;
     this.ISAXes = ISAXes;
@@ -229,15 +245,48 @@ public class CVA5 extends CoreBackend {
 
     core.GetNodes().get(BNode.WrFlush).OverrideEarliest(new ScheduleFront(new PipelineFront(List.of(stage_fetch_interm, stage_decode))));
 
+    BNode.RdInstr_RS.size = 6*2;
+    BNode.RdInstr_RS.elements = 2;
+    core.PutNode(BNode.RdInstr_RS, new CoreNode(stagePos_decode, 0, stagePos_decode, stagePos_issue, BNode.RdInstr_RS.name));
+    BNode.RdInstr_RD.size = 6;
+    BNode.RdInstr_RD.elements = 1;
+    core.PutNode(BNode.RdInstr_RD, new CoreNode(stagePos_decode, 0, stagePos_decode, stagePos_issue, BNode.RdInstr_RD.name));
+
+    // Support for pipelined semi-coupled: Transfer handling of an instruction from the core's execution unit to SCAL.
     core.PutNode(BNode.WrDeqInstr, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.WrDeqInstr.name));
     core.PutNode(BNode.RdInStageID, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.RdInStageID.name));
-    BNode.RdInStageID.size = cva5_config_LOG2_MAX_IDS + 1; // ID and flag 'expects rd'
+    BNode.RdInStageID.size = id_space_width + 1; // ID and flag 'expects rd'
     core.PutNode(BNode.RdInStageValid, new CoreNode(stagePos_fetch, 0, stagePos_execute, stagePos_execute + 1, BNode.RdInStageValid.name));
-    BNode.WrInStageID.size = cva5_config_LOG2_MAX_IDS + 1; // ID and flag 'expects rd'
+    BNode.WrInStageID.size = id_space_width + 1; // ID and flag 'expects rd'
     core.PutNode(BNode.WrInStageID, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.WrInStageID.name));
+
+    // Commit information: Pass instruction ID to the core,
+    ScheduleFront rootSchedFront = new ScheduleFront(new PipelineFront(core.GetRootStage()));
+    BNode.RdIssueID.size = id_space_width;
+    BNode.RdIssueID.elements = id_count;
+    core.PutNode(BNode.RdIssueID, new CoreNode(stagePos_issue, 0, stagePos_execute, stagePos_execute + 1, BNode.RdIssueID.name));
+    BNode.RdIssueFlushID.size = id_space_width;
+    BNode.RdIssueFlushID.elements = id_count;
+    core.PutNode(BNode.RdIssueFlushID, new CoreNode(stagePos_issue, 0, stagePos_execute, stagePos_execute + 1, BNode.RdIssueFlushID.name));
+    //core.PutNode(BNode.RdIssueIDValid, new CoreNode(stagePos_issue, 0, stagePos_execute, stagePos_execute + 1, BNode.RdIssueIDValid.name));
+    BNode.RdCommitID.size = id_space_width;
+    BNode.RdCommitID.elements = id_count;
+    BNode.RdCommitIDCount.elements = num_commit_ports;
+    BNode.RdCommitIDCount.size = Log2.clog2(num_commit_ports+1);
+    core.PutNode(BNode.RdCommitID, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitID.name));
+    core.PutNode(BNode.RdCommitIDCount, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitIDCount.name));
+    BNode.RdCommitFlushID.size = id_space_width;
+    BNode.RdCommitFlushID.elements = id_count;
+    BNode.RdCommitFlushIDCount.elements = num_commit_ports;
+    BNode.RdCommitFlushIDCount.size = Log2.clog2(num_commit_ports+1);
+    BNode.RdCommitFlushMask.size = 0; //not used
+    core.PutNode(BNode.RdCommitFlushID, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushID.name));
+    core.PutNode(BNode.RdCommitFlushIDCount, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushIDCount.name));
+    core.PutNode(BNode.RdCommitFlushMask, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushMask.name));
 
     BNode.RdMem_addr.mustToCore = true;
     BNode.WrMem_addr.mustToCore = true;
+    BNode.WrRD_spawn_cancel.mustToCore = true;
 
     // NodeRegPipelineStrategy looks for an optional RdPipeInto node with "stage_<dest stage name>" in the ISAX field.
     var interface_toscal_pipeinto_executesv1 =
@@ -264,6 +313,10 @@ public class CVA5 extends CoreBackend {
     for (String instr_name : ISAXes.keySet()) {
       boolean has_any_rdRD =
           this.ContainsOpInStage(BNode.RdRD, stage_issue, instr_name) || this.ContainsOpInStage(BNode.RdRD, stage_execute, instr_name);
+      if (has_any_rdRD && use_native_RdRD) {
+        BNode.RdInstr_RS.size = 6*3;
+        BNode.RdInstr_RS.elements = 3;
+      }
       if (has_any_rdRD && !use_native_RdRD) {
         for (int stagePos = stagePos_decode; stagePos <= stagePos_execute; ++stagePos) {
           PipelineStage stage = stages[stagePos];
@@ -314,10 +367,15 @@ public class CVA5 extends CoreBackend {
       CustomCoreInterface addr_to_scal_interface =
           new CustomCoreInterface(signame_to_scal_wrrd_spawn_addr, "wire", stage_issue, BNode.WrRD_spawn_addr.size, true, "");
       scalAPI.OverrideSpawnRDAddr(addr_to_scal_interface);
+      CustomCoreInterface addr_to_scal_interface_decode =
+          new CustomCoreInterface(signame_to_scal_wrrd_spawn_addr, "wire", stage_decode, BNode.WrRD_spawn_addr.size, true, "");
+      scalAPI.OverrideSpawnRDAddr(addr_to_scal_interface_decode);
     }
 
-    node_RdFetchID.size = cva5_config_LOG2_MAX_IDS;
-    node_RdFetchPostFlushID.size = cva5_config_LOG2_MAX_IDS;
+    node_RdFetchID.size = id_space_width;
+    node_RdFetchPostFlushID.size = id_space_width;
+    node_RdFetchFlushCount.size = id_space_width+1;
+    node_RdFetchFlushCount.elements = id_count;
     scalAPI.getStrategyBuilders().put(StrategyBuilders.UUID_NodeRegPipelineStrategy, args -> this.build_cva5NodeRegPipelineStrategy(args));
   }
 
@@ -325,6 +383,7 @@ public class CVA5 extends CoreBackend {
     { tags.add(NodeTypeTag.staticReadResult); }
   };
   private SCAIEVNode node_RdFetchPostFlushID = new SCAIEVNode("RdCVA5FetchPostFlushID", 3, false);
+  private SCAIEVNode node_RdFetchFlushCount = new SCAIEVNode("RdCVA5FetchFlushCount", 4, false);
 
   private List<MultiNodeStrategy> idbasedPipelineSubstrategies = new ArrayList<>();
   @SuppressWarnings("unchecked")
@@ -334,21 +393,28 @@ public class CVA5 extends CoreBackend {
                                        (Boolean)args.get("zeroOnFlushSrc"), (Boolean)args.get("zeroOnFlushDest"),
                                        (Boolean)args.get("zeroOnBubble"), (Predicate<NodeInstanceDesc.Key>)args.get("can_pipe"),
                                        (Predicate<NodeInstanceDesc.Key>)args.get("prefer_direct"),
-                                       (MultiNodeStrategy)args.get("strategy_instantiateNew")) {
+                                       (MultiNodeStrategy)args.get("strategy_instantiateNew"),
+                                       (Boolean)args.get("forwardRequestedFor")) {
       // Use one strategy for all nodes pipelined at full ID width (i.e. cannot run out of IDs/buffer space before the core does)
       private IDBasedPipelineStrategy pipeFullWidth = null;
       // Use one strategy per custom register node at a reduced ID width, so unrelated registers do not reserve buffer space for each other.
       private HashMap<SCAIEVNode, IDBasedPipelineStrategy> pipeReducedWidthByCustomReg = new HashMap<>();
 
       private IDBasedPipelineStrategy makeFetchDecodePipeStrategy(int idWidth) {
-        if (idWidth > cva5_config_LOG2_MAX_IDS)
-          idWidth = cva5_config_LOG2_MAX_IDS;
+        if (idWidth > id_space_width)
+          idWidth = id_space_width;
         return new IDBasedPipelineStrategy(
             language, bNodes, node_RdFetchID, new NodeInstanceDesc.Key(node_RdFetchPostFlushID, stage_fetch_interm, ""), idWidth,
-            new PipelineFront(stage_fetch_interm), true, true, new PipelineFront(stage_decode), key -> key.getStage().equals(stage_decode));
+            new PipelineFront(stage_fetch_interm), true, true, new PipelineFront(stage_decode),
+            List.of(new IDRetireSerializerStrategy.IDAndCountRetireSource(
+                         new NodeInstanceDesc.Key(node_RdFetchPostFlushID, stage_fetch_interm, ""),
+                         new NodeInstanceDesc.Key(node_RdFetchFlushCount, stage_fetch_interm, ""), true)),
+            key -> key.getStage().equals(stage_decode));
       }
 
       protected boolean useReducedWidthForNode(SCAIEVNode node) {
+        if (!use_reduced_fetchdecode_pipebuffers)
+          return false;
         if (node.equals(bNodes.RdOrigPC) || node.equals(bNodes.RdOrigPC_valid))
           return true; // Associated with ZOL
         return (bNodes.IsUserFNode(node) || bNodes.IsUserBNode(node)) && node.name.equals(bNodes.GetNameWrNode(node));
@@ -386,7 +452,7 @@ public class CVA5 extends CoreBackend {
           });
         } else {
           if (pipeFullWidth == null) {
-            pipeFullWidth = makeFetchDecodePipeStrategy(cva5_config_LOG2_MAX_IDS);
+            pipeFullWidth = makeFetchDecodePipeStrategy(id_space_width);
             idbasedPipelineSubstrategies.add(pipeFullWidth);
           }
           strategy = pipeFullWidth;
@@ -394,6 +460,7 @@ public class CVA5 extends CoreBackend {
         List<NodeLogicBuilder> subBuilders = new ArrayList<>();
         List<NodeInstanceDesc.Key> nodeKeys = new ArrayList<>();
         nodeKeys.add(NodeInstanceDesc.Key.keyWithPurpose(nodeKey, IDBasedPipelineStrategy.purpose_ReadFromIDBasedPipeline));
+        strategy.addKeyImplementation(nodeKey, implementation);
         strategy.implement(builderToAdd -> subBuilders.add(builderToAdd), nodeKeys, false);
         return CombinedNodeLogicBuilder.of("CVA5_IDBasedPipelineStrategy-fetch-to-decode(" + nodeKey.toString() + ")", subBuilders);
       }
@@ -407,6 +474,7 @@ public class CVA5 extends CoreBackend {
       boolean implemented_RdFetchID_fetch = false;
       boolean implemented_RdFetchID_decode = false;
       boolean implemented_RdFetchPostFlushID = false;
+      boolean implemented_RdFetchFlushCount = false;
       private NodeLogicBuilder makeInterfaceRequestBuilder(NodeInstanceDesc.Key nodeKey) {
         NodeInstanceDesc.Key nodeKeyReq = NodeInstanceDesc.Key.keyWithPurpose(nodeKey, Purpose.MARKER_FROMCORE_PIN);
         return NodeLogicBuilder.fromFunction("Request core->SCAL " + nodeKeyReq.toString(false), registry -> {
@@ -431,6 +499,10 @@ public class CVA5 extends CoreBackend {
                      nodeKey.getStage().equals(stage_fetch_interm)) {
             out.accept(makeInterfaceRequestBuilder(nodeKey));
             implemented_RdFetchPostFlushID = true;
+          } else if (!implemented_RdFetchFlushCount && nodeKey.getNode().equals(node_RdFetchFlushCount) &&
+                     nodeKey.getStage().equals(stage_fetch_interm)) {
+            out.accept(makeInterfaceRequestBuilder(nodeKey));
+            implemented_RdFetchFlushCount = true;
           }
         }
         idbasedPipelineSubstrategies.forEach(substrategy -> substrategy.implement(out, nodeKeys, isLast));
@@ -567,6 +639,23 @@ public class CVA5 extends CoreBackend {
     addLogic("assign scaiev.decode_isSCAIEV_usesRD_AS_RS = " + makeIValidExpression.apply(allISAXes_RD_AS_RS) + ";");
     addLogic("assign scaiev.decode_isSCAIEV_usesRD = " + makeIValidExpression.apply(allISAXes_RD) + ";\n");
     addLogic("assign scaiev.decode_isSCAIEV_usesRD_decoupled = " + makeIValidExpression.apply(allISAXes_RDdecoupled_cva5alloc) + ";\n");
+
+    if (ContainsOpInStage(BNode.RdInstr_RD, stage_decode)) {
+      //NOTE: Assuming scaiev.decode_wrReg <=> decoupled writeback with inject approach.
+      // -> Hiding injected decoupled writebacks, so SCAL's DH mechanism lets them pass.
+      String rdInstr_RD_expr = "scaiev.decode_RD_valid && !scaiev.decode_wrReg, scaiev.decode_RD_id";
+      addLogic("assign %s = {%s};".formatted(language.CreateNodeName(BNode.RdInstr_RD, stage_decode, ""), rdInstr_RD_expr));
+    }
+    if (ContainsOpInStage(BNode.RdInstr_RS, stage_decode)) {
+      String rdInstr_RS_expr = "scaiev.decode_RS2_valid, scaiev.decode_RS2_id, scaiev.decode_RS1_valid, scaiev.decode_RS1_id";
+      if (use_native_RdRD && ContainsOp(BNode.RdRD)) {
+        assert(BNode.RdInstr_RS.size == 6*3);
+        rdInstr_RS_expr = "scaiev.decode_RD_AS_RS_valid, scaiev.decode_RD_AS_RS_id, " + rdInstr_RS_expr;
+      }
+      else
+        assert(BNode.RdInstr_RS.size == 6*2);
+      addLogic("assign %s = {%s};".formatted(language.CreateNodeName(BNode.RdInstr_RS, stage_decode, ""), rdInstr_RS_expr));
+    }
   }
 
   private void IntegrateISAX_RdIValid() {
@@ -741,9 +830,12 @@ public class CVA5 extends CoreBackend {
 
       // For our injected "read register" instruction, set rs1 to the rd field of the original instruction.
       addLogic("assign scaiev.decode_RS1_override = decode_isRepeated_RdRD;");
+      addLogic("assign scaiev.decode_RS2_override = 1'b0;");
+      addLogic("assign scaiev.decode_RD_AS_RS_override = 1'b0;");
       addLogic("assign scaiev.decode_skip_wb = decode_rdReg_RD && !decode_isRepeated_RdRD;");
       addLogic("assign scaiev.decode_rdReg_RS1 = scaiev.decode_Instr[11:7];");
       addLogic("assign scaiev.decode_rdReg_RS2 = 5'd0;");
+      addLogic("assign scaiev.decode_rdReg_RD_AS_RS = 5'd0;");
 
       if (ContainsOpInStage(BNode.RdRD, stage_issue))
         addLogic("assign " + language.CreateNodeName(BNode.RdRD, stage_issue, "") + " = scaiev.issue_RS1;");
@@ -781,14 +873,19 @@ public class CVA5 extends CoreBackend {
 
       setConfigFlag("ENABLE_DECODE_INJECT", true);
     } else {
-      addLogic("assign decode_isRepeated_RdRD = 0;");
-      addLogic("assign decode_rdReg_RD = 0;");
-      addLogic("assign issue_isFirst_RdRD = 0;");
-      addLogic("assign execute_isFirst_RdRD = 0;");
-      addLogic("assign scaiev.decode_rdReg = 0;");
-      addLogic("assign scaiev.decode_rdReg_RS1 = 'X;");
-      addLogic("assign scaiev.decode_rdReg_RS2 = 'X;");
-      addLogic("assign decode_wrReg_hold = 0;");
+      addLogic("assign decode_isRepeated_RdRD = 1'b0;");
+      addLogic("assign decode_rdReg_RD = 1'b0;");
+      addLogic("assign issue_isFirst_RdRD = 1'b0;");
+      addLogic("assign execute_isFirst_RdRD = 1'b0;");
+      addLogic("assign scaiev.decode_repeat_next = 1'b0;");
+      addLogic("assign scaiev.decode_rdReg = 1'b0;");
+      addLogic("assign scaiev.decode_rdReg_RS1 = 5'd0;");
+      addLogic("assign scaiev.decode_rdReg_RS2 = 5'd0;");
+      addLogic("assign scaiev.decode_skip_wb = 1'b0;");
+      addLogic("assign scaiev.decode_RS1_override = 1'b0;");
+      addLogic("assign scaiev.decode_RS2_override = 1'b0;");
+      addLogic("assign scaiev.decode_RD_AS_RS_override = 1'b0;");
+      addLogic("assign decode_wrReg_hold = 1'b0;");
     }
   }
 
@@ -809,7 +906,8 @@ public class CVA5 extends CoreBackend {
       if (stage == stage_decode)
         stallLogic += "hazard_unit_scaiev_decode_stall_set || ";
       if (stage == stage_issue)
-        stallLogic += "scaiev.issue_injectLS_potentiallyValid || scaiev.execute_injectLS_potentiallyValid || " +
+        stallLogic += "scaiev.issue_injectLS_potentiallyValid && scaiev.issue_isLS || " +
+                      "scaiev.execute_injectLS_potentiallyValid && scaiev.issue_isLS || " +
                       signame_issue_stall_before_mem + " || " + signame_issue_stall_before_cf + " || ";
       if (stage == stage_execute)
         stallLogic += signame_execute_stall_mem + " || ";
@@ -825,6 +923,9 @@ public class CVA5 extends CoreBackend {
       if (ContainsOpInStage(BNode.WrFlush, stage)) {
         String flushLogic = language.CreateNodeName(BNode.WrFlush, stage, "");
         addLogic("assign scaiev." + cva5InterfaceStageNames[stagePos] + "_flush = " + flushLogic + ";\n");
+      }
+      else {
+        addLogic("assign scaiev." + cva5InterfaceStageNames[stagePos] + "_flush = 1'b0;\n");
       }
     }
     String fetchFlushLogic = signame_WrPC_reg_after_stall_valid;
@@ -882,6 +983,11 @@ public class CVA5 extends CoreBackend {
              " = {scaiev.issue_prev_phys_RD_decoupled, scaiev.issue_phys_RD_decoupled};");
     language.UpdateInterface(topModule, addr_to_scal_node, "", stage_issue, false, false);
 
+    this.PutNode("logic", "", "scaiev_glue", addr_to_scal_node, stage_decode);
+    addLogic("assign " + language.CreateNodeName(addr_to_scal_node, stage_decode, "", false) +
+             " = {scaiev.decode_prev_phys_RD_decoupled, scaiev.decode_phys_RD_decoupled};");
+    language.UpdateInterface(topModule, addr_to_scal_node, "", stage_decode, false, false);
+
     ArrayList<String> statement_lines = new ArrayList<>();
     boolean has_previous_case = false;
     statement_lines.add("always_comb begin");
@@ -889,6 +995,7 @@ public class CVA5 extends CoreBackend {
     if (ContainsOpInStage(BNode.WrRD_spawn, pseudostage_spawn)) {
       statement_lines.add(tab + "if (explicit_free_reg) begin");
       statement_lines.add(tab + tab + "scaiev.rf_wrReg = scaiev.rf_ready;");
+      statement_lines.add(tab + tab + "scaiev.rf_wrReg_cancel = 1'b0;");
       statement_lines.add(tab + tab + "scaiev.rf_wrReg_phys_RD = explicit_free_reg_addr;");
       statement_lines.add(tab + tab + "scaiev.rf_wrReg_prev_phys_RD = {1'b1, explicit_free_reg_addr}; //writeback group 1");
       statement_lines.add(tab + tab + "scaiev.rf_wrReg_data = 'X;");
@@ -897,22 +1004,25 @@ public class CVA5 extends CoreBackend {
       statement_lines.add(tab + "end");
       has_previous_case = true;
 
-      String spawn_addr_reg = language.CreateNodeName(BNode.WrRD_spawn_addr, pseudostage_spawn, "");
-      String spawn_data_reg = language.CreateNodeName(BNode.WrRD_spawn, pseudostage_spawn, "");
-      String spawn_valid_reg = language.CreateNodeName(BNode.WrRD_spawn_valid, pseudostage_spawn, "");
+      String spawn_addr_wire = language.CreateNodeName(BNode.WrRD_spawn_addr, pseudostage_spawn, "");
+      String spawn_data_wire = language.CreateNodeName(BNode.WrRD_spawn, pseudostage_spawn, "");
+      //Treat cancel like valid, since the register is still allocated to us.
+      String spawn_valid_wire = language.CreateNodeName(BNode.WrRD_spawn_valid, pseudostage_spawn, "");
+      String spawn_cancel_wire = language.CreateNodeName(BNode.WrRD_spawn_cancel, pseudostage_spawn, "");
       String spawn_allowed = language.CreateNodeName(BNode.WrRD_spawn_allowed, pseudostage_spawn, "");
 
-      statement_lines.add(tab + (has_previous_case ? "else if" : "if") + " (" + spawn_valid_reg + ") begin");
+      statement_lines.add(tab + (has_previous_case ? "else if" : "if") + " (%s || %s) begin".formatted(spawn_valid_wire, spawn_cancel_wire));
       statement_lines.add(tab + tab + "scaiev.rf_wrReg = scaiev.rf_ready;");
-      statement_lines.add(tab + tab + "scaiev.rf_wrReg_phys_RD = " + spawn_addr_reg + "[5:0];");
-      statement_lines.add(tab + tab + "scaiev.rf_wrReg_prev_phys_RD = " + spawn_addr_reg + "[12:6];");
-      statement_lines.add(tab + tab + "scaiev.rf_wrReg_data = " + spawn_data_reg + ";");
+      statement_lines.add(tab + tab + "scaiev.rf_wrReg_cancel = %s;".formatted(spawn_cancel_wire));
+      statement_lines.add(tab + tab + "scaiev.rf_wrReg_phys_RD = " + spawn_addr_wire + "[5:0];");
+      statement_lines.add(tab + tab + "scaiev.rf_wrReg_prev_phys_RD = " + spawn_addr_wire + "[12:6];");
+      statement_lines.add(tab + tab + "scaiev.rf_wrReg_data = " + spawn_data_wire + ";");
       statement_lines.add(tab + tab + "scaiev.rf_isDecoupledWB = 1;");
       statement_lines.add(tab + tab + spawn_valid_resp + " = scaiev.rf_ready;");
       statement_lines.add(tab + "end");
 
-      // this.addLogic("assign " + spawn_allowed + " = scaiev.rf_ready;");
-      this.addLogic("assign " + spawn_allowed + " = 1;");
+      this.addLogic("assign " + spawn_allowed + " = scaiev.rf_ready;");
+      //this.addLogic("assign " + spawn_allowed + " = 1;");
 
       setConfigFlag("ENABLE_DECOUPLED_WRITEBACK", true);
     } else
@@ -920,6 +1030,7 @@ public class CVA5 extends CoreBackend {
     if (has_previous_case)
       statement_lines.add(tab + "else begin");
     statement_lines.add(tab + tab + "scaiev.rf_wrReg = 1'b0;");
+    statement_lines.add(tab + tab + "scaiev.rf_wrReg_cancel = 1'b0;");
     statement_lines.add(tab + tab + "scaiev.rf_wrReg_phys_RD = 'X;");
     statement_lines.add(tab + tab + "scaiev.rf_wrReg_prev_phys_RD = 'X;");
     statement_lines.add(tab + tab + "scaiev.rf_wrReg_data = 'X;");
@@ -954,6 +1065,11 @@ public class CVA5 extends CoreBackend {
                           new ToWrite("wire issue_is_isax_decoupled_wb = !scaiev.issue_isStalling && !scaiev.issue_stall && (" +
                                           cond_issue_is_isax_decoupled_wb + ");",
                                       true, false, ""));
+
+    addLogic("assign scaiev.decode_wrReg = 1'b0;");
+    addLogic("assign decode_wrReg_cancel = 1'b0;");
+    addLogic("assign scaiev.decode_wrReg_RD = 5'd0;");
+    addLogic("assign scaiev.decode_wrReg_data = 32'd0;");
   }
 
   private void IntegrateISAX_WrRDSpawn_injectmethod() {
@@ -962,15 +1078,17 @@ public class CVA5 extends CoreBackend {
     statement_lines.add("always_comb begin");
     String spawn_valid_resp = language.CreateNodeName(BNode.WrRD_spawn_validResp, pseudostage_spawn, "");
     if (ContainsOpInStage(BNode.WrRD_spawn, pseudostage_spawn)) {
-      String spawn_addr_reg = language.CreateNodeName(BNode.WrRD_spawn_addr, pseudostage_spawn, "");
-      String spawn_data_reg = language.CreateNodeName(BNode.WrRD_spawn, pseudostage_spawn, "");
-      String spawn_valid_reg = language.CreateNodeName(BNode.WrRD_spawn_valid, pseudostage_spawn, "");
+      String spawn_addr_wire = language.CreateNodeName(BNode.WrRD_spawn_addr, pseudostage_spawn, "");
+      String spawn_data_wire = language.CreateNodeName(BNode.WrRD_spawn, pseudostage_spawn, "");
+      String spawn_valid_wire = language.CreateNodeName(BNode.WrRD_spawn_valid, pseudostage_spawn, "");
+      String spawn_cancel_wire = language.CreateNodeName(BNode.WrRD_spawn_cancel, pseudostage_spawn, "");
       String spawn_allowed = language.CreateNodeName(BNode.WrRD_spawn_allowed, pseudostage_spawn, "");
 
-      statement_lines.add(tab + (has_previous_case ? "else if" : "if") + " (" + spawn_valid_reg + ") begin");
-      statement_lines.add(tab + tab + "scaiev.decode_wrReg = !decode_wrReg_hold;");
-      statement_lines.add(tab + tab + "scaiev.decode_wrReg_RD = " + spawn_addr_reg + ";");
-      statement_lines.add(tab + tab + "scaiev.decode_wrReg_data = " + spawn_data_reg + ";");
+      statement_lines.add(tab + (has_previous_case ? "else if" : "if") + " (%s || %s) begin".formatted(spawn_valid_wire, spawn_cancel_wire));
+      statement_lines.add(tab + tab + "scaiev.decode_wrReg = !decode_wrReg_hold && %s;".formatted(spawn_valid_wire));
+      statement_lines.add(tab + tab + "decode_wrReg_cancel = %s;".formatted(spawn_cancel_wire));
+      statement_lines.add(tab + tab + "scaiev.decode_wrReg_RD = " + spawn_addr_wire + ";");
+      statement_lines.add(tab + tab + "scaiev.decode_wrReg_data = " + spawn_data_wire + ";");
       statement_lines.add(tab + tab + spawn_valid_resp + " = " + spawn_allowed + ";");
       statement_lines.add(tab + "end");
       has_previous_case = true;
@@ -985,6 +1103,7 @@ public class CVA5 extends CoreBackend {
     if (has_previous_case)
       statement_lines.add(tab + "else begin");
     statement_lines.add(tab + tab + "scaiev.decode_wrReg = 1'b0;");
+    statement_lines.add(tab + tab + "decode_wrReg_cancel = 1'b0;");
     statement_lines.add(tab + tab + "scaiev.decode_wrReg_RD = 'X;");
     statement_lines.add(tab + tab + "scaiev.decode_wrReg_data = 'X;");
     if (!spawn_valid_resp.isEmpty())
@@ -1015,6 +1134,13 @@ public class CVA5 extends CoreBackend {
     }
     toFile.ReplaceContent(this.ModFile("scaiev_glue"), "wire decode_is_isax_decoupled_wb = ",
                           new ToWrite("wire decode_is_isax_decoupled_wb = " + cond_decode_is_isax_decoupled_wb + ";", true, false, ""));
+
+    addLogic("assign scaiev.rf_wrReg = 1'b0;");
+    addLogic("assign scaiev.rf_wrReg_cancel = 1'b0;");
+    addLogic("assign scaiev.rf_wrReg_phys_RD = '0;");
+    addLogic("assign scaiev.rf_wrReg_prev_phys_RD = '0;");
+    addLogic("assign scaiev.rf_wrReg_data = 32'd0;");
+    addLogic("assign scaiev.rf_isDecoupledWB = 1'b0;");
   }
 
   private void IntegrateISAX_Mem() {
@@ -1045,7 +1171,7 @@ public class CVA5 extends CoreBackend {
         cond_injectLS_possibleSpawn += " || ";
       }
       // Stall issue in the cycle where a Mem operation (here: matches not only Mem_Spawn) is issued.
-      issue_stall_assigns += "(scaiev.execute_injectLS_potentiallyValid && scaiev.injectLS_ready) || ";
+      issue_stall_assigns += "(scaiev.execute_injectLS_potentiallyValid && scaiev.issue_isLS && scaiev.injectLS_ready) || ";
     }
     cond_injectLS_possibleSpawn += "0";
 
@@ -1100,7 +1226,7 @@ public class CVA5 extends CoreBackend {
       // Stall execute if it possibly wants to start a read but another read is still pending.
       // TODO (optional): May be removed to allow several pending reads, but the regular_read_pending tracker currently does not support
       // that.
-      if (injectLS_regularRd || injectLS_spawnRd) {
+      if (injectLS_regularRd/* || injectLS_spawnRd*/) {
         execute_stall_assigns += "((" + language.CreateNodeName(BNode.RdMem_validReq, stage_execute, "") +
                                  " && !mem_read_pending) || (mem_read_pending && !scaiev.execute_injectLS_done)) || ";
       }
@@ -1113,14 +1239,15 @@ public class CVA5 extends CoreBackend {
 
     addDeclaration("logic mem_read_pending;");
     addDeclaration("logic set_mem_read_pending;");
-    if (injectLS_regularRd || injectLS_spawnRd) {
+    if (injectLS_regularRd/* || injectLS_spawnRd*/) {
       //-> If a read is done but a new is to be started, mem_read_pending needs to remain set.
       ArrayList<String> read_pending_statement_lines = new ArrayList<>();
       read_pending_statement_lines.add("always_ff @(posedge clk) begin");
       read_pending_statement_lines.add(tab + "if (set_mem_read_pending) begin");
       read_pending_statement_lines.add(tab + tab + "mem_read_pending <= 1;");
       read_pending_statement_lines.add(tab + "end");
-      read_pending_statement_lines.add(tab + "if (rst || (!set_mem_read_pending && scaiev.execute_injectLS_done)) begin");
+      read_pending_statement_lines.add(tab + "if (rst || (!set_mem_read_pending && scaiev.execute_injectLS_done"
+                                           + " && !scaiev.injectLS_done_decoupled)) begin");
       read_pending_statement_lines.add(tab + tab + "mem_read_pending <= 0;");
       read_pending_statement_lines.add(tab + "end");
       read_pending_statement_lines.add("end");
@@ -1149,14 +1276,15 @@ public class CVA5 extends CoreBackend {
         String spawn_wrval = language.CreateNodeName(BNode.WrMem_spawn, pseudostage_spawn, "");
 
         injectLS_statement_lines.add(tab + (injectLS_has_previous_case ? "else if" : "if") + " (" + spawn_valid + ") begin");
-        injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_potentiallyValid = " + spawn_is_write + " || !mem_read_pending;");
-        injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_valid = " + spawn_is_write + " || !mem_read_pending;");
+        injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_potentiallyValid = 1'b1;");// + spawn_is_write + " || !mem_read_pending;");
+        injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_valid = 1'b1;");// + spawn_is_write + " || !mem_read_pending;");
+        injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_decoupled = 1'b1;");
         injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_rnw = !" + spawn_is_write + ";");
         injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_relaxedOrdering = 1'b1;");
         injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_addr = " + spawn_addr + ";");
         injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_storeVal = " + (injectLS_spawnWr ? spawn_wrval : "'X") + ";");
-        injectLS_statement_lines.add(tab + tab + "set_mem_read_pending = !" + spawn_is_write +
-                                     " && scaiev.injectLS_ready && !mem_read_pending;");
+        //injectLS_statement_lines.add(tab + tab + "set_mem_read_pending = !" + spawn_is_write +
+        //                             " && scaiev.injectLS_ready && !mem_read_pending;");
         injectLS_statement_lines.add(tab + tab + "set_mem_write_spawn_pending = " + spawn_is_write + " && scaiev.injectLS_ready;");
         injectLS_statement_lines.add(tab + "end");
         injectLS_has_previous_case = true;
@@ -1168,7 +1296,8 @@ public class CVA5 extends CoreBackend {
         valid_resp_statement_lines.add(tab + "mem_spawn_validResp_r <= mem_write_spawn_pending;");
         valid_resp_statement_lines.add("end");
         addLogic(String.join("\n", valid_resp_statement_lines));
-        addLogic("assign " + spawn_valid_resp + " = (mem_read_pending && scaiev.execute_injectLS_done) || mem_spawn_validResp_r;");
+        //addLogic("assign " + spawn_valid_resp + " = (mem_read_pending && scaiev.execute_injectLS_done) || mem_spawn_validResp_r;");
+        addLogic("assign " + spawn_valid_resp + " = (scaiev.injectLS_done_decoupled && scaiev.execute_injectLS_done) || mem_spawn_validResp_r;");
       }
 
       // stageReady = "1" -> Will not wait for synchronous ready event before setting ISAX_fire2_mem_reg;
@@ -1177,9 +1306,12 @@ public class CVA5 extends CoreBackend {
 
       String rd_spawn_allowed = language.CreateNodeName(BNode.RdMem_spawn_allowed, pseudostage_spawn, "");
       String wr_spawn_allowed = language.CreateNodeName(BNode.WrMem_spawn_allowed, pseudostage_spawn, "");
-      this.addLogic("assign " + wr_spawn_allowed + " = mem_read_pending ? scaiev.execute_injectLS_done : scaiev.injectLS_ready;");
-      if (!rd_spawn_allowed.equals(wr_spawn_allowed))
-        this.addLogic("assign " + rd_spawn_allowed + " = " + wr_spawn_allowed + ";");
+      if (!rd_spawn_allowed.equals(wr_spawn_allowed) || !injectLS_spawnWr)
+        this.addLogic("assign " + rd_spawn_allowed + " = scaiev.injectLS_ready;");
+      if (injectLS_spawnWr) {
+        this.addLogic("assign " + wr_spawn_allowed + " = scaiev.injectLS_ready;");
+        //" = mem_read_pending ? scaiev.execute_injectLS_done : scaiev.injectLS_ready;");
+      }
     }
     if (injectLS_regularRd) {
       addDeclaration("logic mem_read_regular_pending;");
@@ -1195,6 +1327,7 @@ public class CVA5 extends CoreBackend {
       injectLS_statement_lines.add(tab + (injectLS_has_previous_case ? "else if" : "if") + " (" + mem_valid_req + ") begin");
       injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_potentiallyValid = !" + is_pending + ";");
       injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_valid = !" + is_pending + ";");
+      injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_decoupled = 1'b0;");
       injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_rnw = 1'b1;");
       injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_relaxedOrdering = 1'b0;");
       injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_addr = " + mem_addr + ";");
@@ -1219,7 +1352,7 @@ public class CVA5 extends CoreBackend {
         valid_resp_statement_lines.add(tab + "end");
         valid_resp_statement_lines.add("end");
         valid_resp_statement_lines.add("assign " + language.CreateNodeName(BNode.RdMem_validResp, stage_execute, "") +
-                                       " = mem_read_regular_pending && scaiev.execute_injectLS_done;");
+                                       " = mem_read_regular_pending && !scaiev.injectLS_done_decoupled && scaiev.execute_injectLS_done;");
         addLogic(String.join("\n", valid_resp_statement_lines));
       }
     } else {
@@ -1238,6 +1371,7 @@ public class CVA5 extends CoreBackend {
       injectLS_statement_lines.add(tab + (injectLS_has_previous_case ? "else if" : "if") + " (" + mem_valid_req + ") begin");
       injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_potentiallyValid = !" + is_pending + ";");
       injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_valid = !" + is_pending + ";");
+      injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_decoupled = 1'b0;");
       injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_rnw = 1'b0;");
       injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_relaxedOrdering = 1'b0;");
       injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_addr = " + mem_addr + ";");
@@ -1263,6 +1397,7 @@ public class CVA5 extends CoreBackend {
       injectLS_statement_lines.add(tab + "else begin");
     injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_potentiallyValid = 1'b0;");
     injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_valid = 1'b0;");
+    injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_decoupled = 1'b0;");
     injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_rnw = 'X;");
     injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_relaxedOrdering = 'X;");
     injectLS_statement_lines.add(tab + tab + "scaiev.execute_injectLS_addr = 'X;");
@@ -1274,6 +1409,14 @@ public class CVA5 extends CoreBackend {
 
     addLogic(String.join("\n", injectLS_pre_statement_lines));
     addLogic(String.join("\n", injectLS_statement_lines));
+    addLogic(String.join("\n", List.of(
+        "assign scaiev.issue_injectLS_potentiallyValid = 1'b0;",
+        "assign scaiev.issue_injectLS_valid = 1'b0;",
+        "assign scaiev.issue_injectLS_decoupled = 1'b0;",
+        "assign scaiev.issue_injectLS_rnw = 1'b0;",
+        "assign scaiev.issue_injectLS_relaxedOrdering = 1'b0;",
+        "assign scaiev.issue_injectLS_addr = '0;",
+        "assign scaiev.issue_injectLS_storeVal = '0;")));
   }
 
   private void IntegrateISAX_WrPC() {
@@ -1309,7 +1452,7 @@ public class CVA5 extends CoreBackend {
                         %s <= 1'b0;
                     end
                 end
-            end""".formatted( 
+            end""".formatted(
                 signame_WrPC_reg_after_stall_valid, //rst
                 signame_WrPC_reg_after_stall, //rst
                 signame_WrPC_after_Fetch_valid, //cond
@@ -1399,8 +1542,13 @@ public class CVA5 extends CoreBackend {
       String wrIDValid_node = language.CreateNodeName(BNode.WrInStageID_valid, stage_execute, "");
 
       addLogic(String.format("assign scaiev.execute_commitNow = %s;", wrIDValid_node));
-      addLogic(String.format("assign scaiev.execute_commitNow_ID = %s[%d-1:0];", wrID_node, cva5_config_LOG2_MAX_IDS));
-      addLogic(String.format("assign scaiev.execute_commitNow_expects_rd = %s[%d];", wrID_node, cva5_config_LOG2_MAX_IDS));
+      addLogic(String.format("assign scaiev.execute_commitNow_ID = %s[%d-1:0];", wrID_node, id_space_width));
+      addLogic(String.format("assign scaiev.execute_commitNow_expects_rd = %s[%d];", wrID_node, id_space_width));
+    }
+    else {
+      addLogic("assign scaiev.execute_commitNow = 1'b0;");
+      addLogic("assign scaiev.execute_commitNow_ID = '0;");
+      addLogic("assign scaiev.execute_commitNow_expects_rd = 1'b0;");
     }
   }
 
@@ -1440,8 +1588,21 @@ public class CVA5 extends CoreBackend {
     this.PutNode("logic", "", "scaiev_glue", BNode.WrCommit_spawn_validReq, pseudostage_spawn);
     this.PutNode("logic", "1'b1", "scaiev_glue", BNode.WrCommit_spawn_validResp, pseudostage_spawn);
 
+    this.PutNode("logic", "scaiev.issue_ID", "scaiev_glue", BNode.RdIssueID, stage_issue);
+    this.PutNode("logic", "scaiev.issue_flushID", "scaiev_glue", BNode.RdIssueFlushID, stage_issue);
+    //this.PutNode("logic", "1'b1", "scaiev_glue", BNode.RdIssueIDValid, stage_issue);
+    this.PutNode("logic", "scaiev.execute_ID", "scaiev_glue", BNode.RdIssueID, stage_execute);
+    this.PutNode("logic", "scaiev.issue_flushID", "scaiev_glue", BNode.RdIssueFlushID, stage_execute);
+    //this.PutNode("logic", "1'b1", "scaiev_glue", BNode.RdIssueIDValid, stage_execute);
+    this.PutNode("logic", "scaiev.retire_ID", "scaiev_glue", BNode.RdCommitID, core.GetRootStage());
+    this.PutNode("logic", "scaiev.retire_suppress ? '0 : scaiev.retire_count", "scaiev_glue", BNode.RdCommitIDCount, core.GetRootStage());
+    this.PutNode("logic", "scaiev.retire_ID", "scaiev_glue", BNode.RdCommitFlushID, core.GetRootStage());
+    this.PutNode("logic", "scaiev.retire_suppress ? scaiev.retire_count : '0", "scaiev_glue", BNode.RdCommitFlushIDCount, core.GetRootStage());
+    this.PutNode("logic", "'0", "scaiev_glue", BNode.RdCommitFlushMask, core.GetRootStage());
+
     this.PutNode("logic", "scaiev.fetch_fetchID", "scaiev_glue", node_RdFetchID, stage_fetch_interm);
     this.PutNode("logic", "scaiev.fetch_fetchFlushID", "scaiev_glue", node_RdFetchPostFlushID, stage_fetch_interm);
+    this.PutNode("logic", "scaiev.fetch_fetchFlushCount", "scaiev_glue", node_RdFetchFlushCount, stage_fetch_interm);
     this.PutNode("logic", "scaiev.decode_fetchID", "scaiev_glue", node_RdFetchID, stage_decode);
     this.PutNode("logic", "", "scaiev_glue", BNode.RdPipeInto, stage_issue);
 
@@ -1452,6 +1613,8 @@ public class CVA5 extends CoreBackend {
     this.PutNode("logic", "scaiev.issue_PC", "scaiev_glue", BNode.RdPC, stage_issue);
     this.PutNode("logic", "scaiev.execute_PC", "scaiev_glue", BNode.RdPC, stage_execute);
 
+    this.PutNode("logic", "", "scaiev_glue", BNode.RdInstr_RS, stage_decode);
+    this.PutNode("logic", "", "scaiev_glue", BNode.RdInstr_RD, stage_decode);
     this.PutNode("logic", "scaiev.decode_Instr", "scaiev_glue", BNode.RdInstr, stage_decode);
     this.PutNode("logic", "scaiev.issue_Instr", "scaiev_glue", BNode.RdInstr, stage_issue);
     this.PutNode("logic", "scaiev.execute_Instr", "scaiev_glue", BNode.RdInstr, stage_execute);
@@ -1470,7 +1633,7 @@ public class CVA5 extends CoreBackend {
       this.PutNode("logic", "", "scaiev_glue", BNode.RdRD, stage_execute);
     }
 
-    this.PutNode("logic", "{scaiev.execute_expects_rd, scaiev.execute_ID}", "scaiev_glue", BNode.RdInStageID, stage_execute);
+    this.PutNode("logic", "{scaiev.execute_expects_rd, scaiev.execute_ID_or_counter}", "scaiev_glue", BNode.RdInStageID, stage_execute);
 
     this.PutNode("logic", "!scaiev.pre_fetch_isStalling", "scaiev_glue", BNode.RdInStageValid, stage_fetch);
     this.PutNode("logic", "scaiev.fetch_valid", "scaiev_glue", BNode.RdInStageValid, stage_fetch_interm);
@@ -1508,7 +1671,8 @@ public class CVA5 extends CoreBackend {
     this.PutNode("logic", "scaiev.decode_isStalling || hazard_unit_scaiev_decode_stall_set || (decode_rdReg_RD && !decode_isRepeated_RdRD)",
                  "scaiev_glue", BNode.RdStall, stage_decode);
     this.PutNode("logic",
-                 "scaiev.issue_isStalling || scaiev.issue_injectLS_potentiallyValid || scaiev.execute_injectLS_potentiallyValid || " +
+                 "scaiev.issue_isStalling || scaiev.issue_injectLS_potentiallyValid && scaiev.issue_isLS || " +
+                     "scaiev.execute_injectLS_potentiallyValid && scaiev.issue_isLS || " +
                      signame_issue_stall_before_mem + " || " + signame_issue_stall_before_cf + " || issue_isFirst_RdRD",
                  "scaiev_glue", BNode.RdStall, stage_issue);
     this.PutNode("logic", "scaiev.execute_isStalling_reason_core || " + signame_execute_stall_mem + " || execute_isFirst_RdRD",
@@ -1521,7 +1685,7 @@ public class CVA5 extends CoreBackend {
     this.PutNode("logic", "", "scaiev_glue", BNode.WrStall, stage_issue);
     this.PutNode("logic", "", "scaiev_glue", BNode.WrStall, stage_execute);
 
-    this.PutNode("logic", "0", "scaiev_glue", BNode.RdFlush, stage_fetch);
+    this.PutNode("logic", "scaiev.fetch_isFlushing_internal", "scaiev_glue", BNode.RdFlush, stage_fetch);
     this.PutNode("logic", "scaiev.fetch_isFlushing_internal || " + signame_WrPC_reg_after_stall_valid, "scaiev_glue", BNode.RdFlush,
                  stage_fetch_interm);
     this.PutNode("logic", "scaiev.decode_isFlushing_internal", "scaiev_glue", BNode.RdFlush, stage_decode);
@@ -1541,6 +1705,7 @@ public class CVA5 extends CoreBackend {
 
     this.PutNode("logic", "", "scaiev_glue", BNode.WrRD_spawn, pseudostage_spawn);
     this.PutNode("logic", "", "scaiev_glue", BNode.WrRD_spawn_valid, pseudostage_spawn);
+    this.PutNode("logic", "", "scaiev_glue", BNode.WrRD_spawn_cancel, pseudostage_spawn);
     this.PutNode("logic", "", "scaiev_glue", BNode.WrRD_spawn_validResp, pseudostage_spawn);
     //-> Prepare changes address size to 6+1+6 if use_wbdecoupled_cva5alloc
     this.PutNode("logic", "", "scaiev_glue", BNode.WrRD_spawn_addr, pseudostage_spawn);
@@ -1563,7 +1728,7 @@ public class CVA5 extends CoreBackend {
     this.PutNode("logic", "", "scaiev_glue", BNode.WrMem_spawn_write, pseudostage_spawn);
     this.PutNode("logic", "", "scaiev_glue", BNode.WrMem_spawn_allowed, pseudostage_spawn);
 
-    this.PutNode("logic", "1", "scaiev_glue", BNode.ISAX_spawnAllowed, stage_issue);
+    this.PutNode("logic", "1", "scaiev_glue", BNode.ISAX_spawnAllowed, stage_decode);
 
     if (use_wbdecoupled_cva5alloc) {
       // this.PutNode("logic", "scaiev.rf_wrReg","scaiev_glue", BNode.commited_rd_spawn_valid,pseudostage_spawn);

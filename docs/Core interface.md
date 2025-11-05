@@ -75,3 +75,13 @@ Note that SCAL may change `op_stage_instr` between the `Prepare` and `Generate` 
 The backend can use a language utility class such as `Verilog` (`UpdateInterface` and `GenerateAllInterfaces` methods) to add the required pins to the interface and, optionally, assign values to output pins (or assign local signals from input pins) in the innermost HDL module.
 The `FileWriter#ReplaceContent` and `FileWriter#UpdateContent` methods provide a measure to replace or insert HDL code by matching for existing code locations. 
 
+#### Decoding
+To use the RdIValid signals from SCAL, the core backend should first request each RdIValid in its `Prepare` method. Use `SCALBackendAPI#RequestToCorePin(<BNode obj>.RdIValid, <decode stage>, <isax name>)` with the passed `SCALBackendAPI` object.
+
+The core backend also needs to ensure the `RdIValid` interface pins reach the HDL module where they are used. For each ISAX, call `language.UpdateInterface(topModule, <BNode obj>.RdIValid.NodeNegInput(), <isax name>, <decode stage>, true, false)`, where `language` is the GenerateText object of the core backend (e.g., type `Verilog`). The `UpdateInterface` method will pass the RdIValid node down to the module specified in prior `PutNode` calls.
+
+Then, in the decode logic, generate HDL for a logical OR across `language.CreateNodeName(BNode.RdIValid.NodeNegInput(), <decode stage>, <isax name>)` for each ISAX.
+
+The core can also request RdIValid in later stages, if it needs to track certain hazards. For instance, if the core's branch speculation window ends in the Execute stage but an ISAX uses `WrPC` in a later stage (as listed in `op_stage_instr`, if allowed in the core datasheet), the core's Decode stage may need to be stalled until the ISAX is complete. Using `RdIValid_<isax>_<execute>`, the core backend can construct the stall condition.
+
+Advanced: For application-class cores, which support multiple instructions running in each execution unit, the `RdAnyValid` node indicates whether any instruction of a given ISAX is currently running inside the execution unit. This is only relevant if the core supports the `WrDeqInstr, RdInStageID, RdInStageValid, WrInStageID` operations for SCAIE-V's semi-coupled mode; otherwise, SCAL defaults to running only one instruction in the execution stage/unit.

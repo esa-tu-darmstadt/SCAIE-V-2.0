@@ -39,7 +39,7 @@ public class Verilog extends GenerateText {
 
   /**
    * Use this constructor if you simply want to use the Verilog functions which do not use toFile or coreBackend. However, be aware it won't
-   * work to use functions which require coreBackend & toFile!!
+   * work to use functions which require coreBackend &amp; toFile!!
    */
   public Verilog(BNode user_BNode) {
     super(user_BNode);
@@ -78,7 +78,7 @@ public class Verilog extends GenerateText {
 
   /**
    * Generates text like : signal signalName_s  :  std_logic_vector(1 : 0);
-   * signalName created from <operation,  stage,  instr>
+   * signalName created from &gt;operation, stage, instr&lt;
    */
   public String CreateDeclSig(SCAIEVNode operation, PipelineStage stage, String instr, boolean reg) {
     String decl = "";
@@ -106,7 +106,7 @@ public class Verilog extends GenerateText {
 
   /**
    * Generates text like : signal signalName_reg  :  std_logic_vector(1 : 0);
-   * signalName created from <operation,  stage,  instr>
+   * signalName created from &gt;operation, stage, instr&lt;
    */
   public String CreateDeclReg(SCAIEVNode operation, PipelineStage stage, String instr) {
     String decl = "";
@@ -339,10 +339,9 @@ public class Verilog extends GenerateText {
   public String CreateInAlways(boolean with_clk, String text) {
     if (text.isEmpty())
       return "";
-    String sensitivity = "*";
-    if (with_clk)
-      sensitivity = "posedge " + clk;
-    String body = "always@(" + sensitivity + ") begin // ISAX Logic\n" + AlignText(tab, text) + (text.endsWith("\n") ? "" : "\n") + "end\n";
+    //always_comb necessary over always@(*) if the body only has constant assigns (i.e., an empty sensitivity list)
+    String head = (with_clk) ? "always_ff @(posedge %s)".formatted(clk) : "always_comb";
+    String body = head + " begin\n" + AlignText(tab, text) + (text.endsWith("\n") ? "" : "\n") + "end\n";
     return body;
   }
 

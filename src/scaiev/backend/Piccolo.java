@@ -3,6 +3,8 @@ package scaiev.backend;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import scaiev.coreconstr.Core;
@@ -44,6 +46,9 @@ public class Piccolo extends CoreBackend {
 
   private int nrTabs = 0;
 
+  private int stageNum_spawn;
+  private PipelineStage stage_spawn;
+
   public void Prepare(HashMap<String, SCAIEVInstr> ISAXes, HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
                       Core core, SCALBackendAPI scalAPI, BNode user_BNode) {
     super.Prepare(ISAXes, op_stage_instr, core, scalAPI, user_BNode);
@@ -61,6 +66,9 @@ public class Piccolo extends CoreBackend {
     BNode.WrInStageID_valid.tags.add(NodeTypeTag.noCoreInterface);
 
     core.PutNode(BNode.RdInStageValid, new CoreNode(0, 0, 2, 2 + 1, BNode.RdInStageValid.name));
+
+    this.stageNum_spawn = core.maxStage + 1;
+    this.stage_spawn = stages[stageNum_spawn];
   }
 
   public boolean Generate(HashMap<String, SCAIEVInstr> ISAXes, HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
@@ -133,10 +141,11 @@ public class Piccolo extends CoreBackend {
       toFile.ReplaceContent(this.ModFile("fv_ALU"), "Bool legal_STORE = ",
                             new ToWrite("Bool legal_STORE = (   ((opcode == op_STORE) || is_isax)", false, true, ""));
       this.toFile.UpdateContent(
-          this.ModFile("fv_ALU"), "else begin",
-          new ToWrite("else if( " + language.CreateAllEncoding(op_stage_instr.get(BNode.WrMem).get(earliestWrMemStage), ISAXes, rdInstr) +
-                          ") begin\n" + tab + "alu_outputs = fv_STORE (inputs);\nend",
-                      true, false, "inputs.decoded_instr.opcode == op_STORE_FP)", true));
+          this.ModFile("fv_ALU"), "if (inputs.decoded_instr.opcode ==",
+          new ToWrite("if (%s) begin\n".formatted(language.CreateAllEncoding(op_stage_instr.get(BNode.WrMem).get(earliestWrMemStage), ISAXes, rdInstr))
+                          + tab + "alu_outputs = fv_STORE (inputs);\n"
+                          + "end\nelse",
+                      true, false, "function ALU_Outputs fv_ALU", true));
     }
     if (this.op_stage_instr.containsKey(BNode.RdMem)) {
       toFile.ReplaceContent(this.ModFile("fv_ALU"), "alu_outputs.op_stage2 = OP_Stage2_LD;",
@@ -155,21 +164,26 @@ public class Piccolo extends CoreBackend {
                       false, true, ""));
       toFile.ReplaceContent(this.ModFile("fv_ALU"),
                             "Bool legal_LOAD = ", new ToWrite("Bool legal_LOAD = (   ((opcode == op_LOAD) || is_isax)", false, true, ""));
+
       this.toFile.UpdateContent(
-          this.ModFile("fv_ALU"), "else begin",
-          new ToWrite("else if( " + language.CreateAllEncoding(op_stage_instr.get(BNode.RdMem).get(earliestRdMemStage), ISAXes, rdInstr) +
-                          ") begin\n" + tab + "alu_outputs = fv_LOAD (inputs);\nend",
-                      true, false, "inputs.decoded_instr.opcode == op_LOAD_FP)", true));
+          this.ModFile("fv_ALU"), "if (inputs.decoded_instr.opcode ==",
+          new ToWrite("if (%s) begin\n".formatted(language.CreateAllEncoding(op_stage_instr.get(BNode.RdMem).get(earliestRdMemStage), ISAXes, rdInstr))
+                          + tab + "alu_outputs = fv_LOAD (inputs);\n"
+                          + "end\nelse",
+                      true, false, "function ALU_Outputs fv_ALU", true));
     }
     if (this.op_stage_instr.containsKey(BNode.RdRS1) || this.op_stage_instr.containsKey(BNode.RdInstr) ||
         this.op_stage_instr.containsKey(BNode.WrPC) || this.op_stage_instr.containsKey(BNode.RdPC) ||
         this.op_stage_instr.containsKey(BNode.RdIValid)) {
       String ifClause = language.CreateAllNoMemEncoding(allISAX, ISAXes, rdInstr);
       if (!ifClause.isEmpty()) {
-        this.toFile.UpdateContent(this.ModFile("fv_ALU"), "else begin",
-                                  new ToWrite("else if( " + language.CreateAllNoMemEncoding(allISAX, ISAXes, rdInstr) + ") begin\n" + tab +
-                                                  "alu_outputs = alu_outputs_base;\nalu_outputs.op_stage2 = OP_Stage2_ISAX;\nend",
-                                              true, false, "else if (   (inputs.decoded_instr.opcode == op_STORE_FP))", true));
+        this.toFile.UpdateContent(
+            this.ModFile("fv_ALU"), "if (inputs.decoded_instr.opcode ==",
+            new ToWrite("if (%s) begin\n".formatted(language.CreateAllNoMemEncoding(allISAX, ISAXes, rdInstr))
+                            + tab + "alu_outputs = alu_outputs_base;\n"
+                            + tab + "alu_outputs.op_stage2 = OP_Stage2_ISAX;\n"
+                            + "end\nelse",
+                        true, false, "function ALU_Outputs fv_ALU", true));
       }
     }
     this.toFile.UpdateContent(this.ModFile("CPU_Globals"), "typedef enum {  OP_Stage2_ALU",
@@ -353,28 +367,55 @@ public class Piccolo extends CoreBackend {
   // cpu."+methodName+";\n",true,false,"module mkCore",true));
   //	}
 
+  /**
+   * Additional stall conditions to apply to the given stage. Should also be returned through RdStall.
+   * @return String of individual conditions, to be ORed together
+   */
+  private Stream<String> additionalStallConds(int stageNum) {
+    Stream<String> extraConds = Stream.empty();
+    if (stageNum == 2) {
+      if (ContainsOpInStage(BNode.WrRD_spawn, stage_spawn))
+        extraConds = Stream.concat(extraConds, Stream.of("stage3.has_WrRD_spawn_valid()"));
+    }
+    return extraConds;
+  }
   private void IntegrateISAX_RdStall() {
     for (int stageNum = 0; stageNum <= 2; stageNum++) {
       PipelineStage stage = stages[stageNum];
       String localRdStallWire = language.CreateLocalNodeName(BNode.RdStall, stage, "");
+
+      //Create a Bool within the rule.
+      String ruleLocalRdStall = "ruleRdStall_%d".formatted(stageNum);
+      toFile.UpdateContent(this.ModFile("mkCPU"), ");",
+          new ToWrite("Bool %s = True;\n".formatted(ruleLocalRdStall), true, false, "rule rl_pipe"));
+
       if (stageNum == 1) {
         toFile.UpdateContent(this.ModFile("mkCPU"), "end",
-                             new ToWrite("else\n" + tab + language.CreateLocalNodeName(BNode.RdStall, stage, "") + " <= True;", true, false,
+                             new ToWrite("else\n" + tab + ruleLocalRdStall + " = True;", true, false,
                                          "// Move instruction from Stage" + (stageNum + 1) + " to Stage" + (stageNum + 2)));
         toFile.UpdateContent(this.ModFile("mkCPU"), "stage3.enq (stage2.out.data_to_stage3);",
-                             new ToWrite(language.CreateLocalNodeName(BNode.RdStall, stage, "") + " <= False;", false, true, ""));
+                             new ToWrite(ruleLocalRdStall + " = False;", false, true, ""));
       } else if (stageNum == 0) {
         toFile.UpdateContent(this.ModFile("mkCPU"), "begin",
-                             new ToWrite(language.CreateLocalNodeName(BNode.RdStall, stage, "") + " <= False;", true, false,
+                             new ToWrite(ruleLocalRdStall + " = False;", true, false,
                                          "// Move instruction from Stage" + (stageNum + 1) + " to Stage" + (stageNum + 2)));
         toFile.UpdateContent(this.ModFile("mkCPU"), "end",
-                             new ToWrite("else\n" + tab + language.CreateLocalNodeName(BNode.RdStall, stage, "") + " <= True;", true, false,
+                             new ToWrite("else\n" + tab + ruleLocalRdStall + " = True;", true, false,
                                          "// Move instruction from Stage" + (stageNum + 1) + " to Stage" + (stageNum + 2)));
       } else if (stageNum == 2) {
-        String toAdd = language.CreateLocalNodeName(BNode.RdStall, stages[2], "") + " <= False;";
+        String toAdd = ruleLocalRdStall + " = stage3.out.ostatus != OSTATUS_PIPE;";
         String grep = "if (stage3.out.ostatus == OSTATUS_PIPE) begin";
         this.toFile.UpdateContent(this.ModFile("mkCPU"), grep, new ToWrite(toAdd, false, true, "", true));
       }
+      String extraConds = additionalStallConds(stageNum).reduce((a,b)->a+" || "+b).orElse("");
+      if (!extraConds.isEmpty()) {
+        //Check for other RdStall reasons
+        toFile.UpdateContent(this.ModFile("mkCPU"), "endrule: rl_pipe",
+                             new ToWrite("if (%s)\n%s%s = True;".formatted(extraConds, tab, ruleLocalRdStall), false, true, "", true));
+      }
+      //Set module-local stall wire from rule-local one
+      toFile.UpdateContent(this.ModFile("mkCPU"), "endrule: rl_pipe",
+                           new ToWrite("%s <= %s;".formatted(localRdStallWire, ruleLocalRdStall), false, true, "", true));
       String declareLocalRdStall = "Wire #( Bool ) " + localRdStallWire + " <- mkDWire( True );\n";
       this.toFile.UpdateContent(this.ModFile("mkCPU"), ");", new ToWrite(declareLocalRdStall, true, false, "module mkCPU"));
       //			if(ContainsOpInStage(BNode.RdStall, stage)) {
@@ -384,20 +425,34 @@ public class Piccolo extends CoreBackend {
   }
 
   private void IntegrateISAX_WrStall() {
-    if (ContainsOpInStage(BNode.WrStall, 1))
+    String[] wrstallConds = new String[3];
+    for (int iStage = 0; iStage < 3; ++iStage) {
+      Stream<String> conds_stage = additionalStallConds(iStage);
+      if (ContainsOpInStage(BNode.WrStall, iStage))
+        conds_stage = Stream.concat(Stream.of(language.CreateLocalNodeName(BNode.WrStall, stages[iStage], "")), conds_stage);
+      wrstallConds[iStage] = conds_stage.reduce((a,b)->a+" || "+b).orElse("");
+    }
+
+    if (!wrstallConds[1].isEmpty())
       toFile.ReplaceContent(this.ModFile("mkCPU"), "if ((! stage3_full)",
-                            new ToWrite("if ((! stage3_full) && (stage2.out.ostatus == OSTATUS_PIPE) && (!" +
-                                            language.CreateLocalNodeName(BNode.WrStall, stages[1], "") + ")) begin\n",
+                            new ToWrite("if ((! stage3_full) && (stage2.out.ostatus == OSTATUS_PIPE) && !(" +
+                                            wrstallConds[1] + ")) begin\n",
                                         true, false, "// Move instruction from Stage2 to Stage3"));
-    if (ContainsOpInStage(BNode.WrStall, 0))
+    if (!wrstallConds[0].isEmpty())
       toFile.ReplaceContent(this.ModFile("mkCPU"), "if (   (! halting)",
-                            new ToWrite("if (   (! halting) && (!" + language.CreateLocalNodeName(BNode.WrStall, stages[0], "") + ")", true,
+                            new ToWrite("if (   (! halting) && !(" + wrstallConds[0] + ")", true,
                                         false, "// Move instruction from Stage1 to Stage2"));
-    if (ContainsOpInStage(BNode.WrStall, 2))
+    //Need to stall entire pipeline on WrStall_2:
+    // rl_pipe uses stage3.deq (inside a conditional statement),
+    //   which needs regfile access -> conflict with the WrRD_spawn rule in stage3.
+    if (!wrstallConds[2].isEmpty())
       toFile.ReplaceContent(this.ModFile("mkCPU"), "rule rl_pipe",
-                            new ToWrite("rule rl_pipe (   (rg_state == CPU_RUNNING) && (!(" +
-                                            language.CreateLocalNodeName(BNode.WrStall, stages[2], "") + "))",
+                            new ToWrite("rule rl_pipe (   (rg_state == CPU_RUNNING) && (!(" + wrstallConds[2] + "))",
                                         false, true, ""));
+//    if (!wrstallConds[2].isEmpty())
+//      toFile.ReplaceContent(this.ModFile("mkCPU"), "if (stage3.out.ostatus == OSTATUS_PIPE) begin",
+//                            new ToWrite("if (stage3.out.ostatus == OSTATUS_PIPE && !(%s)) begin".formatted(wrstallConds[2]),
+//                                        false, true, ""));
   }
   private void IntegrateISAX_WrPC() {
     int nrJumps = 0;
@@ -506,18 +561,22 @@ public class Piccolo extends CoreBackend {
   }
 
   private void IntegrateISAX_SpawnRD() {
-    int spawnStageNum = this.piccolo_core.maxStage + 1;
-    PipelineStage spawnStage = stages[spawnStageNum];
     String commit_stage = "stage3";
     if (op_stage_instr.containsKey(BNode.WrRD_spawn)) {
       // Update stage 3
-      String stage3 = "rule rule_" + language.CreateNodeName(BNode.WrRD_spawn_valid, spawnStage, "") + "(" +
-                      language.CreateLocalNodeName(BNode.WrRD_spawn_valid, spawnStage, "") + ");\n" + tab + "if(" +
-                      language.CreateLocalNodeName(BNode.WrRD_spawn_valid, spawnStage, "") + ")\n" + tab + "gpr_regfile.write_rd (" +
-                      language.CreateLocalNodeName(BNode.WrRD_spawn_addr, spawnStage, "") + ", " +
-                      language.CreateLocalNodeName(BNode.WrRD_spawn, spawnStage, "") + ");\n"
+      String stage3 = "rule rule_" + language.CreateNodeName(BNode.WrRD_spawn_valid, stage_spawn, "") + "(" +
+                      language.CreateLocalNodeName(BNode.WrRD_spawn_valid, stage_spawn, "") + ");\n" + tab + "if(" +
+                      language.CreateLocalNodeName(BNode.WrRD_spawn_valid, stage_spawn, "") + ")\n" + tab + "gpr_regfile.write_rd (" +
+                      language.CreateLocalNodeName(BNode.WrRD_spawn_addr, stage_spawn, "") + ", " +
+                      language.CreateLocalNodeName(BNode.WrRD_spawn, stage_spawn, "") + ");\n"
                       + "endrule\n";
       this.toFile.UpdateContent(this.ModFile("mkCPU_Stage3"), grepDeclareBehav, new ToWrite(stage3 + "\n", false, true, "", true));
+
+      String hasSpawnMethodImpl = "method Bool has_WrRD_spawn_valid = %s;"
+          .formatted(language.CreateLocalNodeName(BNode.WrRD_spawn_valid, stage_spawn, ""));
+      this.toFile.UpdateContent(this.ModFile("mkCPU_Stage3"), grepDeclareBehav, new ToWrite(hasSpawnMethodImpl + "\n", false, true, "", true));
+      this.toFile.UpdateContent(this.ModFile("mkCPU_Stage3"), "endinterface", new ToWrite("(* always_ready *) method Bool has_WrRD_spawn_valid;",
+                                                                                          true, false, "interface CPU_Stage3_IFC;", true));
     }
   }
 
@@ -779,7 +838,7 @@ public class Piccolo extends CoreBackend {
     this.PutNode("Bit", "", "mkCPU_Stage3", BNode.WrRD_spawn, stages[spawnStage]);
     this.PutNode("Bool", "", "mkCPU_Stage3", BNode.WrRD_spawn_valid, stages[spawnStage]);
     this.PutNode("Bit", "", "mkCPU_Stage3", BNode.WrRD_spawn_addr, stages[spawnStage]);
-    this.PutNode("Bool", "True", "mkCPU_Stage3", BNode.WrRD_spawn_validResp, stages[spawnStage]);
+    this.PutNode("Bool", "True", "mkCPU", BNode.WrRD_spawn_validResp, stages[spawnStage]);
 
     this.PutNode("Bit", "truncate( near_mem.dmem.word64)", "mkCPU", BNode.RdMem_spawn, stages[spawnStage]);
     this.PutNode("Bool", "", "mkCPU", BNode.RdMem_spawn_validReq, stages[spawnStage]);
@@ -797,6 +856,6 @@ public class Piccolo extends CoreBackend {
     this.PutNode("Bit", "", "mkCPU", BNode.WrMem_spawn_size, stages[spawnStage]);
     this.PutNode("Bit", "", "mkCPU_Stage2", BNode.WrMem_spawn_defaultAddr, stages[spawnStage]); // x.addr
 
-    this.PutNode("Bool", "stage3.out.ostatus == OSTATUS_PIPE", "mkCPU", BNode.ISAX_spawnAllowed, stages[0]);
+    this.PutNode("Bool", "True", "mkCPU", BNode.ISAX_spawnAllowed, stages[0]);
   }
 }

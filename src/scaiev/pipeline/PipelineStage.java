@@ -331,11 +331,24 @@ public class PipelineStage {
      */
     InOrder("inorder"),
     /**
+     * Register rename stage. SCAIE-V should perform any hazard handling stalls on ISA register numbers in this stage,
+     *    as later stages of the core may not read the ISA register again / may wait on physical register numbers instead. 
+     * If no RegRename stage is given, SCAIE-V will default to apply hazard stalling to the first stage where RdRS1 is available.
+     */
+    RegRename("regrename"),
+    /**
+     * Issue stage marker. All instructions leaving this stage (without flushing in Issue) will have corresponding RdCommit... messages.
+     * RdIssueID must be available in this stage.
+     * Up until the Issue stage, SCAIE-V will use RdFlush/WrFlush (+ stall) to check if an instruction completes or is discarded.
+     *  If no Issue stage is given, the flush check extends to the rest of the pipeline (before commit).
+     */
+    Issue("issue"),
+    /**
      * Execute stage marker for semi-coupled spawn. The default is to assume the second stage with RdRS1 ability to be the execute stage.
      */
     Execute("execute"),
     /**
-     * Commit stage marker: Any operation that enters this stage can be considered committable (if not committed already), as it cannot be
+     * Commit stage marker: Any operation that leaves this stage can be considered committable (if not committed already), as it cannot be
      * flushed anymore.
      */
     Commit("commit"),

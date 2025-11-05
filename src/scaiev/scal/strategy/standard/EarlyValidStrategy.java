@@ -23,6 +23,7 @@ import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
+import scaiev.scal.NodeRegistry;
 import scaiev.scal.NodeRegistryRO;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
@@ -64,12 +65,13 @@ public class EarlyValidStrategy extends MultiNodeStrategy {
   }
 
   /**
-   * This function creates the text for Node_ValidReq based on instruction decoding. If instr in this stage & user wants valid bit, this is
-   * used, otherwise not. NOT generated for ISAXes without opcode
+   * This function creates the text for Node_ValidReq based on instruction decoding.
+   * NOT applicable for always-mode ISAXes
+   * @param registry
    * @param stage_lookAtISAX
-   * @param allISAXes
    * @param stage
    * @param operation
+   * @param earliestStage
    * @return
    */
   private NodeLogicBlock CreateValidReqEncodingEarlierStages(NodeRegistryRO registry,
@@ -147,7 +149,7 @@ public class EarlyValidStrategy extends MultiNodeStrategy {
 
     // Use the pipelined (or otherwise generated) result from the previous stage as the default, if possible.
     var pipedinNodeInst = registry.lookupRequired(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, checkAdj, stage, ""));
-    if (!pipedinNodeInst.getExpression().startsWith("MISSING_")) {
+    if (!pipedinNodeInst.getExpression().startsWith(NodeRegistry.MISSING_PREFIX)) {
       requestedFor.addAll(pipedinNodeInst.getRequestedFor(), true); // Add the previous stage's requestedFor set.
       String flushExpr =
           registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, stage, ""), requestedFor).getExpressionWithParens();
@@ -174,10 +176,10 @@ public class EarlyValidStrategy extends MultiNodeStrategy {
   }
   /**
    * This function creates the text for Node_ValidData based on instruction decoding.
+   * @param registry
    * @param stage_lookAtISAX
-   * @param allISAXes
    * @param stage
-   * @param operation
+   * @param baseNode
    * @return
    */
   private NodeLogicBlock CreateValidDataEncodingEarlierStages(NodeRegistryRO registry,
@@ -213,7 +215,7 @@ public class EarlyValidStrategy extends MultiNodeStrategy {
           //        while the 'early validData' should become validReq.
           SCAIEVNode userValid = bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.validReq).get();
           RdIValid = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(userValid, stage, ISAX));
-          if (RdIValid.startsWith("MISSING_"))
+          if (RdIValid.startsWith(NodeRegistry.MISSING_PREFIX))
             continue;
         } else if (allISAXes.get(ISAX).HasNoOp()) {
           SCAIEVNode userValid = bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.validData).get();
@@ -285,7 +287,8 @@ public class EarlyValidStrategy extends MultiNodeStrategy {
         //  The resulting output of the pipeline is then taken to add on any additional validReqs.
         var pipelineStrategy =
             strategyBuilders.buildNodeRegPipelineStrategy(language, bNodes, new PipelineFront(nodeKey.getStage()), false, false, true,
-                                                          _nodeKey -> true, _nodeKey -> false, MultiNodeStrategy.noneStrategy);
+                                                          _nodeKey -> true, _nodeKey -> false, MultiNodeStrategy.noneStrategy,
+                                                          true);
         pipelineStrategy.implement(out, new ListRemoveView<>(List.of(nodeKey)), false);
         return true;
       }

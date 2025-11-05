@@ -25,6 +25,7 @@ import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.Scheduled;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
 import scaiev.frontend.SCAIEVNode.NodeTypeTag;
+import scaiev.frontend.Scheduled.ScheduledNodeTag;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
@@ -32,10 +33,12 @@ import scaiev.pipeline.PipelineStage.StageTag;
 import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
+import scaiev.scal.NodeRegistry;
 import scaiev.scal.NodeInstanceDesc.ExpressionType;
 import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.strategy.StrategyBuilders;
 import scaiev.scal.strategy.standard.ValidMuxStrategy;
+import scaiev.scal.strategy.state.SCALStateStrategy.IssueReadEntry;
 import scaiev.scal.strategy.state.SCALStateStrategy.PortMuxGroup;
 import scaiev.scal.strategy.state.SCALStateStrategy.PortRename;
 import scaiev.scal.strategy.state.SCALStateStrategy.RegfileInfo;
@@ -43,6 +46,7 @@ import scaiev.ui.SCAIEVConfig;
 import scaiev.util.Lang;
 import scaiev.util.Verilog;
 
+/** Port mapping logic used in {@link SCALStateStrategy} */
 public class SCALStateStrategy_PortMapping {
 
   // logging
@@ -113,7 +117,7 @@ public class SCALStateStrategy_PortMapping {
     //undoRenames(regfileInfo.portRenames, regfileInfo.regularWrites);
 
     regfileInfo.issue_reads.clear();
-    regfileInfo.commit_writes.clear();
+    regfileInfo.writeback_writes.clear();
     regfileInfo.portRenames.clear();
     regfileInfo.portMuxGroups.clear();
     if (regfileInfo.portMuxStrategy != null)
@@ -154,8 +158,8 @@ public class SCALStateStrategy_PortMapping {
       }
     }
     class WrInstanceInfo extends InstanceInfo {
-      /** Commit stages deemed potentially relevant, sorted by {@link PipelineStage#getSortKey()} */
-      List<PipelineStage> relevantCommitStages;
+      /** Writeback stages deemed potentially relevant, sorted by {@link PipelineStage#getSortKey()} */
+      List<PipelineStage> relevantWritebackStages;
       // public WrInstanceInfo(NodeInstanceDesc.Key key) {
       public WrInstanceInfo(List<NodeInstanceDesc.Key> fromList, int listIndex) {
         super(fromList, listIndex);
@@ -164,21 +168,21 @@ public class SCALStateStrategy_PortMapping {
             (stage
              -> (!fromRegularISAX || !stage.getTags().contains(StageTag.NoISAX)) // Ignore NoISAX stages for regular ISAXes
                     && (decoupled || stage.getKind() != StageKind.Decoupled));   // Ignore decoupled stages for non-decoupled ISAXes
-        this.relevantCommitStages =
+        this.relevantWritebackStages =
             key.getStage()
                 .streamNext_bfs(nextStage
-                                -> !regfileInfo.commitFront.contains(nextStage) &&
+                                -> !regfileInfo.writebackFront.contains(nextStage) &&
                                        stageIsRelevant.test(nextStage)) // Stop iterating past each first one, apply relevance criteria
                 .filter(nextStage
-                        -> regfileInfo.commitFront.contains(nextStage) &&
-                               stageIsRelevant.test(nextStage)) // Only process commit stages, apply relevance criteria
+                        -> regfileInfo.writebackFront.contains(nextStage) &&
+                               stageIsRelevant.test(nextStage)) // Only process writeback stages, apply relevance criteria
                 .sorted((a, b) -> Long.compare(a.getSortKey(), b.getSortKey()))
                 .toList();
       }
       @Override
       public boolean isCompatible(InstanceInfo other) {
         return super.isCompatible(other) && (other instanceof WrInstanceInfo) &&
-            this.relevantCommitStages.equals(((WrInstanceInfo)other).relevantCommitStages);
+            this.relevantWritebackStages.equals(((WrInstanceInfo)other).relevantWritebackStages);
       }
     }
     class MuxGroupDescEx {
@@ -193,7 +197,7 @@ public class SCALStateStrategy_PortMapping {
     //     in the registry, though.
     //   -> NoOP ISAX keys are always put in a new group.
     //   -> same-ISAX different-stage keys are put in different groups.
-    //   -> same-node different-commit keys are put in different groups.
+    //   -> same-node different-writeback keys are put in different groups.
     var relevantWrNodesByStage =
         new TreeMap<PipelineStage, List<WrInstanceInfo>>((a, b) -> Integer.compare(a.getStagePos(), b.getStagePos()));
     var util = new Object() {
@@ -260,23 +264,23 @@ public class SCALStateStrategy_PortMapping {
     List<MuxGroupDescEx> writeMuxGroups = new ArrayList<>();
 
     // if immediate write: Lower stage numbers have priority (represent a later instruction), i.e. need a higher port number
-    // else if write on commit: Higher stage numbers have priority (represent a later point in execution of an instruction), i.e. need a
+    // else if write on writeback: Higher stage numbers have priority (represent a later point in execution of an instruction), i.e. need a
     // higher port number
 
     Iterator<Entry<PipelineStage, List<WrInstanceInfo>>> iter_relevantWrNodesByStage_prioritySorted =
         Stream
             .concat(
                 relevantWrNodesByStage.entrySet().stream().filter(
-                    entry -> regfileInfo.commitFront.isAfter(entry.getKey(), false) && !regfileInfo.commitFront.isAround(entry.getKey())),
-                relevantWrNodesByStage.entrySet().stream().filter(entry -> regfileInfo.commitFront.isAround(entry.getKey())))
+                    entry -> regfileInfo.writebackFront.isAfter(entry.getKey(), false) && !regfileInfo.writebackFront.isAround(entry.getKey())),
+                relevantWrNodesByStage.entrySet().stream().filter(entry -> regfileInfo.writebackFront.isAround(entry.getKey())))
             .iterator();
     int nextPriorityVal = 0;
     while (iter_relevantWrNodesByStage_prioritySorted.hasNext()) {
       Entry<PipelineStage, List<WrInstanceInfo>> entry = iter_relevantWrNodesByStage_prioritySorted.next();
       for (WrInstanceInfo writeInstance : entry.getValue()) {
-        if (writeInstance.relevantCommitStages.isEmpty()) {
-          logger.error("SCALStageStrategy - Found no matching commit stage (from {}) for {}",
-                       regfileInfo.commitFront.asList().stream().map(stage -> stage.getName()).toList(), writeInstance.key.toString(false));
+        if (writeInstance.relevantWritebackStages.isEmpty()) {
+          logger.error("SCALStageStrategy - Found no matching writeback stage (from {}) for {}",
+                       regfileInfo.writebackFront.asList().stream().map(stage -> stage.getName()).toList(), writeInstance.key.toString(false));
           continue;
         }
         MuxGroupDescEx muxGroupEx = null;
@@ -304,9 +308,9 @@ public class SCALStateStrategy_PortMapping {
           writeMuxGroups.add(newMuxGroupEx);
           muxGroupEx = newMuxGroupEx;
 
-          for (PipelineStage commitStage : writeInstance.relevantCommitStages) {
-            regfileInfo.commit_writes.add(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, newGroupKey.getNode(),
-                                                                   commitStage, newGroupKey.getISAX(), newGroupKey.getAux()));
+          for (PipelineStage writebackStage : writeInstance.relevantWritebackStages) {
+            regfileInfo.writeback_writes.add(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, newGroupKey.getNode(),
+                                                                   writebackStage, newGroupKey.getISAX(), newGroupKey.getAux()));
           }
         }
 
@@ -319,15 +323,15 @@ public class SCALStateStrategy_PortMapping {
     }
     writeMuxGroups.stream().forEach(muxGroupEx -> regfileInfo.portMuxGroups.add(muxGroupEx.muxGroup));
 
-    List<String> cannotReachCommitKeyNames = relevantWrNodesByStage.entrySet()
-                                                 .stream()
-                                                 .filter(entry -> !regfileInfo.commitFront.isAroundOrAfter(entry.getKey(), false))
-                                                 .flatMap(entry -> entry.getValue().stream())
-                                                 .map(keyAndRef -> keyAndRef.key.toString(false))
-                                                 .toList();
-    if (!cannotReachCommitKeyNames.isEmpty()) {
-      logger.error("SCALStageStrategy - Found Wr{} nodes that do not have a path to commit ({}): {}", regfileInfo.regName,
-                   regfileInfo.commitFront.asList().stream().map(stage -> stage.getName()).toList(), cannotReachCommitKeyNames);
+    List<String> cannotReachWritebackKeyNames = relevantWrNodesByStage.entrySet()
+                                                    .stream()
+                                                    .filter(entry -> !regfileInfo.writebackFront.isAroundOrAfter(entry.getKey(), false))
+                                                    .flatMap(entry -> entry.getValue().stream())
+                                                    .map(keyAndRef -> keyAndRef.key.toString(false))
+                                                    .toList();
+    if (!cannotReachWritebackKeyNames.isEmpty()) {
+      logger.error("SCALStageStrategy - Found Wr{} nodes that do not have a path to writeback ({}): {}", regfileInfo.regName,
+                   regfileInfo.writebackFront.asList().stream().map(stage -> stage.getName()).toList(), cannotReachWritebackKeyNames);
     }
 
     // Next, rename issueReads to groups.
@@ -360,8 +364,6 @@ public class SCALStateStrategy_PortMapping {
         readMuxGroups.add(newMuxGroupEx);
         muxGroupEx = newMuxGroupEx;
 
-        regfileInfo.issue_reads.add(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, newGroupKey.getNode(),
-                                                             readInstance.key.getStage(), newGroupKey.getISAX(), newGroupKey.getAux()));
       }
 
       var groupKey = muxGroupEx.muxGroup.groupKey;
@@ -377,6 +379,37 @@ public class SCALStateStrategy_PortMapping {
                                                     readInstance.key.getStage(), groupKey.getISAX(), groupKey.getAux())));
       }
     }
+    //Create issue_reads entries for the readMuxGroups.
+    for (var muxGroup : readMuxGroups) {
+      boolean hasISAXWithForwardingDisabled = false;
+      boolean hasISAXWithForwardingEnabled = false;
+      PipelineStage readStage = null;
+      for (var sourceInstance : muxGroup.instances) {
+        readStage = sourceInstance.key.getStage();
+        if (!sourceInstance.fromRegularISAX)
+          continue; //NOTE: Currently, non-ISAX reads have no 'voting rights' on whether to disable forwarding.
+        assert(allISAXes.get(sourceInstance.key.getISAX()) != null);
+        //FIXME: If the ISAX has multiple reads from the regfile,
+        //       there is no good way to tell which Scheduled entry is the one we're looking for.
+        //       -> Need some op_stage_instr -> Scheduled mapping that configureRegfile's caller
+        //          would includes in regularReadsUnmapped.
+        //For now, only disable forwarding if _all_ reads of that regfile from the ISAX have it disabled.
+        if (allISAXes.get(sourceInstance.key.getISAX()).HasSchedWith(
+              sourceInstance.key.getNode(),
+              sched -> sched.GetTags().contains(ScheduledNodeTag.Custreg_DisableReadForwarding)))
+          hasISAXWithForwardingDisabled = true;
+        if (allISAXes.get(sourceInstance.key.getISAX()).HasSchedWith(
+              sourceInstance.key.getNode(),
+              sched -> !sched.GetTags().contains(ScheduledNodeTag.Custreg_DisableReadForwarding)))
+          hasISAXWithForwardingEnabled = true;
+      }
+      assert(readStage != null);
+      var readKey = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, muxGroup.muxGroup.groupKey.getNode(),
+                                             readStage, muxGroup.muxGroup.groupKey.getISAX(), muxGroup.muxGroup.groupKey.getAux());
+      boolean disableForwarding = hasISAXWithForwardingDisabled && !hasISAXWithForwardingEnabled;
+      regfileInfo.issue_reads.add(new IssueReadEntry(readKey, disableForwarding));
+    }
+
     readMuxGroups.stream().forEach(muxGroupEx -> regfileInfo.portMuxGroups.add(muxGroupEx.muxGroup));
   }
   
@@ -435,7 +468,7 @@ public class SCALStateStrategy_PortMapping {
           NodeInstanceDesc assignFromNodeInst = null;
           if (nodeKey.getNode().isInput) {
             assignFromNodeInst = registry.lookupRequired(NodeInstanceDesc.Key.keyWithPurpose(assignFromKey, Purpose.match_WIREDIN_OR_PIPEDIN));
-            if (assignFromNodeInst.getExpression().startsWith("MISSING_"))
+            if (assignFromNodeInst.getExpression().startsWith(NodeRegistry.MISSING_PREFIX))
               assignFromNodeInst = null;
           }
           if (assignFromNodeInst == null)
@@ -482,6 +515,8 @@ public class SCALStateStrategy_PortMapping {
           SCAIEVInstr ret =
               new SCAIEVInstr(name, origInstr.GetEncodingF7(Lang.None), origInstr.GetEncodingF3(Lang.None),
                               origInstr.GetEncodingOp(Lang.None), origInstr.GetInstrType(), origInstr.GetEncodingConstRD(Lang.None));
+          ret.SetAsDecoupled(origInstr.GetRunsAsDecoupled());
+          ret.SetAsDynamic(origInstr.GetRunsAsDynamic());
           // Apply port renames on sched nodes
           var origSchedNodes = origInstr.GetSchedNodes();
           HashSet<SCAIEVNode> renamedNodes = new HashSet<>();
@@ -493,7 +528,7 @@ public class SCALStateStrategy_PortMapping {
                     Stream.of(AdjacentNode.values()).filter(adj -> sched.HasAdjSig(adj)).collect(Collectors.toCollection(HashSet::new));
                 // There always is an address (explicitly represented in op_stage_instr)
                 //  -> In this case, we skip adding the addr adjacent as a full Scheduled object (not needed)
-                newAdjacentSet.add(AdjacentNode.addr);
+                //newAdjacentSet.add(AdjacentNode.addr);
                 HashMap<AdjacentNode, Integer> newAdjacentConstMap =
                     Stream.of(AdjacentNode.values())
                         .map(adj -> Map.entry(adj, sched.GetConstAdjSig(adj)))
@@ -504,7 +539,22 @@ public class SCALStateStrategy_PortMapping {
                           return a;
                         }, HashMap::new));
                 var newSched = new Scheduled(sched.GetStartCycle(), newAdjacentSet, newAdjacentConstMap);
+                sched.GetTags().forEach(tag -> newSched.AddTag(tag));
                 ret.PutSchedNode(rename.to.getNode(), newSched);
+              }
+              assert(!rename.from.getNode().isAdj());
+              //Add a separate addr entry (non-spawn).
+              SCAIEVNode renameFrom_nonspawn = bNodes.GetEquivalentNonspawnNode(rename.from.getNode()).orElseThrow();
+              SCAIEVNode renameTo_nonspawn = bNodes.GetEquivalentNonspawnNode(rename.to.getNode()).orElseThrow();
+              SCAIEVNode addrNodeFrom = bNodes.GetAdjSCAIEVNode(renameFrom_nonspawn, AdjacentNode.addr).orElseThrow();
+              renamedNodes.add(addrNodeFrom);
+              SCAIEVNode addrNodeTo = bNodes.GetAdjSCAIEVNode(renameTo_nonspawn, AdjacentNode.addr).orElseThrow();
+              for (var sched : origSchedNodes.getOrDefault(addrNodeFrom, List.of())) {
+                HashSet<AdjacentNode> newAdjacentSet =
+                    Stream.of(AdjacentNode.values()).filter(adj -> sched.HasAdjSig(adj)).collect(Collectors.toCollection(HashSet::new));
+                var newSched = new Scheduled(sched.GetStartCycle(), newAdjacentSet, new HashMap<AdjacentNode, Integer>());
+                sched.GetTags().forEach(tag -> newSched.AddTag(tag));
+                ret.PutSchedNode(addrNodeTo, newSched);
               }
             }
           }

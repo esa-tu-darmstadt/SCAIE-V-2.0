@@ -23,6 +23,8 @@ import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
+import scaiev.scal.NodeRegistry;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
 import scaiev.util.Verilog;
@@ -202,9 +204,9 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
                     .map(endStage -> registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, endStage, "")))
                     .toList();
             String flushCond = flushConds.get(0);
-            if (!flushCond.startsWith("MISSING_") &&
+            if (!flushCond.startsWith(NodeRegistry.MISSING_PREFIX) &&
                 flushConds.stream().skip(1).anyMatch(
-                    otherFlushCond -> !otherFlushCond.startsWith("MISSING_") && !flushConds.get(0).equals(otherFlushCond))) {
+                    otherFlushCond -> !otherFlushCond.startsWith(NodeRegistry.MISSING_PREFIX) && !flushConds.get(0).equals(otherFlushCond))) {
               logger.warn("RdFlush conditions don't match up between end stages for ISAX {}: {}", nodeKey.getISAX(), flushConds);
             }
             List<Optional<NodeInstanceDesc>> wrflushOptConds =
@@ -450,6 +452,9 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
         }
       }
 
+      // Fulfill this builder's duty to provide the given node, even if it is just used as a marker.
+      // -> Any user (lookupRequired caller) of this node should use RdStall||WrStall on the sub pipelines.
+      //    The expression result must not be assumed valid.
       ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(WrStallISAXEntry, nodeKey.getStage(), nodeKey.getISAX()),
                                            "PLACEHOLDER_" + nodeKey.toString(), ExpressionType.AnyExpression));
 
@@ -457,16 +462,10 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
       String stallSubpipeCond = "";
       String flushSubpipeCond = "";
       for (PipelineStage entryStage : entryStages) {
-        stallSubpipeCond += (stallSubpipeCond.isEmpty() ? "" : " || ") + "(" +
-                            registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, entryStage, "")) + ")";
-        var wrstallSubpipe_opt = registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrStall, entryStage, ""));
-        if (wrstallSubpipe_opt.isPresent())
-          stallSubpipeCond += " || (" + wrstallSubpipe_opt.get().getExpression() + ")";
-        flushSubpipeCond += (flushSubpipeCond.isEmpty() ? "" : " || ") + "(" +
-                            registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, entryStage, "")) + ")";
-        var wrflushSubpipe_opt = registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrFlush, entryStage, ""));
-        if (wrflushSubpipe_opt.isPresent())
-          flushSubpipeCond += " || (" + wrflushSubpipe_opt.get().getExpression() + ")";
+        stallSubpipeCond += (stallSubpipeCond.isEmpty() ? "" : " || ") +
+                            SCALUtil.buildCond_StageStalling(bNodes, registry, entryStage, false);
+        flushSubpipeCond += (flushSubpipeCond.isEmpty() ? "" : " || ") +
+                            SCALUtil.buildCond_StageFlushing(bNodes, registry, entryStage);
       }
 
       if (!extraStallCond.isEmpty() || !stallSubpipeCond.equals("0") && !stallSubpipeCond.equals("1'b0")) {
@@ -479,6 +478,7 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
                  .anyMatch(
                      stage_instrs -> stage_instrs.getValue().contains(nodeKey.getISAX()) && entryStages.contains(stage_instrs.getKey()))) {
           // The ISAX does not check for stalls in the spawn entry stage, so we need to stall the stages before that.
+          // For stalling of the early stages, use WrStallISAXEntryEarly.
           String earlyExtraStallCond = "";
           for (NodeInstanceDesc subNode :
                registry.lookupAll(new NodeInstanceDesc.Key(WrStallISAXEntryEarly, nodeKey.getStage(), ""), false)) {
@@ -585,6 +585,14 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
     if (nodeKey.getStage().getStagePos() == 0) {
       if (!implementedRdIValid.add(new NodeInstanceDesc.Key(bNodes.RdIValid, nodeKey.getStage(), nodeKey.getISAX())))
         return true; // Prevent duplicate implementation.
+
+      List<PipelineStage> allEntryStages = getEntryStagesFor(nodeKey.getStage().getParent().get(), nodeKey.getISAX());
+      if (allEntryStages.isEmpty()) {
+        logger.error("SpawnRdIValidStrategy: {} is in a sub-pipeline, but getEntryStagesFor({},{}) is empty",
+          nodeKey.toString(), nodeKey.getStage().getParent().get().toString(), nodeKey.getISAX());
+        return false;
+      }
+
       RequestedForSet requestedFor = new RequestedForSet(nodeKey.getISAX());
       out.accept(NodeLogicBuilder.fromFunction("SpawnRdIValidStrategy_fromParent_" + nodeKey.toString(false), (registry, aux) -> {
         NodeLogicBlock ret = new NodeLogicBlock();
@@ -628,20 +636,22 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
         String wrDeqInstrWire = wrDeqInstrKey.toString(false) + "_s";
         ret.declarations += String.format("wire %s;\n", wrDeqInstrWire);
 
-        String stallSubpipeCond = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, nodeKey.getStage(), ""));
-        var wrstallSubpipe_opt = registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrStall, nodeKey.getStage(), ""));
-        if (wrstallSubpipe_opt.isPresent())
-          stallSubpipeCond += " || " + wrstallSubpipe_opt.get().getExpression();
-        //Add WrStallISAXEntry to the WrDeqInstr stall condition.
-        // IMPORTANT: Also triggers generation of WrStallISAXEntry and the default stall condition in the base pipeline.
-        stallSubpipeCond += " || " + registry.lookupExpressionRequired(
-            new NodeInstanceDesc.Key(WrStallISAXEntry, nodeKey.getStage().getParent().get(), nodeKey.getISAX()));
-        String flushSubpipeCond = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, nodeKey.getStage(), ""));
-        var wrflushSubpipe_opt = registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrFlush, nodeKey.getStage(), ""));
-        if (wrflushSubpipe_opt.isPresent())
-          flushSubpipeCond += " || " + wrflushSubpipe_opt.get().getExpression();
+        //WrDeqInstr is low if any of the entry stages of the ISAX stalls.
+        //TODO: Properly distribute WrStall/RdStall across neighboring sub-pipelines in the first place.
+        String stallSubpipeCond = "";
+        String flushSubpipeCond = "";
+        for (PipelineStage entryStage : allEntryStages) {
+          stallSubpipeCond += (stallSubpipeCond.isEmpty() ? "" : " || ") +
+                              SCALUtil.buildCond_StageStalling(bNodes, registry, entryStage, false);
+          flushSubpipeCond += (flushSubpipeCond.isEmpty() ? "" : " || ") +
+                              SCALUtil.buildCond_StageFlushing(bNodes, registry, entryStage);
+        }
+
         ret.logic += String.format("assign %s = %s && !(%s || %s);\n", wrDeqInstrWire, signalName, stallSubpipeCond, flushSubpipeCond);
         ret.outputs.add(new NodeInstanceDesc(wrDeqInstrKey, wrDeqInstrWire, ExpressionType.WireName, requestedFor));
+
+        // Trigger generation of WrStallISAXEntry, which also applies the default stall condition in the base pipeline.
+        registry.lookupExpressionRequired(new NodeInstanceDesc.Key(WrStallISAXEntry, nodeKey.getStage().getParent().get(), nodeKey.getISAX()));
 
         return ret;
       }));

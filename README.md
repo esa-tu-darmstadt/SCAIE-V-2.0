@@ -15,6 +15,8 @@ On top of the original 2.0 release, logic generation has seen a rework (SCAL 2.0
 
 ## Which cores do you support?
 We currently support
+- CVA5
+- CVA6
 - VexRiscv (https://github.com/SpinalHDL/VexRiscv)
 - ORCA (https://github.com/cahz/orca)
 - Piccolo (https://github.com/bluespec/Piccolo)
@@ -24,31 +26,33 @@ These cores provide different configurations. While testing & evaluating our too
 | Core        | Nr. of pipeline stages | Interface |
 |-------------|------------------------|-----------|
 | ORCA        | 5                      | AXI       |
-| VexRiscv_4s | 4                      | AHB       |
-| VexRiscv_5s | 5                      | AHB       |
+| VexRiscv_4s | 5                      | AHB       |
 | Piccolo     | 3                      | AXI       |
 | PicoRV32    | non-pipelined          | Native    |
+| CVA5        | 3,4+ (EU-based)        | AXI,BRAM  |
+| CVA6        | 5+ (EU-based)          | AXI       |
 
 ## What is the design structure?
 Let us consider that user wants to develop a new instruction  ISAX1, which must be integrated in the VexRiscv core. The design will have the following hierarchy: 
 
 ISAX1 <--> CommonLogicModule (SCAL) <--> Top module of SCAIE-V extended Core
 
-Currently SCAIE-V generates the  CommonLogicModule (SCAL)  and updates the design files of the core. The `maketop` python scripts, when run from the `utils/maketop` directory, generate a wrapper module with all modules according to the netlist description from SCAIE-V. ISAX1 will only be connected to the interface of the CommonLogicModule (SCAL).
+SCAIE-V generates the CommonLogicModule (SCAL) and updates the design files of the core. The `maketop` python scripts, when run from the `utils/maketop` directory, generate a wrapper module with all modules according to the netlist description from SCAIE-V. In the example, ISAX1 will only be connected to the interface of the CommonLogicModule (SCAL).
 
 
-## Which operations are supported in SCAIE-V? 
+## Which basic operations are supported in SCAIE-V?
 | Operation     | Meaning | Bitwidth |
-|----------|------------------------|-----------|
-| RdRS1/2     | Reads operands | 32       |
-| RdPC | Reads program counter                      | 32       |
-| RdInstr  | Reads Instruction                      | 32       |
+|----------|-------------------------|----------|
+| RdRS1/2  | Reads operands          | 32       |
+| RdPC     | Reads program counter   | 32       |
+| RdInstr  | Reads Instruction       | 32       |
 | RdIValid | Status bit informing the custom logic that a certain pipeline stage currently contains an instruction of type X          | 1    |
-| WrRD     | Write register file * | 32       |
-| Wr/RdMem     | Load/Store operations * | 32       |
-| WrPC | Writes program counter * | 32 |
+| WrRD     | Write register file *   | 32       |
+| Wr/RdMem | Load/Store operations * | 32       |
+| WrPC     | Writes program counter  | 32       |
+| Wr/RdCustomReg | Access a custom register, as defined in the ISAX datasheet | width |
 
-\* optionally, the user may request addr. and valid bit for this interface. For WrPC, and WrRD the user can not request an addr. signal.
+\* optionally, the user may provide an address signal and a valid control pin for this interface.
 
 
 ## How can I use the SCAIE-V tool for my custom instructions?
@@ -59,7 +63,6 @@ Run `git submodule update --init` to download the supported core sources. Note: 
 By default, SCAIE-V writes the patched files and other outputs to the `results/<core>` subdirectory. This can be overridden by `-o`. If initialized with a copy of the core repository (copied from `EclipseWork/SCAIEV/CoresSrc`), the output directory will contain a complete, patched processor.
 
 The user can provide an individual ISAX description (yaml file) using `-i`. Otherwise, the `isaxes` subdirectory of the output dir's core subdirectory will be scanned for `ISAX_*.yaml` description files.
-
 ```
 usage: scaievcmd - generate SCAIE-V SCAL layer and integrate SCAIE-V
                  interface for core
@@ -77,7 +80,6 @@ usage: scaievcmd - generate SCAIE-V SCAL layer and integrate SCAIE-V
  -v,--verbose                 Verbose printing
  -vv,--vverbose               Print debug information and enable -v
 ```
-
 For Eclipse, you may have to exclude the `SCAIEV/test/module-info.java` file from the build. One way is to set set the `Excluded` property of the `SCAIEV/test` source folder to `module-info.java`. The maven build, however, requires the test module-info.java file to be present.
 
 ### Example - Step 1
@@ -121,6 +123,7 @@ See [Which "decoupled execution" modes are supported?](#which-decoupled-executio
 
 ### Example - Step 3
 Implement the design according to the schedule.
+
 ```verilog
 module ISAX_sllidec(
   input         clk_i,
@@ -142,7 +145,7 @@ module ISAX_sllidec(
     //Pipeline condition: The current stage contains the ISAX, and its pipeline condition is fulfilled.
     //Note: RdIValid is required for cores that can issue to multiple execution units. The ISAX will only ever be in one execution unit.
     if (RdIValid_sllidec_2_i && !RdStall_sllidec_2_i)
-  	  result <= (RdRS1_sllidec_2_i << shamt) - 1;
+         result <= (RdRS1_sllidec_2_i << shamt) - 1;
   end
   
   assign WrRD_sllidec_3_o = result;
@@ -167,17 +170,6 @@ python Vex_maketop.py ../../EclipseWork/SCAIEV/results/VexRiscv_5s <ISAX yaml di
 ```
 Now, there should be a `Vex_top.sv` file next to the modified core files, instantiating and connecting the core, SCAIE-V's SCAL module and the sllidec ISAX.
 
-## How can I try it out fast? 
-*TODO: Readd the demo files*
-
-There is a DEMO that you can run. It contains an ISAX module which requires multiple SCAIE-V interfaces and simply generates some patterns. These patterns are then checked within a simple testbench. In our evaluation flow we used multiple real ISAXes and evaluated them using cocotb. In this DEMO the ISAX module is just there to show how to use the SCAIE-V tool. For this: 
-- run the DemoTest_VexRiscv5.java class. This will update the VexRiscv source files and generate CommonLogicModule (SCAL) 
-- generate verilog from the VexRiscv files 
-- use the wrapper in the DemoFiles folder (testbench.v)
-- simulate the testbench module.  
-
-The DemoFiles folder also contains already generated VexRiscv verilog code and CommonLogicModule.sv as reference. 
-
 ## A more detailed specification of the SCAIE-V Interface 
 If you want to design your own ISAX, you need to comply to the SCAIE-V Specification. In the following are defined its main characteristics. 
 The specification bellow defines the interface between the user-designed ISAX Module and the SCAIE-V Extended Core. Apart from the interfaces below, SCAIE-V is now capable of instantiating internal states on its own. This is, however, covered in a separate subsection below. 
@@ -199,10 +191,10 @@ The specification bellow defines the interface between the user-designed ISAX Mo
 
 ## Which "decoupled execution" modes are supported?
 
-We currently support three different execution modes decoupled from the pipeline: 
-  - Continuous: ISAX may read/write a state at any point in time, independent of the current instruction in the pipeline. 
+We currently support three different execution modes that are not tightly coupled to the pipeline:
+  - Continuous/Always: ISAX may read/write a state at any point in time, independent of the current instruction in the pipeline.
   - Decoupled: ISAX may update the state at a later point in time, while the core processes in parallel new instructions. To use this variant, set the instruction's parameter "decoupled" to true (or in .yaml format write "is decoupled: 1").
-  - Semi-coupled:  ISAX may update the state at a later point in time, while the core is stalled.  This is the default version, so you may leave the default settings as they are. 
+  - Semi-coupled: A long-running ISAX is transparently mapped to an Execution Unit (EU) with pipelining support. If the core does not support variable-latency EUs, only one ISAX can run at a time. This is the default version for high-latency ISAXes, so you may leave the default settings as they are.
 
 ## From which stage is an interface considered decoupled? 
 This subsection does NOT describe the "Continuous" mode. If you are interested for that strategy, go to the next subsection. 
@@ -230,23 +222,17 @@ This was currently tested only by using the yaml file as input. To use this stra
 ``` 
 
 ## Can I disable some logic within SCAL for decoupled execution? 
-Yes. The SCAL class has some parameters that may be set: 
-```
-public boolean SETTINGWithScoreboard = true; // true = Scoreboard instantiated within SCAL,  false = scoreboard implemented within ISAX by user   
-public boolean SETTINGWithValid = true;      // true = generate shift register for user valid bit within SCAL. False is a setting used by old SCAIEV version, possibly not stable. If false, user generates valid trigger 
-public boolean SETTINGWithAddr = true;		 // true = FIFO for storing dest addr instantiated within SCAL, If false, user must store this info and provide it toghether with result. 
-public boolean SETTINGwithInputFIFO = true;  // true =  it may happen that multiple ISAXes commit result, input FIFO to store them instantiated within SCAL. false = no input FIFOs instantiated
-```
+The SCAIE-V command line has some additional flags controlling SCAL's decoupled logic. See the `-h` option for details.
 
 ## What do I have to do to support internal states? 
-This is currently supported only in yaml file (see TestMe.yaml & AutomaticDemoTest.java, which reads the yaml and starts SCAIE-V tool based on it). 
+This is currently supported only in yaml file (see TestMe.yaml & AutomaticDemoTest.java, which reads the yaml and starts SCAIE-V tool based on it).
 In the TestMe.yaml, define in the beginning the internal state, with its name, width and depth:
 ```
 - register: Myreg
   width: 32
   elements: 1
 ```
-Make sure the name does not have any underlines or spaces. 
+Make sure the name does not have any underlines or spaces.
 In the instruction using this state, mention the scheduling of RdMyreg and WrMyreg:
 ``` 
 - instruction: MY_INSTRUCTION

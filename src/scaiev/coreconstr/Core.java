@@ -1,9 +1,12 @@
 package scaiev.coreconstr;
 
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map.Entry;
 import java.util.Optional;
+import java.util.Set;
+
 import scaiev.frontend.SCAIEVNode;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
@@ -18,15 +21,30 @@ public class Core {
   private String name;
   public int maxStage;
 
-  public Core(String name, PipelineStage rootStage) {
+  public enum CoreTag {
+    /** The core is RV64 and has 64-bit registers, addresses, and memory words. */
+    RV64("RV64");
+
+    public final String serialName;
+
+    private CoreTag(String serialName) { this.serialName = serialName; }
+  }
+  EnumSet<CoreTag> tags;
+
+  public Core(String name, PipelineStage rootStage, EnumSet<CoreTag> tags) {
     this.rootStage = rootStage;
     this.name = name;
+    this.tags = tags.clone();
   }
 
   public Core() {
     this.rootStage = new PipelineStage(StageKind.Root, EnumSet.noneOf(StageTag.class), "root", Optional.empty(), false);
     this.name = "";
+    this.tags = EnumSet.noneOf(CoreTag.class);
   }
+
+  public void addTag(CoreTag tag) { tags.add(tag); }
+  public Set<CoreTag> getTags() { return Collections.unmodifiableSet(tags); }
 
   @Override
   public String toString() {
@@ -45,9 +63,14 @@ public class Core {
     this.nodes = nodes;
   }
 
-  public void PutNode(SCAIEVNode fnode, CoreNode corenode) {
-    this.nodes.put(fnode, corenode);
-    if (fnode.name.equals("RdRS1"))
+  /**
+   * Adds a node to the Core, as if declared in the datasheet.
+   * @param node the node to declare (is an FNode if from the datasheet, can be from BNode or elsewhere if custom)
+   * @param corenode the node
+   */
+  public void PutNode(SCAIEVNode node, CoreNode corenode) {
+    this.nodes.put(node, corenode);
+    if (node.name.equals("RdRS1"))
       start_spawn_node = corenode;
   }
 
@@ -59,6 +82,10 @@ public class Core {
   }
 
   public PipelineFront GetStartSpawnStages() {
+    //If present, use RegRename-tagged stages as 'start spawn'; otherwise, use the RdRS1/start_spawn_node
+    var ret = new PipelineFront(this.rootStage.getAllChildren().filter(stage -> stage.getTags().contains(StageTag.RegRename)));
+    if (!ret.asList().isEmpty())
+      return ret;
     if (start_spawn_node == null)
       return new PipelineFront();
     return new PipelineFront(TranslateStageScheduleNumber(start_spawn_node.GetEarliest())

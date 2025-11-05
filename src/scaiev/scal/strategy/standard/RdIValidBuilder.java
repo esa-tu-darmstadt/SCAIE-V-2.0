@@ -17,6 +17,7 @@ import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
+import scaiev.scal.NodeRegistry;
 import scaiev.scal.NodeRegistryRO;
 import scaiev.util.Verilog;
 
@@ -187,7 +188,7 @@ public class RdIValidBuilder extends NodeLogicBuilder {
         ivalidCond += condStageValid_fromCore;
         String inStageValidCond =
             registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdInStageValid, stage, ""), requestedFor).getExpressionWithParens();
-        if (!inStageValidCond.startsWith("MISSING_"))
+        if (!inStageValidCond.startsWith(NodeRegistry.MISSING_PREFIX))
           ivalidCond += " && " + inStageValidCond;
 
         // Create the full node as REGULAR.
@@ -207,8 +208,8 @@ public class RdIValidBuilder extends NodeLogicBuilder {
           new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.PIPEDIN, nodeKey.getNode(), stage, nodeKey.getISAX(), nodeKey.getAux()),
           requestedFor);
       // This builder should only be called if the node in stage-1 for pipelining is not present already.
-      assert (_prevnode.startsWith("MISSING_"));
-      ret.outputs.add(new NodeInstanceDesc(requestedFullCond ? fullOutputKey : partialOutputKey, "MISSING_" + fullOutputKey.toString(false),
+      assert (_prevnode.startsWith(NodeRegistry.MISSING_PREFIX));
+      ret.outputs.add(new NodeInstanceDesc(requestedFullCond ? fullOutputKey : partialOutputKey, NodeRegistry.MISSING_PREFIX + fullOutputKey.toString(false),
                                            ExpressionType.AnyExpression, requestedFor));
     }
     return ret;

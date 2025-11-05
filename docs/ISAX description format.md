@@ -1,7 +1,7 @@
 The ISAX description is serialized as a yaml list, and each list entry is a dictionary with a fixed set of keys.
 An entry describes either an ISAX or a custom register used by one or several ISAXes.
 
-Note that the dictionary elements of each entry must be ordered as stated here to be applied as intended. 
+Note that the dictionary elements of each entry must be ordered as stated here to be applied as intended.
 
 # Instructions
 An instruction entry provides the following elements:
@@ -28,7 +28,7 @@ The interface schedule itself is a yaml list with dictionary entries. Some condi
 - `has valid`: If present (regardless of value), adds a 'validReq' interface pin to applicable interfaces. Otherwise, the 'validReq' value is inferred from the interface schedule. Certain coupled operations such as WrCustomReg interpret 'validReq'=0 from the ISAX as cancellation, if contrary to the interface schedule.
 - `has validResp`: If present (regardless of value), optionally adds a 'validResp' interface pin to applicable interfaces.
 - `has addr`: If present (regardless of value), optionally adds an 'addr' interface pin to applicable interfaces. Otherwise, the address is inferred or pipelined by SCAIE-V.
-- `has size`: Note: Not supported yet, most cores still only infer the size based on the funct3 width encoding of the standard Load/Store instructions. If present (regardless of value), optionally adds a 'size' interface pin to applicable interfaces. Otherwise, the size is inferred or pipelined by SCAIE-V.
+- `has size`: If present (regardless of value), optionally adds a 'size' interface pin to applicable interfaces. Otherwise, the size is inferred or pipelined by SCAIE-V.
 - `is decoupled`: If present (regardless of value), instantiates the spawn variant of the interface (e.g. `WrRD_spawn` instead of `WrRD`). The execution latency is derived from `stage`.
   However, the interface pins are always named by the `maxStage+1` stage (`maxStage` being the highest latest stage listed in the core virtual datasheet yaml file).
 - `is dynamic decoupled`: If present (regardless of value), instantiates the variable-latency decoupled variant of the interface with an implicit `validReq` pin.
@@ -60,6 +60,7 @@ Corresponds with the following ISAX-side HDL interface, assuming a 32bit core:
   output [31:0] WrPC_ijmp_3_o
 ```
 
+
 # Custom Registers
 A custom register entry provides the following elements:
 - `register`: Name of the register.
@@ -67,11 +68,11 @@ A custom register entry provides the following elements:
 - `elements`: Depth of the register.
 
 Each custom register has several operations that can be requested in the interface schedule of ISAXes.
-- `Wr<register>.addr`: The address interface for the corresponding data operation. The stage number also defines down to which stage SCAIE-V generates its data hazard handling. Must be consistent across instructions.
+- `Wr<register>.addr`: The address interface for the corresponding data operation. The stage number also defines down to which stage SCAIE-V generates its data hazard handling and must be consistent across instructions.
 - `Wr<register>.data`: The actual write interface through which data is provided.
 - `Rd<register>`: The read interface.
 
-In the core datasheet, the custom register operations have be within the constraints of RdCustomReg and WrCustomReg.addr/.data. Support for earlier reads/writes (e.g., zero-overhead loops) is still WIP.
+In the core datasheet, the custom register operations should, in most cases, be within the constraints of RdCustomReg and WrCustomReg.addr/.data. There is limited support for earlier reads/writes (e.g., zero-overhead loops) on single-element registers, requiring relatively expensive hazard handling.
 
 ## Example instructions with custom registers
 Specifies two 1-element registers, ADDR and INCR, and two instructions accessing them. The setup instruction writes the ADDR and INCR registers and reads rs1, rs2. The lw_inc instruction reads the two registers, reads from memory, updates the ADDR register, and writes a result to rd.

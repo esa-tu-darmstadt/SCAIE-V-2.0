@@ -32,7 +32,10 @@ import scaiev.scal.NodeRegistryRO;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.util.Verilog;
 
-/** Strategy that builds the fire/MUXing logic for spawn nodes */
+/**
+ * Strategy that builds the fire/MUXing logic for spawn nodes. To be used in
+ * conjunction with SpawnRegisterStrategy.
+ */
 public class SpawnFireStrategy extends MultiNodeStrategy {
 
   // logging
@@ -45,6 +48,7 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
   HashMap<String, SCAIEVInstr> allISAXes;
   Map<SCAIEVNode, Collection<String>> isaxesSortedByPriority;
   Collection<SCAIEVNode> disableSpawnFireStallNodes;
+
   /**
    * @param language The (Verilog) language object
    * @param bNodes The BNode object for the node instantiation
@@ -72,19 +76,35 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
     this.language = lang;
   }
 
-  public static SCAIEVNode ISAX_fire2_r = new SCAIEVNode("ISAX_fire2_r", 1, false); // The request interface output
-  public static SCAIEVNode ISAX_fire_s = new SCAIEVNode("ISAX_fire_s", 1, false);   // A new request (combinational)
-  public static SCAIEVNode ISAX_fire_r =
-      new SCAIEVNode("ISAX_fire_r", 1, false); // A buffered request that is waiting before being exposed to the interface
+  /** Node for the request interface output ("to core"). */
+  public static SCAIEVNode ISAX_fire2_r = new SCAIEVNode("ISAX_fire2_r", 1, false);
+  /** Node indicating a new request (combinational) */
+  public static SCAIEVNode ISAX_fire_s = new SCAIEVNode("ISAX_fire_s", 1, false);
+  /** A buffered request that is waiting before being exposed to the interface */
+  public static SCAIEVNode ISAX_fire_r = new SCAIEVNode("ISAX_fire_r", 1, false);
+  /** The number of spawns waiting on the MUX input side */
   public static SCAIEVNode ISAX_spawn_sum = new SCAIEVNode("ISAX_spawn_sum", 8, false);
 
-  private String ConditionSpawnAllowed(NodeRegistryRO registry, RequestedForSet requestedForBase, SCAIEVNode node,
-                                       PipelineStage startSpawnStage, PipelineStage spawnStage) {
+  /**
+   * Determines the spawnAllowed condition for a particular node.
+   * @param bNodes the BNode node listing object
+   * @param registry the registry on which to look up required node instances
+   * @param requestedForBase the RequestedForSet to add to looked-up node instances
+   * @param node the spawn base node
+   * @param startSpawnStage the startSpawnStage that may influence readiness of the core to process requests,
+   *                        see {@link DecoupledPipeStrategy#getRelevantStartSpawnStages(Core, PipelineStage)}
+   * @param spawnStage the stage the spawn node lives in
+   * @return an expression that could be: a literal, a conjunction, a disjunction
+   */
+  public static String ConditionSpawnAllowed(BNode bNodes, NodeRegistryRO registry, RequestedForSet requestedForBase, SCAIEVNode node,
+                                             PipelineStage startSpawnStage, PipelineStage spawnStage) {
     // List<PipelineStage> spawnStagesList = this.core.GetSpawnStages().asList();
     // assert(spawnStagesList.size() >= 1);
     // if (spawnStagesList.size() > 1)
-    //	logger.warn("ConditionSpawnAllowed - only considering first of several 'spawn stages'");
+    // logger.warn("ConditionSpawnAllowed - only considering first of several 'spawn stages'");
     // PipelineStage spawnStage = spawnStagesList.get(0);
+    if (bNodes.IsUserBNode(node))
+      return "1'b1";
 
     registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.MARKER_FROMCORE_PIN, bNodes.ISAX_spawnAllowed, startSpawnStage, ""));
     String spawn_allowed_cond =
@@ -95,16 +115,16 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
         specific_spawn_allowed_opt
             .flatMap(specific_spawn_allowed
                      -> registry.lookupOptionalUnique(new NodeInstanceDesc.Key(specific_spawn_allowed_opt.get(), spawnStage, "")))
-            .map(inst -> inst.getExpression());
+        .map(inst -> inst.getExpression());
     if (spawnAllowedExpr.isPresent()) {
       spawn_allowed_cond += " && " + spawnAllowedExpr.get();
     }
 
-    var opt_stallRS = registry
-                          .lookupOptionalUnique(new NodeInstanceDesc.Key(DecoupledDHStrategy.makeToCOREStallRS(node), startSpawnStage, ""),
-                                                requestedForBase)
+    var opt_stallRS = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(DecoupledDHStrategy.makeToCOREStallRS(node), startSpawnStage, ""),
+                                                    requestedForBase)
                           .map(inst -> inst.getExpression());
-    // If Scoreboard present here, we have to consider its stall to avoid deadlock:  exp, in execute there is a memory instr with DH
+    // If Scoreboard present here, we have to consider its stall to avoid deadlock:
+    // exp, in execute there is a memory instr with DH
     if (opt_stallRS.isPresent())
       spawn_allowed_cond += " || " + opt_stallRS.get();
     return spawn_allowed_cond;
@@ -137,14 +157,22 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
     ISAX_fire2_r_inst.addRequestedFor(fireRequestedForBase, true);
     logicBlock.outputs.add(ISAX_fire2_r_inst);
 
-    String stageReady = ConditionSpawnAllowed(registry, fireRequestedForBase, node, startSpawnStage, spawnStage);
-    Optional<SCAIEVNode> validRespNode_opt = bNodes.GetAdjSCAIEVNode(node, AdjacentNode.validResp).map(SCAIEVNode::makeFamilyNode);
+    String stageReady = ConditionSpawnAllowed(bNodes, registry, fireRequestedForBase, node, startSpawnStage, spawnStage);
+    Optional<SCAIEVNode> validRespNode_opt = bNodes.GetAdjSCAIEVNode(node, AdjacentNode.validHandshakeResp)
+                                                 .or(() -> bNodes.GetAdjSCAIEVNode(node, AdjacentNode.validResp))
+                                                 .map(SCAIEVNode::makeFamilyNode);
     SCAIEVNode validReqToCore = bNodes.GetAdjSCAIEVNode(node, AdjacentNode.validReq).get().makeFamilyNode();
+    Optional<SCAIEVNode> cancelReqToCore_opt = bNodes.GetAdjSCAIEVNode(node, AdjacentNode.cancelReq).map(cancelNode -> cancelNode.makeFamilyNode());
+    Optional<String> cancelReqToCoreExpr_opt = cancelReqToCore_opt.map(cancelNode
+                                                                       -> registry.lookupExpressionRequired(
+                                                                            new NodeInstanceDesc.Key(cancelNode, spawnStage, "")));
 
-    // TODO: Why is the 'start spawn' stage stalling relevant here?
-    String stallStage = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrStall, startSpawnStage, ""))
-                            .map(inst -> inst.getExpression())
-                            .orElse("");
+    // TODO: The 'start spawn' stage stall check is only relevant for some cores/configs.
+    // For instance, it is not relevant for CVA6, CVA5 allocate mode (but is relevant for CVA5 inject mode).
+    String stallStage = "";
+    if (!bNodes.IsUserBNode(node))
+      stallStage = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrStall, startSpawnStage, ""))
+                       .map(inst -> inst.getExpression()).orElse("");
 
     String validReqToCoreName = language.CreateLocalNodeName(validReqToCore, spawnStage, "");
 
@@ -170,7 +198,8 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
     if (!stageReady.isEmpty())
       stageReadyText = "(" + stageReady + ")";
     if (!stallStage.isEmpty() || !stageReady.isEmpty())
-      stallFullLogic = "&& (" + stageReadyText + stall3Text + ")";
+      stallFullLogic = " && (" + stageReadyText + stall3Text + ")";
+    String notCancellingLogic = cancelReqToCoreExpr_opt.map(cond -> " && !" + cond).orElse("");
 
     logicBlock.logic += " // ISAX : Spawn fire logic\n"
                         + "always @ (posedge " + language.clk + ")  begin\n"
@@ -181,22 +210,31 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
                         + "     if (" + language.reset + ")\n"
                         + "          " + ISAX_fire_r_sig + " <= 1'b0;\n"
                         + "end\n"
-                        + "\n"
-                        + "always @ (posedge " + language.clk + ")  begin\n"
-                        + "     if((" + ISAX_fire_r_sig + " || " + ISAX_fire_s_inst.getExpression() + ") " + stallFullLogic + ")\n"
-                        + "          " + ISAX_fire2_r_sig + " <=  1'b1;\n"
-                        + "     else if(" + ISAX_fire2_r_sig + " && (" + ISAX_spawn_sum_inst.getExpression() + " == 1) " + validResp +
-                        ")\n"
-                        + "          " + ISAX_fire2_r_sig + " <= 1'b0;\n"
-                        + "     if (" + language.reset + ")\n"
-                        + "          " + ISAX_fire2_r_sig + " <= 1'b0;\n"
-                        + "end\n"
-                        + "\n "
-                        + "assign " + validReqToCoreName + " = " + ISAX_fire2_r_sig + ";\n";
+                        + "\n";
+    // ISAX fire2_r logic: Set if a new request arrives and the downstream is valid
+    logicBlock.logic += """
+        always @(posedge %1$s) begin
+            if (%2$s)
+                %3$s <= 1'b0;
+            else begin
+                if ((%4$s || %5$s)%6$s)
+                    %3$s <= 1'b1;
+                else if (%3$s && (%7$s == 1)%8$s)
+                    %3$s <= 1'b0;
+                `ifndef SYNTHESIS
+                else if (%3$s && (%7$s == 0) && %2$s === 1'b0)
+                    $display("ERROR (%%m): %3$s is still active, even though there are no more active requests");
+                `endif
+            end
+        end
+        """.formatted(language.clk, language.reset, ISAX_fire2_r_sig, // 1,2,3
+                      ISAX_fire_r_sig, ISAX_fire_s_inst.getExpression(), stallFullLogic, // 4,5,6
+                      ISAX_spawn_sum_inst.getExpression(), validResp); // 7,8
+    logicBlock.logic += "assign " + validReqToCoreName + " = " + ISAX_fire2_r_sig + notCancellingLogic + ";\n";
 
     if (!disableSpawnFireStallNodes.contains(node)) {
       // WrRD_spawn: Stall entire core
-      //(Wr|Rd)Mem_spawn : Stall until the first available stage for WrMem.
+      // (Wr|Rd)Mem_spawn : Stall until the first available stage for WrMem.
       PipelineFront maxStall = new PipelineFront();
       if (node.equals(bNodes.WrRD_spawn))
         maxStall = new PipelineFront(core.GetRootStage().getChildrenTails());
@@ -207,8 +245,8 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
                          .filter(stage -> stage.getKind() != StageKind.CoreInternal) //Filter out CoreInternal stages, which may not have WrStall.
                          .filter(stage -> maxStall_.isAroundOrAfter(stage, false))
                          .forEach(stage -> {
-        var stallInst = new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrStall, stage, "", aux), ISAX_fire2_r_sig,
-                                             ExpressionType.AnyExpression);
+        var stallInst = new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrStall, stage, "", aux),
+                                             ISAX_fire2_r_sig, ExpressionType.AnyExpression);
         stallInst.addRequestedFor(fireRequestedForBase, true);
         logicBlock.outputs.add(stallInst);
         registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.WrStall, stage, ""));
@@ -217,7 +255,8 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
   }
 
   /**
-   * Builds the suffix for ISAX_fire* and ISAX_spawn_sum for a given spawn node, for use as the {@link NodeInstanceDesc.Key} ISAX field.
+   * Builds the suffix for ISAX_fire* and ISAX_spawn_sum for a given spawn node,
+   * for use as the {@link NodeInstanceDesc.Key} ISAX field.
    * Note: Several spawn nodes may map to the same suffix (iff they are to share a fire port).
    */
   public static String getFireNodeSuffix(SCAIEVNode spawnNode) {
@@ -228,16 +267,18 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
   }
 
   /**
-   * For a given spawn node (non-adj), get a Stream of all node-ISAX pairs that share the fire port, ordered by fire priority.
-   * Note: If there are several spawn stages, not all pairs may actually appear in any given stage.
-   * @param bNodes the BNode SCAIEVNode registry to use
+   * For a given spawn node (non-adj), get a Stream of all node-ISAX pairs that
+   * share the fire port, ordered by fire priority descending. Note: If there are several
+   * spawn stages, not all pairs may actually appear in any given stage.
+   * 
+   * @param bNodes     the BNode SCAIEVNode registry to use
    * @param priorities the priorities map
-   * @param spawnNode the node with isSpawn() && !isAdj()
-   * */
+   * @param spawnNode  the node with isSpawn() &amp;&amp; !isAdj()
+   */
   public static Stream<Map.Entry<SCAIEVNode, String>> getISAXPriority(BNode bNodes, Map<SCAIEVNode, Collection<String>> priorities,
                                                                       SCAIEVNode spawnNode) {
-    assert (!spawnNode.isAdj());
-    assert (spawnNode.isSpawn());
+    assert(!spawnNode.isAdj());
+    assert(spawnNode.isSpawn());
     String portName = bNodes.getPortName(spawnNode);
     assert(portName.isEmpty() == !spawnNode.tags.contains(NodeTypeTag.isPortNode));
     SCAIEVNode nonportSpawnNode = spawnNode.tags.contains(NodeTypeTag.isPortNode)
@@ -256,11 +297,13 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
       return priorities.getOrDefault(node, List.of()).stream().map(isax -> Map.entry(nodePorted, isax));
     });
   }
+
   /**
    * Given a priority stream (see {@link SpawnFireStrategy#getISAXPriority(BNode, Map, SCAIEVNode)}),
-   *   builds a Stream of all condition key lists (lists of {@link NodeInstanceDesc.Key}), the keys being for adjacent nodes such as
+   * builds a Stream of all condition key lists (lists of {@link NodeInstanceDesc.Key}), the keys being for adjacent nodes such as
    * validReq or cancelReq. A request can be considered requested if any of the expressions for the List entries evaluates to 1. Filters out
    * entries that do not appear in op_stage_instr in the given spawnStage.
+   * 
    * @param validReqPurpose the Purpose to assign to the Key
    * @param bNodes the BNode SCAIEVNode registry to use
    * @param op_stage_instr the op_stage_instr mapping to use
@@ -316,8 +359,11 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
           spawnNode = spawnNodeOpt.get();
           fireNodeSuffix = nodeKey.getISAX();
         }
-      } else if (nodeKey.getNode().isSpawn() && nodeKey.getNode().getAdj().equals(AdjacentNode.validReq) && nodeKey.getISAX().isEmpty()) {
-        /* general node validReq: output of fire logic */
+      } else if (nodeKey.getNode().isSpawn()
+                 && (nodeKey.getNode().getAdj().equals(AdjacentNode.validReq))
+                     // || nodeKey.getNode().getAdj().equals(AdjacentNode.cancelReq))
+                 && nodeKey.getISAX().isEmpty()) {
+        /* general node validReq/cancelReq: output of fire logic */
         spawnNode = bNodes.GetSCAIEVNode(nodeKey.getNode().nameParentNode);
         fireNodeSuffix = getFireNodeSuffix(spawnNode);
       }
@@ -347,13 +393,12 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
                     // Also, if the associated input FIFO is present, add a 'level>1' condition.
                     var optInputFIFOBlock = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(
                         // SpawnOptionalInputFIFOStrategy.makeNotEmptyNode(bNodes, spawnNode_),
-                        SpawnOptionalInputFIFOStrategy.makeLevelNode(bNodes, spawnNode_, 0 /*not relevant*/), keys.get(0).getStage(),
+                        SpawnOptionalInputFIFOStrategy.makeLevelNode(bNodes, spawnNode_, 0 /* not relevant */), keys.get(0).getStage(),
                         keys.get(0).getISAX()));
                     var optInputFIFONotFullBlock = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(
-                        SpawnOptionalInputFIFOStrategy.makeNotFullNode(bNodes, spawnNode_), keys.get(0).getStage(),
-                        keys.get(0).getISAX()));
+                        SpawnOptionalInputFIFOStrategy.makeNotFullNode(bNodes, spawnNode_), keys.get(0).getStage(), keys.get(0).getISAX()));
                     relevantForSet.addRelevantISAX(keys.get(0).getISAX());
-                    String optInputFIFONotFullCond = optInputFIFONotFullBlock.map(x->x.getExpressionWithParens()).orElse("1'b0");
+                    String optInputFIFONotFullCond = optInputFIFONotFullBlock.map(x -> x.getExpressionWithParens()).orElse("1'b0");
                     Stream<String> spawnInputFIFOAsSize =
                         optInputFIFOBlock.filter(inputFIFOBlock -> inputFIFOBlock.getKey().getNode().size > 1)
                             .map(inputFIFOBlock
@@ -378,9 +423,8 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
           String fireStr =
               getPriorityValidReqKeysStream(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, bNodes, op_stage_instr, nodeKey.getStage(),
                                             getISAXPriority(bNodes, isaxesSortedByPriority, spawnNode_))
-                  .flatMap(
-                      keys
-                      -> keys.stream()) // Since we're ORing all together anyway, there is no need to keep the condition key lists intact.
+                  .flatMap(keys -> keys.stream()) // Since we're ORing all together anyway,
+                                                  // there is no need to keep the condition key lists intact.
                   .map(key -> {
                     relevantForSet.addRelevantISAX(key.getISAX());
                     return registry.lookupExpressionRequired(key);

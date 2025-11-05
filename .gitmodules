@@ -1,9 +1,9 @@
-[submodule "CoresSrc/Piccolo"]
-	path = CoresSrc/Piccolo
-	url = https://github.com/bluespec/Piccolo.git
 [submodule "CoresSrc/VexRiscv"]
 	path = CoresSrc/VexRiscv
 	url = https://github.com/SpinalHDL/VexRiscv.git
+[submodule "CoresSrc/Piccolo"]
+	path = CoresSrc/Piccolo
+	url = https://github.com/bluespec/Piccolo.git
 [submodule "CoresSrc/PicoRV32"]
 	path = CoresSrc/PicoRV32
 	url = https://github.com/YosysHQ/picorv32.git
@@ -12,4 +12,7 @@
 	url = https://github.com/cahz/orca.git
 [submodule "CoresSrc/CVA5"]
 	path = CoresSrc/CVA5
-	url = https://github.com/esa-tu-darmstadt/cva5-sv
+	url = https://github.com/esa-tu-darmstadt/cva5-sv.git
+[submodule "CoresSrc/CVA6"]
+	path = CoresSrc/CVA6
+	url = https://github.com/esa-tu-darmstadt/cva6-sv.git

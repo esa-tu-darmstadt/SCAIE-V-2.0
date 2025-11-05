@@ -29,7 +29,8 @@ public class CoreNode {
   public String toString() {
     String to_print;
     to_print =
-        "earliestTime = " + earliestTime + " latency = " + latency + " latestTime = " + latestTime + " expensiveTime = " + expensiveTime;
+        "earliestTime = " + earliestTime.toString() + " latency = " + latency
+        + " latestTime = " + latestTime.toString() + " expensiveTime = " + expensiveTime.toString();
     return to_print;
   }
 

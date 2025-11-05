@@ -23,7 +23,7 @@ import scaiev.pipeline.PipelineStage;
  * Description of an instantiated SCAIE-V node, with an HDL expression that evaluates to the node value.
  */
 public class NodeInstanceDesc {
-  /**  */
+  /** An object identifying how a node should be generated/used (changing priority or semantics on the otherwise same key) */
   public static class Purpose {
     private static final AtomicInteger nextValue = new AtomicInteger();
 
@@ -58,16 +58,21 @@ public class NodeInstanceDesc {
 
     /**
      * Retrieves a read-only List of Purpose-priority(Integer) match pairs, excluding this.
+     * @return a read-only match pair list
      */
     public List<Map.Entry<Purpose, Integer>> getMatchesOthers() { return Collections.unmodifiableList(matchesOthers); }
 
     /**
      * Tests if this Purpose matches another (i.e. this Purpose is at least as general as other).
+     * @param other the other Purpose
+     * @return the match result
      */
     public boolean matches(Purpose other) { return matchPriority(other) != 0; }
     /**
      * Gets the match priority if this Purpose matches another (see {@link Purpose#matches(Purpose)}), else returns zero.
      * If the Purpose objects are equal, returns 100.
+     * @param other the other Purpose
+     * @return the match priority
      */
     public int matchPriority(Purpose other) {
       return (key == other.key ? 100
@@ -79,23 +84,29 @@ public class NodeInstanceDesc {
     }
     /**
      * Gets the maximum priority value that matchPriority can output (excluding the '100' special value for exact matches).
+     * @return the highest priority for non-exact matches
      */
     public int getMaxPriority() { return maxPriority; }
     /**
      * Specific alternative to Object.equals.
+     * @param other the other Purpose
+     * @return the comparison result
      */
     public boolean equals(Purpose other) { return other != null && key == other.key; }
 
     /**
      * Returns true iff a NodeInstanceDesc with this Purpose is allowed to be passed to registration.
+     * @return the flag
      */
     public boolean getRegisterAllowed() { return canRegister; }
     /**
      * Returns the name of this Purpose object.
+     * @return the name string
      */
     public String getName() { return this.name; }
     /**
      * Returns the Purpose to replace this with during NodeInstanceDesc registration.
+     * @return the register-as Purpose
      */
     public Purpose getRegisterAs() { return registerAs.orElse(this); }
 
@@ -147,6 +158,10 @@ public class NodeInstanceDesc {
     /**
      * Creates a Purpose from an existing base, matching only from a given minimal priority and base itself.
      * Matches base with base.maxPriority.
+     * 
+     * @param base existing Purpose
+     * @param minPriority minimum priority to match
+     * @return a new Purpose
      */
     public static Purpose withMinPriority(Purpose base, int minPriority) {
       if (minPriority < 0)
@@ -265,6 +280,7 @@ public class NodeInstanceDesc {
    * Transparently keeps references to other sets, as needed.
    */
   public static class RequestedForSet {
+    /** A read-only empty set */
     public static final RequestedForSet empty = new RequestedForSet(new RequestedForSet());
 
     Set<String> fromISAX = new HashSet<>();
@@ -272,7 +288,12 @@ public class NodeInstanceDesc {
     // Used as duplicate lookup if otherRefs grows beyond a threshold
     Set<RequestedForSet> otherRefs_set = null;
 
+    /** An empty RequestedForSet */
     public RequestedForSet() {}
+    /**
+     * A RequestedForSet, initially containing an ISAX (if non-empty)
+     * @param isax the ISAX name (or an empty string)
+     */
     public RequestedForSet(String isax) {
       if (!isax.isEmpty())
         addRelevantISAX(isax);
@@ -286,7 +307,7 @@ public class NodeInstanceDesc {
     /**
      * Creates a flattened Iterator of RequestedForSet including this and this.otherRefs, recursively.
      * Does not return any duplicates. Handles cycles gracefully.
-     * @return
+     * @return the flattened RequestedForSet subgraph Iterator
      */
     private Iterator<RequestedForSet> allSetsToEvaluate() {
       ////Stream-based implementation. Ignores cycles,
@@ -351,6 +372,7 @@ public class NodeInstanceDesc {
     /**
      * Returns a set of ISAX names that are relevant for a node instance.
      * The returned set is either a read-only view to this object's internal state, or an entirely new Set.
+     * @return a set of relevant ISAX names
      */
     public Set<String> getRelevantISAXes() {
       if (otherRefs.isEmpty())
@@ -363,11 +385,13 @@ public class NodeInstanceDesc {
     }
     /**
      * Adds the given name of an ISAX relevant to a node instance to the internal tracking set.
+     * @param isax the ISAX to add
      * @return true iff the internal set has changed
      */
     public boolean addRelevantISAX(String isax) { return fromISAX.add(isax); }
     /**
      * Adds the given names of ISAXes relevant to a node instance to the internal tracking set.
+     * @param isaxes the ISAXes to add
      * @return true iff the internal set has changed
      */
     public boolean addRelevantISAXes(Collection<String> isaxes) { return fromISAX.addAll(isaxes); }
@@ -375,6 +399,7 @@ public class NodeInstanceDesc {
     /**
      * Indirectly combines this with another RequestedForSet, adding a read-only reference to other.
      * Note: Always adds the reference, thus always returns true.
+     * @param other the set to add
      * @param lazy if true, the other set will be kept as a reference and evaluated lazily; if lazy is set, addAll will always return true
      * @return true iff this object has changed
      */
@@ -396,7 +421,10 @@ public class NodeInstanceDesc {
       return addRelevantISAXes(other.getRelevantISAXes());
     }
 
-    /** Generates an unmodifiable view of this */
+    /**
+     * Generates an unmodifiable view of this
+     * @return an unmodifiable view of this
+     */
     public RequestedForSet asUnmodifiableView() { return new RequestedForSet(this); }
 
     /** Clears this set */
@@ -406,9 +434,15 @@ public class NodeInstanceDesc {
       otherRefs_set = null;
     }
 
-    /** Emptiness check that does not include references. */
+    /**
+     * Emptiness check that does not include references.
+     * @return true iff empty
+     */
     protected boolean isEmpty_nonrecursive() { return fromISAX.isEmpty(); }
-    /** Determines whether this set is empty */
+    /**
+     * Determines whether this set is empty
+     * @return whether this set is empty
+     */
     public boolean isEmpty() {
       var setsIter = allSetsToEvaluate();
       while (setsIter.hasNext()) {
@@ -418,6 +452,7 @@ public class NodeInstanceDesc {
       return true;
     }
   }
+  /** An identifier for nodes in logic generation, unique at any given generation step */
   public static class Key {
     SCAIEVNode node;
     Purpose purpose = Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN;
@@ -436,13 +471,22 @@ public class NodeInstanceDesc {
     /**
      * See {@link Key#Key(Purpose, SCAIEVNode, PipelineStage, String, int)}. Uses purpose={@link Purpose#match_REGULAR_WIREDIN_OR_PIPEDIN},
      * aux=0.
+     * @param node the node
+     * @param stage the stage
+     * @param isax the ISAX (or "")
      */
     public Key(SCAIEVNode node, PipelineStage stage, String isax) {
       this.node = node;
       this.stage = stage;
       this.isax = isax;
     }
-    /** See {@link Key#Key(Purpose, SCAIEVNode, PipelineStage, String, int)}. Uses aux=0. */
+    /**
+     * See {@link Key#Key(Purpose, SCAIEVNode, PipelineStage, String, int)}. Uses aux=0.
+     * @param purpose the Purpose
+     * @param node the node
+     * @param stage the stage
+     * @param isax the ISAX (or "")
+     */
     public Key(Purpose purpose, SCAIEVNode node, PipelineStage stage, String isax) {
       this(node, stage, isax);
       this.purpose = purpose;
@@ -451,33 +495,62 @@ public class NodeInstanceDesc {
      * Instantiates a Key for use in queries or NodeInstanceDesc registration.
      * @param purpose the Purpose that defines how to interpret the Key (will be overwritten with {@link Purpose#getRegisterAs()} during
      *     registration)
-     * @param node
-     * @param stage
-     * @param isax
-     * @param aux
+     * @param node the node
+     * @param stage the stage
+     * @param isax the ISAX (or "")
+     * @param aux the aux value (or 0) to identify internal sub-nodes
      */
     public Key(Purpose purpose, SCAIEVNode node, PipelineStage stage, String isax, int aux) {
       this(purpose, node, stage, isax);
       this.aux = aux;
     }
-    /** Creates a Key from an existing Key while setting a new Purpose value. */
+    /**
+     * Creates a Key from an existing Key while setting a new Purpose value.
+     * @param existing the existing Key
+     * @param newPurpose the new Purpose
+     * @return a new Key
+     */
     public static Key keyWithPurpose(Key existing, Purpose newPurpose) {
       return new Key(newPurpose, existing.getNode(), existing.getStage(), existing.getISAX(), existing.getAux());
     }
-    /** Creates a Key from an existing Key while setting new Purpose and aux values. */
+    /**
+     * Creates a Key from an existing Key while setting new Purpose and aux values.
+     * 
+     * @param existing the existing Key
+     * @param newPurpose the new Purpose
+     * @param aux the new aux value
+     * @return a new Key
+     */
     public static Key keyWithPurposeAux(Key existing, Purpose newPurpose, int aux) {
       return new Key(newPurpose, existing.getNode(), existing.getStage(), existing.getISAX(), aux);
     }
+    /**
+     * @return the node
+     */
     public SCAIEVNode getNode() { return node; }
+    /**
+     * @return the Purpose
+     */
     public Purpose getPurpose() { return purpose; }
+    /**
+     * @return the stage
+     */
     public PipelineStage getStage() { return stage; }
+    /**
+     * @return the ISAX
+     */
     public String getISAX() { return isax; }
+    /**
+     * @return the aux value
+     */
     public int getAux() { return aux; }
 
     /**
      * Matches against another non-null Key.
      * Similar to {@link Key#equals(Object)}, but using {@link Purpose#matches(Purpose)} instead of {@link Purpose#equals(Object)}.
      * Also supports wildcards for `this.isax` and `this.aux`. Wildcards in `other` are only matched by wildcards in `this`.
+     * @param other the other Key
+     * @return the match result
      **/
     public boolean matches(Key other) {
       return Objects.equals(node, other.node) && purpose.matches(other.purpose) && Objects.equals(stage, other.stage) &&
@@ -500,6 +573,10 @@ public class NodeInstanceDesc {
       return Objects.equals(node, other.node) && Objects.equals(purpose, other.purpose) && Objects.equals(stage, other.stage) &&
           Objects.equals(isax, other.isax) && aux == other.aux;
     }
+    /**
+     * @param includePurpose whether to include the Purpose name (separated with ~)
+     * @return a string representation
+     */
     public String toString(boolean includePurpose) {
       return (includePurpose ? (purpose.toString() + "~") : "") + node.name +
           (isax == null ? "(_*)?" : (isax.isEmpty() ? "" : ("_" + isax))) + "_" +
@@ -513,6 +590,7 @@ public class NodeInstanceDesc {
   }
   Key key;
 
+  /** The type of a string expression, relevant for uniqueness (wire names, ports) and expression composition */
   public enum ExpressionType {
     /** An HDL expression; no new signal name is defined for this field */
     AnyExpression(true),
@@ -545,9 +623,14 @@ public class NodeInstanceDesc {
 
   /**
    * Constructor. Uses a caller-specified RequestedForSet.
-   * NOTE: If the requestedFor entries added by dependant nodes are relevant for this node,
-   *       make sure that invocations of the caller with the same key (e.g. a NodeLogicBuilder) provide the same requestedFor object.
-   *       Changes in the requestedFor object instance are not tracked for reinvocation of dependant builders.
+   * 
+   * NOTE: Make sure that repeat builder invocations (that create new NodeInstanceDescs for the same key) keep the same requestedFor object.
+   *       Changes in the requestedFor object instance do not mark dependant builders (that queried an older instance of this node) as dirty.
+   *       A dependant builder thus is not guaranteed to see the new RequestedForSet objects, hindering the intended upstream/downstream travel.
+   * @param key the key
+   * @param expression the expression string
+   * @param expressionType the expression type (must be set carefully to prevent building/HDL errors)
+   * @param requestedFor the RequestedForSet for this object
    */
   public NodeInstanceDesc(Key key, String expression, ExpressionType expressionType, RequestedForSet requestedFor) {
     this.key = key;
@@ -562,6 +645,9 @@ public class NodeInstanceDesc {
    *       the caller should provide an empty RequestedForSet to the constructor variant.
    * NOTE: If the RequestedForSet values added by dependant nodes are relevant for this node,
    *       the caller should use the variant of the constructor with a fixed RequestedForSet instead.
+   * @param key the key
+   * @param expression the expression string
+   * @param expressionType the expression type (must be set carefully to prevent building/HDL errors)
    */
   public NodeInstanceDesc(Key key, String expression, ExpressionType expressionType) {
     this.key = key;
@@ -572,18 +658,21 @@ public class NodeInstanceDesc {
   }
 
   /**
-   * Retrieves the SCAIEVNode and stage that this object instantiates.
+   * Retrieves the key that this object instantiates.
+   * @return the key
    */
   public Key getKey() { return key; }
 
   /**
    * Retrieves the HDL expression that evaluates to the node value.
+   * @return the expression string
    */
   public String getExpression() { return expression; }
 
   /**
    * Retrieves the HDL expression that evaluates to the node value,
    *  embedded in parentheses '()' if possibly needed.
+   * @return the expression string with parantheses if composite
    */
   public String getExpressionWithParens() {
     if (expressionType.mayBeComposite)
@@ -592,22 +681,24 @@ public class NodeInstanceDesc {
   }
 
   /**
-   * Returns the {@link #ExpressionType} for this node expression.
+   * Returns the {@link ExpressionType} for this node expression.
+   * @return the expression type
    */
   public ExpressionType getExpressionType() { return expressionType; }
 
   /**
    * Returns the internal tracking set of entities (e.g. ISAXes) that this node instance is relevant for.
    * The returned object is an unmodifiable view into the actual object.
+   * @return a read-only view into the RequestedForSet
    */
   public RequestedForSet getRequestedFor() { return this.requestedFor.asUnmodifiableView(); }
 
   /**
    * Merges the internal tracking set of relevant entities (e.g. ISAXes) with another.
-   * @param otherRequestedFor
+   * @param otherRequestedFor the set to add
    * @param lazy if true, the other set will be evaluated lazily and included as a reference;
    *        reference cycles are allowed (and, in some cases, encouraged when dealing with interdependent NodeInstanceDescs)
-   * @return true if the internal tracking set may have changed
+   * @return true iff the internal tracking set may have changed
    */
   public boolean addRequestedFor(RequestedForSet otherRequestedFor, boolean lazy) {
     return this.requestedFor.addAll(otherRequestedFor, lazy);

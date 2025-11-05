@@ -24,6 +24,7 @@ public class PipeoutRegularStrategy extends SingleNodeStrategy {
             var fromKey = new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, nodeKey.getNode(),
                                                    nodeKey.getStage(), nodeKey.getISAX(), nodeKey.getAux());
             var fromKeyNodeInst = registry.lookupRequired(fromKey, requestedFor);
+            requestedFor.addAll(fromKeyNodeInst.getRequestedFor(), true);
 
             NodeLogicBlock ret = new NodeLogicBlock();
             ret.outputs.add(new NodeInstanceDesc(nodeKey, fromKeyNodeInst.getExpression(), ExpressionType.AnyExpression, requestedFor));

@@ -103,7 +103,7 @@ public class SpawnCommittedRdStrategy extends MultiNodeStrategy {
           }));
         } else {
           Optional<SCAIEVNode> spawnAddrNode_opt = bNodes.GetAdjSCAIEVNode(spawnNode, AdjacentNode.addr);
-          // Take from rd_dh_spawn_addr given by the core.
+          // Get the address from the spawn request.
           if (!spawnAddrNode_opt.isPresent()) {
             logger.warn("SpawnCommittedRdStrategy: {} will default to 0 due to {} not having an adjacent addr node",
                         nodeKey.toString(false), spawnNode.name);

@@ -25,7 +25,7 @@ public class EarlyRWForwardingImplementation extends EarlyRWImplementation {
   }
   boolean isForwardedEarlyWrite(RegfileInfo regfile, SCAIEVNode writeNode) {
     // Check if the writeNode is from an early write, and forwarding is supported for the other present early writes and reads.
-    if (regfile.earlyWrites.size() == 1 &&
+    if (writeNode != null && regfile.earlyWrites.size() == 1 &&
         regfile.earlyWrites.stream().anyMatch(earlyWriteKey -> earlyWriteKey.getNode().equals(writeNode))) {
       PipelineStage writeStage = regfile.earlyWrites.get(0).getStage();
       PipelineFront writeFront = new PipelineFront(writeStage);
@@ -56,7 +56,8 @@ public class EarlyRWForwardingImplementation extends EarlyRWImplementation {
 
   @Override
   String earlyReadForwardLogic(NodeRegistryRO registry, RegfileInfo regfile, NodeInstanceDesc.Key earlyReadKey, String rdata_outLogic,
-                               String raddr, String stallOutLogic, String lineTabs) {
+                               String raddr, String stallOutLogic, String lateDirtyRegName,
+                               String lineTabs, NodeLogicBlock logicBlock) {
     if (regfile.earlyWrites.size() > 0 &&
         regfile.earlyWrites.stream().anyMatch(earlyWriteKey -> isForwardedEarlyWrite(regfile, earlyWriteKey.getNode()))) {
       // Forwarding
@@ -111,7 +112,9 @@ public class EarlyRWForwardingImplementation extends EarlyRWImplementation {
                    + tab + "end\n"
                    + tab + String.format("if (%s) begin\n", language.reset)
                    + tab + tab + String.format("for (int iRst = 0; iRst < %d; iRst=iRst+1) begin\n", forwardBufferDepth)
-                   + tab + tab + tab + String.format("%s[i] <= 0;\n", forwardValidName) + tab + tab + "end\n" + tab + "end\n"
+                   + tab + tab + tab + String.format("%s[i] <= 0;\n", forwardValidName)
+                   + tab + tab + "end\n"
+                   + tab + "end\n"
                    + "end\n";
 
       // TODO: Proper flush tracking -

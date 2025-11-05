@@ -15,12 +15,14 @@ import org.apache.logging.log4j.Logger;
 import org.yaml.snakeyaml.Yaml;
 import scaiev.backend.BNode;
 import scaiev.backend.CVA5;
+import scaiev.backend.CVA6;
 import scaiev.backend.CoreBackend;
 import scaiev.backend.Orca;
 import scaiev.backend.Piccolo;
 import scaiev.backend.PicoRV32;
 import scaiev.backend.VexRiscv;
 import scaiev.coreconstr.Core;
+import scaiev.coreconstr.Core.CoreTag;
 import scaiev.coreconstr.CoreDatab;
 import scaiev.coreconstr.CoreNode;
 import scaiev.drc.DRC;
@@ -77,12 +79,6 @@ public class SCAIEV {
   }
   public Iterable<SCAIEVInstr> getInstructions() { return new ArrayList<>(instrSet.values()); }
 
-  /*public void addZOL(String encodingF3,String encodingOp, int loopDepth) {
-          SCAIEVInstr newISAX = new SCAIEVInstr("ZOL","-------", encodingF3,encodingOp,"B", loopDepth);
-          newISAX.PutSchedNode(FNodes.RdIValid, 2);
-          zol = newISAX;
-  }*/
-
   public SCAIEVInstr addInstr(String name) {
     SCAIEVInstr newISAX = new SCAIEVInstr(name);
     instrSet.put(name, newISAX);
@@ -132,32 +128,29 @@ public class SCAIEV {
 
       // For each instruction, add missing _addr nodes or update the start cycle to match the global 'earliest'.
       for (SCAIEVInstr instr : getInstructions()) {
-        if (instr.HasNode(fnodeRd)) {
-          if (!instr.HasNode(fnodeRd_addr))
-            instr.PutSchedNode(fnodeRd_addr, earliestRdwr, new HashSet<>());
-          else {
-            instr.GetSchedWithIterator(fnodeRd_addr, sched -> true).forEachRemaining(sched -> {
-              if (sched.GetStartCycle() > earliestRdwr && (sched.HasAdjSig(AdjacentNode.addrReq) || fnodeRd.elements > 1))
-                logger.error("Instruction {}: Provides {} in stage {} although it is required in stage {}; Overriding to required stage.",
-                             instr, fnodeRd_addr.name, sched.GetStartCycle(), earliestRdwr);
-              if (sched.GetStartCycle() > earliestRdwr)
-                sched.UpdateStartCycle(earliestRdwr);
-            });
+        record _util(SCAIEVInstr instr, SCAIEVNode fnode, SCAIEVNode fnode_addr, int earliest) {
+          void apply() {
+            if (instr.HasNode(fnode)) {
+              var schedBases = instr.GetSchedNodes().get(fnode);
+              if (!instr.HasNode(fnode_addr)) {
+                var addrSched = instr.PutSchedNode(fnode_addr, earliest, new HashSet<>());
+              }
+              instr.GetSchedWithIterator(fnode_addr, sched -> true).forEachRemaining(sched -> {
+                if (sched.GetStartCycle() > earliest && (sched.HasAdjSig(AdjacentNode.addrReq) || fnode.elements > 1))
+                  logger.error("Instruction {}: Provides {} in stage {} although it is required in stage {}; Overriding to required stage.",
+                               instr, fnode_addr.name, sched.GetStartCycle(), earliest);
+                if (sched.GetStartCycle() > earliest)
+                  sched.UpdateStartCycle(earliest);
+                //Transfer tags that all fnode Scheduled-s have in common to the addr node.
+                schedBases.get(0).GetTags().stream()
+                    .filter(tag->schedBases.stream().skip(1).allMatch(otherSched->otherSched.GetTags().contains(tag)))
+                    .forEach(tag->sched.AddTag(tag));
+              });
+            }
           }
-        }
-        if (instr.HasNode(fnodeWr)) {
-          if (!instr.HasNode(fnodeWr_addr))
-            instr.PutSchedNode(fnodeWr_addr, earliestRdwr, new HashSet<>());
-          else {
-            instr.GetSchedWithIterator(fnodeWr_addr, sched -> true).forEachRemaining(sched -> {
-              if (sched.GetStartCycle() > earliestRdwr && (sched.HasAdjSig(AdjacentNode.addrReq) || fnodeWr.elements > 1))
-                logger.error("Instruction {}: Provides {} in stage {} although it is required in stage {}; Overriding to required stage.",
-                             instr, fnodeWr_addr.name, sched.GetStartCycle(), earliestRdwr);
-              if (sched.GetStartCycle() > earliestRdwr)
-                sched.UpdateStartCycle(earliestRdwr);
-            });
-          }
-        }
+        };
+        new _util(instr, fnodeRd, fnodeRd_addr, earliestRdwr).apply();
+        new _util(instr, fnodeWr, fnodeWr_addr, earliestRdwr).apply();
       }
     }
   }
@@ -171,6 +164,7 @@ public class SCAIEV {
       logger.error("Cannot find the core description. If the file is present, check for CoreDatab errors in the log.");
       return false;
     }
+    BNodes.updateBitness(core.getTags().contains(CoreTag.RV64) ? 64 : 32);
 
     // For all user nodes, make sure the _addr adjacent nodes are all present and earliest_useroperation is consistent across Read,Write and
     // adjacents.
@@ -213,6 +207,8 @@ public class SCAIEV {
       coreInstanceOpt = Optional.of(new PicoRV32());
     } else if (coreName.equals("CVA5")) {
       coreInstanceOpt = Optional.of(new CVA5());
+    } else if (coreName.equals("CVA6") || coreName.equals("CVA6_64")) {
+      coreInstanceOpt = Optional.of(new CVA6());
     }
 
     // Generate Interface
@@ -247,6 +243,7 @@ public class SCAIEV {
     scal.Prepare(instrSet, op_stage_instr, spawn_instr_stage, core);
 
     coreInstanceOpt.ifPresent(coreInstance -> coreInstance.Prepare(instrSet, op_stage_instr, core, scal, BNodes));
+    BNodes.updateInstrIDSize(BNodes.RdIssueID.size, BNodes.RdIssueID.elements);
 
     scal.Generate(inPath, outPath, coreInstanceOpt);
 
@@ -587,16 +584,20 @@ public class SCAIEV {
       if (node.isSpawn())
         barrierNeeded = true;
     if (barrierNeeded && barrierInstrRequired) {
-      AddIn_op_stage_instr(BNodes.RdRS1, rdrsStage, "disaxkill");
-      AddIn_op_stage_instr(BNodes.RdRS1, rdrsStage, "disaxfence");
-      SCAIEVInstr kill = SCAL.PredefInstr.kill.instr;
-      SCAIEVInstr fence = SCAL.PredefInstr.fence.instr;
-      // SCAIEVInstr kill = addInstr("disaxkill","-------", "110", "0001011", "S");
-      // SCAIEVInstr fence = addInstr("disaxfence","-------", "111", "0001011", "S");
-      kill.PutSchedNode(FNodes.RdRS1, rdrsStage.getStagePos());
-      fence.PutSchedNode(FNodes.RdRS1, rdrsStage.getStagePos());
-      instrSet.put("disaxkill", kill);
-      instrSet.put("disaxfence", fence);
+      if (cfg.maygenerate_disaxkill) {
+        AddIn_op_stage_instr(BNodes.RdRS1, rdrsStage, "disaxkill");
+        SCAIEVInstr kill = SCAL.PredefInstr.kill.instr;
+        // SCAIEVInstr kill = addInstr("disaxkill","-------", "110", "0001011", "S");
+        kill.PutSchedNode(FNodes.RdRS1, rdrsStage.getStagePos());
+        instrSet.put("disaxkill", kill);
+      }
+      if (cfg.maygenerate_disaxfence) {
+        AddIn_op_stage_instr(BNodes.RdRS1, rdrsStage, "disaxfence");
+        SCAIEVInstr fence = SCAL.PredefInstr.fence.instr;
+        // SCAIEVInstr fence = addInstr("disaxfence","-------", "111", "0001011", "S");
+        fence.PutSchedNode(FNodes.RdRS1, rdrsStage.getStagePos());
+        instrSet.put("disaxfence", fence);
+      }
     }
 
     // add instruction context switching for custom registers

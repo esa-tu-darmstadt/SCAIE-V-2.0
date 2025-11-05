@@ -17,6 +17,7 @@ import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.pipeline.PipelineStage;
 
+/** Bluespec HDL text utils */
 public class Bluespec extends GenerateText {
   // logging
   protected static final Logger logger = LogManager.getLogger();
@@ -164,8 +165,8 @@ public class Bluespec extends GenerateText {
   }
 
   /**
-   * Generates text like: Reg #(Bit#(1))  signalName    <- mkReg (0);
-   * signalName created from <operation,  stage,  instr>
+   * Generates text like: Reg #(Bit#(1))  signalName &lt;- mkReg (0);
+   * signalName created from &lt;operation,  stage, instr&gt;
    */
   public String CreateDeclReg(SCAIEVNode operation, PipelineStage stage, String instr) {
     String decl = "";
@@ -185,8 +186,8 @@ public class Bluespec extends GenerateText {
   }
 
   /**
-   * Generates text like: Wire #(Bit#(1))  signalName    <- mkDWire (0);
-   * signalName created from <operation,  stage,  instr>
+   * Generates text like: Wire #(Bit#(1))  signalName &lt;- mkDWire (0);
+   * signalName created from &lt;operation,  stage,  instr&gt;
    */
   public String CreateDeclSig(SCAIEVNode operation, PipelineStage stage, String instr) {
     String decl = "";

@@ -20,6 +20,7 @@ import scaiev.frontend.SCAL;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
+import scaiev.pipeline.PipelineStage.StageTag;
 import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeInstanceDesc.ExpressionType;
 import scaiev.scal.NodeInstanceDesc.Purpose;
@@ -27,14 +28,16 @@ import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.NodeRegistryRO;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.TriggerableNodeLogicBuilder;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
+import scaiev.ui.SCAIEVConfig;
 import scaiev.util.Verilog;
 
 /**
  * Strategy that produces pipe utility signals (stall-, flush- related) and default implementations for per-ISAX spawn
- * validReq,validResp,addr
+ * validReq,validResp,addr,size,instrID
  */
 public class DecoupledPipeStrategy extends MultiNodeStrategy {
 
@@ -49,6 +52,7 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
   HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage;
   HashMap<String, SCAIEVInstr> allISAXes;
   List<CustomCoreInterface> spawnRDAddrOverrides;
+  SCAIEVConfig cfg;
   /**
    * @param strategyBuilders The StrategyBuilders object to build sub-strategies with
    * @param language The (Verilog) language object
@@ -57,16 +61,18 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
    * @param op_stage_instr The Node-Stage-ISAX mapping
    * @param spawn_instr_stage The Node-ISAX-Stage mapping providing the precise sub-pipeline stage for spawn operations
    * @param allISAXes The ISAX descriptions
-   * @param spawnRDAddrOverrides Custom SCAL<->Core interfaces that specify the destination register address/ID for ISAXes entering a spawn
-   *     stage.
+   * @param spawnRDAddrOverrides Custom SCAL&lt;-&gt;Core interfaces that specify the destination register address/ID
+   *                              for ISAXes entering a spawn stage.
    *                             This could be one interface for the Execute stage (for semi-coupled spawn ISAXes)
    *                              and one for the Decoupled stage (for actual decoupled spawn ISAXes).
    *                             By default, the 'rd' field in the instruction encoding is used.
+   * @param cfg The SCAIE-V global config
    */
   public DecoupledPipeStrategy(StrategyBuilders strategyBuilders, Verilog language, BNode bNodes, Core core,
                                HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
                                HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage,
-                               HashMap<String, SCAIEVInstr> allISAXes, List<CustomCoreInterface> spawnRDAddrOverrides) {
+                               HashMap<String, SCAIEVInstr> allISAXes, List<CustomCoreInterface> spawnRDAddrOverrides,
+                               SCAIEVConfig cfg) {
     this.strategyBuilders = strategyBuilders;
     this.language = language;
     this.bNodes = bNodes;
@@ -75,6 +81,7 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
     this.spawn_instr_stage = spawn_instr_stage;
     this.allISAXes = allISAXes;
     this.spawnRDAddrOverrides = spawnRDAddrOverrides;
+    this.cfg = cfg;
   }
 
   @Override
@@ -117,7 +124,7 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
         if (prevStagePos != -1 && flStage.getStagePos() != prevStagePos + 1) {
           logger.error("DecoupledPipeStrategy CreateExtraPipeSignals: Encountered parallel stages, which is not supported.");
         }
-        if (!flStage.getContinuous()) {
+        if (!flStage.getContinuous() && startSpawnFront.isBefore(flStage, false)) {
           logger.error("DecoupledPipeStrategy CreateExtraPipeSignals: Encountered non-continuous stage (" + flStage.getName() +
                        "), which is not supported.");
         }
@@ -149,20 +156,26 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
     logicBlock.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(PseudoNode_StartSpawnToSpawnPipe_StallFrCore, spawnStage, ""),
                                                 stallFrCore, ExpressionType.AnyExpression, stallRequestedFor));
 
-    String fenceValidExpr = startSpawnFront.asList()
-                                .stream()
-                                .map(startSpawnStage
-                                     -> registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdIValid, startSpawnStage,
-                                                                                                   SCAL.PredefInstr.fence.instr.GetName())))
-                                .reduce((a, b) -> a + " || " + b)
-                                .orElse("1'b0");
-    String killValidExpr = startSpawnFront.asList()
-                               .stream()
-                               .map(startSpawnStage
-                                    -> registry.lookupExpressionRequired(
-                                        new NodeInstanceDesc.Key(bNodes.RdIValid, startSpawnStage, SCAL.PredefInstr.kill.instr.GetName())))
-                               .reduce((a, b) -> a + " || " + b)
-                               .orElse("1'b0");
+    String fenceValidExpr = "1'b0";
+    if (allISAXes.containsKey(SCAL.PredefInstr.fence.instr.GetName())) {
+      fenceValidExpr = startSpawnFront.asList()
+                           .stream()
+                           .map(startSpawnStage
+                                -> registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdIValid, startSpawnStage,
+                                                                                              SCAL.PredefInstr.fence.instr.GetName())))
+                           .reduce((a, b) -> a + " || " + b)
+                           .orElse("1'b0");
+    }
+    String killValidExpr = "1'b0";
+    if (allISAXes.containsKey(SCAL.PredefInstr.kill.instr.GetName())) {
+      killValidExpr = startSpawnFront.asList()
+                          .stream()
+                          .map(startSpawnStage
+                               -> registry.lookupExpressionRequired(
+                                   new NodeInstanceDesc.Key(bNodes.RdIValid, startSpawnStage, SCAL.PredefInstr.kill.instr.GetName())))
+                          .reduce((a, b) -> a + " || " + b)
+                          .orElse("1'b0");
+    }
 
     logicBlock.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(PseudoNode_StartSpawnToSpawnPipe_Fence, spawnStage, ""),
                                                 "(" + fenceValidExpr + ")", ExpressionType.AnyExpression));
@@ -214,17 +227,29 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
     }
     return relevantStartSpawnStages;
   }
+  public static List<PipelineStage> getRelevantIssueStages(Core core, PipelineStage spawnStage) {
+    List<PipelineStage> allIssueStages = core.GetRootStage().getAllChildren()
+                                                            .filter(stage -> stage.getTags().contains(StageTag.Issue))
+                                                            .toList();
+    List<PipelineStage> relevantIssueStages = new ArrayList<>();
+    for (PipelineStage issueStage : allIssueStages) {
+      if (new PipelineFront(issueStage).isAroundOrBefore(spawnStage, false))
+        relevantIssueStages.add(issueStage);
+    }
+    return relevantIssueStages;
+  }
 
   private static class AddrSizeFIFOBuilderDesc {
     public boolean forAddr = false, triggeredForAddr = false; // AdjacentNode.addr
     public boolean forSize = false, triggeredForSize = false; // AdjacentNode.size
+    public boolean forID = false, triggeredForID = false; // AdjacentNode.instrID
     public TriggerableNodeLogicBuilder fifoBuilder = null;
   }
   private HashMap<NodeInstanceDesc.Key, AddrSizeFIFOBuilderDesc> implementedAddrSizeFIFOs = new HashMap<>();
 
   private boolean implementAddrSizeFIFO(Consumer<NodeLogicBuilder> out, SCAIEVNode spawnNode, AdjacentNode adj, PipelineStage stage,
                                         String isax, PipelineStage spawnSubStage) {
-    assert (adj == AdjacentNode.addr || adj == AdjacentNode.size);
+    assert (adj == AdjacentNode.addr || adj == AdjacentNode.size || adj == AdjacentNode.instrID);
     assert (!spawnNode.isAdj());
     assert (spawnNode.isSpawn());
 
@@ -234,7 +259,10 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
     if (isNew) {
       // Construct the actual FIFO builder.
 
-      List<PipelineStage> relevantStartSpawnStages = getRelevantStartSpawnStages(core, stage);
+      //Push from the issue stage.
+      List<PipelineStage> relevantIssueStages = getRelevantIssueStages(core, stage);
+      //If the core doesn't have one, use the 'start spawn' stage instead.
+      List<PipelineStage> relevantStartSpawnStages = relevantIssueStages.isEmpty() ? getRelevantStartSpawnStages(core, stage) : relevantIssueStages;
       if (relevantStartSpawnStages.isEmpty()) {
         logger.error("DecoupledPipeStrategy - Found no matching startSpawnStage for " + stage.getName());
         return false;
@@ -255,9 +283,11 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
 
       var addrRequestedFor = new RequestedForSet(isax);
       var sizeRequestedFor = new RequestedForSet(isax);
+      var idRequestedFor = new RequestedForSet(isax);
       var commonRequestedFor = new RequestedForSet();
       commonRequestedFor.addAll(addrRequestedFor, true);
       commonRequestedFor.addAll(sizeRequestedFor, true);
+      commonRequestedFor.addAll(idRequestedFor, true);
 
       var builder = NodeLogicBuilder.fromFunction("DecoupledPipeStrategy_AddrSizeFIFO_" + spawnNodeKey.toString(false), (registry, aux) -> {
         NodeLogicBlock ret = new NodeLogicBlock();
@@ -372,6 +402,30 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
           fifoEntryW += sizeW;
         }
 
+        Optional<SCAIEVNode> idNode_opt = bNodes.GetAdjSCAIEVNode(spawnNode, AdjacentNode.instrID);
+        if (fifoBuilderDesc.forID)
+          assert (idNode_opt.isPresent());
+        if (fifoBuilderDesc.forID && idNode_opt.get().validBy != AdjacentNode.validReq) {
+          fifoBuilderDesc.forID = false;
+          logger.error("Node " + idNode_opt.get().name + " is set to sample by " + idNode_opt.get().validBy.name() +
+                       ", expected validReq");
+        }
+        String[] idReadSigs = (fifoBuilderDesc.forID ? new String[relevantStartSpawnStages.size()] : null);
+        String idRange = "";
+        int idW = 0;
+        if (fifoBuilderDesc.forID) {
+          idW = idNode_opt.get().size;
+
+          for (int i = 0; i < relevantStartSpawnStages.size(); ++i) {
+            // RdInstr funct3
+            idReadSigs[i] = registry.lookupExpressionRequired(
+                                  new NodeInstanceDesc.Key(bNodes.RdIssueID, relevantStartSpawnStages.get(i), ""), idRequestedFor);
+          }
+
+          idRange = String.format("[%d-1:%d]", fifoEntryW + idW, fifoEntryW);
+          fifoEntryW += idW;
+        }
+
         if (fifoEntryW == 0) {
           // No need to create a FIFO.
           // Return now, assuming we don't need zero-width outputs from this builder.
@@ -384,7 +438,9 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
             writeExpr = addrReadSigs[iStartSpawnStage];
           if (fifoBuilderDesc.forSize)
             writeExpr = sizeReadSigs[iStartSpawnStage] + (writeExpr.isEmpty() ? "" : ", ") + writeExpr;
-          if ((fifoBuilderDesc.forAddr ? 1 : 0) + (fifoBuilderDesc.forSize ? 1 : 0) > 1)
+          if (fifoBuilderDesc.forID)
+            writeExpr = idReadSigs[iStartSpawnStage] + (writeExpr.isEmpty() ? "" : ", ") + writeExpr;
+          if ((fifoBuilderDesc.forAddr ? 1 : 0) + (fifoBuilderDesc.forSize ? 1 : 0) + (fifoBuilderDesc.forID ? 1 : 0) > 1)
             writeExpr = "{" + writeExpr + "}";
           return writeExpr;
         };
@@ -393,10 +449,25 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
 
         String FIFOmoduleName = registry.lookupExpressionRequired(
             new NodeInstanceDesc.Key(Purpose.HDL_MODULE, DecoupledStandardModulesStrategy.makeFIFONode(), core.GetRootStage(), ""));
-        // TODO: Make configurable
+
         int fifoDepth = stage.getStagePos() - minSpawnStagePos + 1;
-        if (spawnSubStage.getKind() == StageKind.Sub)
-          fifoDepth += spawnSubStage.getStagePos();
+        if (spawnSubStage.getKind() == StageKind.Sub) {
+          int subpipeDepth = spawnSubStage.getStagePos();
+          if (allISAXes.containsKey(isax) && allISAXes.get(isax).GetRunsAsDynamic()) {
+            subpipeDepth = Math.max(subpipeDepth, cfg.decoupled_parallel_max);
+            fifoDepth = cfg.decoupled_parallel_max;
+          }
+          else
+            fifoDepth += subpipeDepth;
+          //Lift up the ISAXValidCounter limit to the computed sub-pipeline depth. 
+          ret.outputs.add(
+              new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, SpawnRdIValidStrategy.ISAXValidCounterMax, stage, isax, aux),
+                                   "" + Math.min(cfg.decoupled_parallel_max, subpipeDepth + 1), ExpressionType.AnyExpression));
+        }
+        if (fifoDepth > cfg.decoupled_parallel_max)
+          fifoDepth = cfg.decoupled_parallel_max;
+
+
         String fifoWriteCondExpr = "1'b0";
         String fifoWriteDataExpr = makeWriteDataExpr.apply(0);
         String[] fifoWriteStageStallConds = new String[relevantStartSpawnStages.size()];
@@ -405,13 +476,10 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
           PipelineStage startSpawnStage = relevantStartSpawnStages.get(i);
           // Is the ISAX in this 'start spawn' stage?
           String curStartSpawnValid =
-              "(" +
-              registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdIValid, startSpawnStage, isax), commonRequestedFor) +
-              " && !" +
-              registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, startSpawnStage, ""), commonRequestedFor) +
-              " && !" +
-              registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.WrStall, startSpawnStage, ""),
-                                                commonRequestedFor) // WrStall is not generally included in RdStall
+              "("
+              + registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdIValid, startSpawnStage, isax), commonRequestedFor)
+              + " && "
+              + SCALUtil.buildCond_StageNotStalling(bNodes, registry, startSpawnStage, false, commonRequestedFor)
               + ")";
           fifoWriteCondExpr += " || " + curStartSpawnValid;
           if (i + 1 < relevantStartSpawnStages.size()) {
@@ -429,12 +497,10 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
           }
         }
 
-        String fifoReadCondExpr =
-            registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.WrCommit_spawn_validReq, stage, isax), commonRequestedFor);
-        //    			String fifoReadCondExpr = registry.lookupExpressionRequired(
-        //    				new NodeInstanceDesc.Key(bNodes.GetAdjSCAIEVNode(spawnNode, AdjacentNode.validReq).get(), stage,
-        //    isax), 				commonRequestedFor
-        //    			);
+        String fifoReadCondExpr = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.WrCommit_spawn_validReq, stage, isax), commonRequestedFor);
+        //String fifoReadCondExpr = (stage.getKind() == StageKind.Decoupled)
+        //    ? registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.WrCommit_spawn_validReq, stage, isax), commonRequestedFor)
+        //    : registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.GetAdjSCAIEVNode(spawnNode, AdjacentNode.validReq).get(), stage, isax), commonRequestedFor);
 
         String fifoName = "addrsizeFIFO_" + spawnNode.name + "_" + isax + "_" + stage.getName();
         String outValidWire = "unused_" + fifoName + "_not_empty";
@@ -469,6 +535,13 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
           ret.logic += String.format("assign %s = %s%s;\n", sizeFromFIFOWire, outDataWire, sizeRange);
           ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.WIREDIN_FALLBACK, sizeNode_opt.get(), stage, isax),
                                                sizeFromFIFOWire, ExpressionType.WireName, sizeRequestedFor));
+        }
+        if (fifoBuilderDesc.forID) {
+          String idFromFIFOWire = language.CreateBasicNodeName(idNode_opt.get(), stage, isax, false) + "_fromfifo";
+          ret.declarations += String.format("wire [%d-1:0] %s;\n", idW, idFromFIFOWire);
+          ret.logic += String.format("assign %s = %s%s;\n", idFromFIFOWire, outDataWire, idRange);
+          ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.WIREDIN_FALLBACK, idNode_opt.get(), stage, isax),
+                                               idFromFIFOWire, ExpressionType.WireName, sizeRequestedFor));
         }
 
         for (int i = 0; i < fifoWriteStageStallConds.length; ++i) {
@@ -513,6 +586,13 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
         fifoBuilderDesc.fifoBuilder.trigger(isNew ? null : out);
       }
       break;
+    case instrID:
+      fifoBuilderDesc.forID = true;
+      if (!fifoBuilderDesc.triggeredForID) {
+        fifoBuilderDesc.triggeredForID = true;
+        fifoBuilderDesc.fifoBuilder.trigger(isNew ? null : out);
+      }
+      break;
     default:
       assert (false);
     }
@@ -550,6 +630,9 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
     switch (nodeKey.getNode().getAdj()) {
     case addr:
     case size:
+    //instrID: The decoupled node implementation must prevent instruction ID collisions
+    //         (e.g., by stalling the 'start issue' stage)
+    case instrID:
       if (!nodeKey.getPurpose().matches(Purpose.WIREDIN_FALLBACK))
         return false;
       // For WrRD_spawn, AdjacentNode.addr is the register address;

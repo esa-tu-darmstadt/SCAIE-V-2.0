@@ -21,6 +21,7 @@ import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
+import scaiev.scal.NodeRegistry;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
 import scaiev.util.ListRemoveView;
@@ -148,7 +149,7 @@ public class SpawnStaticNodePipeStrategy extends MultiNodeStrategy {
       //       (also to support inference of FPGA shift reg primitives, possibly?)
       MultiNodeStrategy pipeliner =
           strategyBuilders.buildNodeRegPipelineStrategy(language, bNodes, new PipelineFront(prevValueStage), true, false, true,
-                                                        key -> true, key -> false, MultiNodeStrategy.noneStrategy);
+                                                        key -> true, key -> false, MultiNodeStrategy.noneStrategy, false);
       List<NodeLogicBuilder> pipelineBuilders = new ArrayList<>();
       pipeliner.implement(builder -> pipelineBuilders.add(builder), new ListRemoveView<>(List.of(nodeKey)), false);
       if (pipelineBuilders.isEmpty()) {
@@ -161,7 +162,7 @@ public class SpawnStaticNodePipeStrategy extends MultiNodeStrategy {
       if (ret.isEmpty()) {
         ret.outputs.add(new NodeInstanceDesc(
             new NodeInstanceDesc.Key(Purpose.PIPEDIN, nodeKey.getNode(), nodeKey.getStage(), nodeKey.getISAX()),
-            "MISSING_SpawnStaticNodePipeStrategy_" + nodeKey.toString(false), ExpressionType.AnyExpression, requestedFor));
+            NodeRegistry.MISSING_PREFIX+"SpawnStaticNodePipeStrategy_" + nodeKey.toString(false), ExpressionType.AnyExpression, requestedFor));
       }
       return ret;
     }));

@@ -63,6 +63,8 @@ public class PicoRV32 extends CoreBackend {
     BNode.WrCommit_spawn.tags.add(NodeTypeTag.noCoreInterface);
     BNode.WrCommit_spawn_validReq.tags.add(NodeTypeTag.noCoreInterface);
     BNode.WrCommit_spawn_validResp.tags.add(NodeTypeTag.noCoreInterface);
+    BNode.WrInStageID.tags.add(NodeTypeTag.noCoreInterface);
+    BNode.WrInStageID_valid.tags.add(NodeTypeTag.noCoreInterface);
     core.PutNode(BNode.RdInStageValid, new CoreNode(0, 0, stages.length - 1, stages.length, BNode.RdInStageValid.name));
   }
 

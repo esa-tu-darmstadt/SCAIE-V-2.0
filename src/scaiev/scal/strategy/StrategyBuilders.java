@@ -8,6 +8,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -22,8 +23,10 @@ import scaiev.pipeline.PipelineStage;
 import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.strategy.decoupled.DecoupledDHStrategy;
 import scaiev.scal.strategy.decoupled.DecoupledKillStrategy;
+import scaiev.scal.strategy.decoupled.DecoupledLateRetireStrategy;
 import scaiev.scal.strategy.decoupled.DecoupledPipeStrategy;
 import scaiev.scal.strategy.decoupled.DecoupledStandardModulesStrategy;
+import scaiev.scal.strategy.decoupled.DefaultHandshakeRespStrategy;
 import scaiev.scal.strategy.decoupled.DefaultRdwrInStageStrategy;
 import scaiev.scal.strategy.decoupled.DefaultWrCommitStrategy;
 import scaiev.scal.strategy.decoupled.SpawnCommittedRdStrategy;
@@ -35,8 +38,11 @@ import scaiev.scal.strategy.decoupled.SpawnOutputSelectStrategy;
 import scaiev.scal.strategy.decoupled.SpawnRdIValidStrategy;
 import scaiev.scal.strategy.decoupled.SpawnRegisterStrategy;
 import scaiev.scal.strategy.decoupled.SpawnStaticNodePipeStrategy;
+import scaiev.scal.strategy.pipeline.IDRetireSerializerStrategy;
 import scaiev.scal.strategy.pipeline.NodeRegPipelineStrategy;
 import scaiev.scal.strategy.standard.DefaultMemAdjStrategy;
+import scaiev.scal.strategy.standard.DefaultRdInstrRSRDStrategy;
+import scaiev.scal.strategy.standard.DefaultIDAdjStrategy;
 import scaiev.scal.strategy.standard.DefaultRerunStrategy;
 import scaiev.scal.strategy.standard.DefaultValidCancelReqStrategy;
 import scaiev.scal.strategy.standard.DirectReadNodeStrategy;
@@ -69,20 +75,22 @@ public class StrategyBuilders {
    */
   public void put(UUID uuid, Function<Map<String, Object>, MultiNodeStrategy> builder) { builders.put(uuid, builder); }
 
-  public SingleNodeStrategy buildSingleNodeStrategy(UUID uuid, Map<String, Object> args) {
-    Function<Map<String, Object>, MultiNodeStrategy> entry = builders.get(uuid);
-    if (entry == null)
-      return null;
-    Object ret = entry.apply(args);
-    if (ret instanceof SingleNodeStrategy)
-      return (SingleNodeStrategy)ret;
-    throw new IllegalArgumentException("Builder does not output a SingleNodeStrategy");
-  }
   public MultiNodeStrategy buildMultiNodeStrategy(UUID uuid, Map<String, Object> args) {
     Function<Map<String, Object>, MultiNodeStrategy> entry = builders.get(uuid);
     if (entry == null)
       return null;
     return entry.apply(args);
+  }
+  public <T> T buildTypedStrategy(Class<T> clazz, UUID uuid, Map<String, Object> args) {
+    MultiNodeStrategy ret_untyped = buildMultiNodeStrategy(uuid, args);
+    if (ret_untyped == null)
+      return null;
+    if (clazz.isInstance(ret_untyped))
+      return clazz.cast(ret_untyped);
+    throw new IllegalArgumentException("Builder does not output the expected strategy type");
+  }
+  public SingleNodeStrategy buildSingleNodeStrategy(UUID uuid, Map<String, Object> args) {
+    return buildTypedStrategy(SingleNodeStrategy.class, uuid, args);
   }
 
   private void putUniqueBuilder(UUID uuid, Function<Map<String, Object>, MultiNodeStrategy> builder) {
@@ -102,9 +110,11 @@ public class StrategyBuilders {
     putUniqueBuilder(UUID_SCALInputOutputStrategy, (Map<String, Object> args) -> this.default_buildSCALInputOutputStrategy(args));
     putUniqueBuilder(UUID_PipeoutRegularStrategy, (Map<String, Object> args) -> this.default_buildPipeoutRegularStrategy(args));
     putUniqueBuilder(UUID_DefaultMemAdjStrategy, (Map<String, Object> args) -> this.default_buildDefaultMemAdjStrategy(args));
+    putUniqueBuilder(UUID_DefaultIDAdjStrategy, (Map<String, Object> args) -> this.default_buildDefaultIDAdjStrategy(args));
     putUniqueBuilder(UUID_DefaultValidCancelReqStrategy,
                      (Map<String, Object> args) -> this.default_buildDefaultValidCancelReqStrategy(args));
     putUniqueBuilder(UUID_DefaultRerunStrategy, (Map<String, Object> args) -> this.default_buildDefaultRerunStrategy(args));
+    putUniqueBuilder(UUID_DefaultRdInstrRSRDStrategy, (Map<String, Object> args) -> this.default_buildDefaultRdInstrRSRDStrategy(args));
 
     putUniqueBuilder(UUID_DecoupledDHStrategy, (Map<String, Object> args) -> this.default_buildDecoupledDHStrategy(args));
     putUniqueBuilder(UUID_DecoupledPipeStrategy, (Map<String, Object> args) -> this.default_buildDecoupledPipeStrategy(args));
@@ -120,10 +130,13 @@ public class StrategyBuilders {
     putUniqueBuilder(UUID_SpawnOutputSelectStrategy, (Map<String, Object> args) -> this.default_buildSpawnOutputSelectStrategy(args));
     putUniqueBuilder(UUID_SpawnOptionalInputFIFOStrategy,
                      (Map<String, Object> args) -> this.default_buildSpawnOptionalInputFIFOStrategy(args));
+    putUniqueBuilder(UUID_DecoupledLateRetireStrategy, (Map<String, Object> args) -> this.default_buildDecoupledLateRetireStrategy(args));
 
+    putUniqueBuilder(UUID_IDRetireSerializerStrategy_auto, (Map<String, Object> args) -> this.default_buildIDRetireSerializerStrategy_auto(args));
     putUniqueBuilder(UUID_SCALStateStrategy, (Map<String, Object> args) -> this.default_buildSCALStateStrategy(args));
     putUniqueBuilder(UUID_SCALStateContextStrategy, (Map<String, Object> args) -> this.default_buildSCALStateContextStrategy(args));
     putUniqueBuilder(UUID_SpawnOrderedMuxStrategy, (Map<String, Object> args) -> this.default_buildSpawnOrderedMuxStrategy(args));
+    putUniqueBuilder(UUID_DefaultHandshakeRespStrategy, (Map<String, Object> args) -> this.default_buildDefaultHandshakeRespStrategy(args));
     putUniqueBuilder(UUID_DefaultRdwrInStageStrategy, (Map<String, Object> args) -> this.default_buildDefaultRdwrInStageStrategy(args));
     putUniqueBuilder(UUID_DefaultWrCommitStrategy, (Map<String, Object> args) -> this.default_buildDefaultWrCommitStrategy(args));
   }
@@ -135,8 +148,9 @@ public class StrategyBuilders {
    * {@link scaiev.scal.strategy.pipeline.NodeRegPipelineStrategy}
    *  Args:  Verilog language, BNode bNodes, PipelineFront minPipeFront,
    *         boolean zeroOnFlushSrc, boolean zeroOnFlushDest, boolean zeroOnBubble,
-   *         Predicate<NodeInstanceDesc.Key> can_pipe, Predicate<NodeInstanceDesc.Key> prefer_direct,
-   *         SingleNodeStrategy strategy_instantiateNew
+   *         Predicate&lt;NodeInstanceDesc.Key&gt; can_pipe, Predicate&lt;NodeInstanceDesc.Key&gt; prefer_direct,
+   *         SingleNodeStrategy strategy_instantiateNew,
+   *         boolean forwardRequestedFor
    */
   public static UUID UUID_NodeRegPipelineStrategy = uuidFor("NodeRegPipelineStrategy");
   /**
@@ -149,17 +163,17 @@ public class StrategyBuilders {
    * UUID for a EarlyValidStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.standard.EarlyValidStrategy}
    *  Args: Verilog language, BNode bNodes, Core core,
-   *        HashMap<SCAIEVNode,HashMap<PipelineStage,HashSet<String>>> op_stage_instr,
-   *        HashMap<String,SCAIEVInstr> allISAXes,
-   *        HashMap<SCAIEVNode, PipelineFront> node_earliestStageValid
+   *        HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *        HashMap&lt;String,SCAIEVInstr&gt; allISAXes,
+   *        HashMap&lt;SCAIEVNode, PipelineFront&gt; node_earliestStageValid
    */
   public static UUID UUID_EarlyValidStrategy = uuidFor("EarlyValidStrategy");
   /**
    * UUID for a ValidMuxStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.standard.ValidMuxStrategy}
    *  Args: Verilog language, BNode bNodes, Core core,
-   *        HashMap<SCAIEVNode,HashMap<PipelineStage,HashSet<String>>> op_stage_instr,
-   *        HashMap<String,SCAIEVInstr> allISAXes
+   *        HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *        HashMap&lt;String,SCAIEVInstr&gt; allISAXes
    */
   public static UUID UUID_ValidMuxStrategy = uuidFor("ValidMuxStrategy");
   /**
@@ -172,8 +186,8 @@ public class StrategyBuilders {
    * UUID for a RdIValidStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.standard.RdIValidStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<String,SCAIEVInstr> allISAXes,
-   *       Function<PipelineStage,RdIValidStageDesc> stage_getRdIValidDesc
+   *       HashMap&lt;String,SCAIEVInstr&gt; allISAXes,
+   *       Function&lt;PipelineStage,RdIValidStageDesc&gt; stage_getRdIValidDesc
    */
   public static UUID UUID_RdIValidStrategy = uuidFor("RdIValidStrategy");
   /**
@@ -201,10 +215,16 @@ public class StrategyBuilders {
    */
   public static UUID UUID_DefaultMemAdjStrategy = uuidFor("DefaultMemAdjStrategy");
   /**
+   * UUID for a DefaultIDAdjStrategy-compatible implementation.
+   * {@link scaiev.scal.strategy.standard.DefaultIDAdjStrategy}
+   * Args: Verilog language, BNode bNodes, Core core
+   */
+  public static UUID UUID_DefaultIDAdjStrategy = uuidFor("DefaultIDAdjStrategy");
+  /**
    * UUID for a DefaultValidCancelReqStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.standard.DefaultValidCancelReqStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-                  HashMap<String,SCAIEVInstr> allISAXes
+   *              HashMap&lt;String,SCAIEVInstr&gt; allISAXes
    */
   public static UUID UUID_DefaultValidCancelReqStrategy = uuidFor("DefaultValidCancelReqStrategy");
   /**
@@ -213,47 +233,56 @@ public class StrategyBuilders {
    * Args: Verilog language, BNode bNodes, Core core
    */
   public static UUID UUID_DefaultRerunStrategy = uuidFor("DefaultRerunStrategy");
+  /**
+   * UUID for a DefaultRdInstrRSRDStrategy-compatible implementation.
+   * {@link scaiev.scal.strategy.standard.DefaultRdInstrRSRDStrategy}
+   * Args: Verilog language, BNode bNodes, Core core,
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *       HashMap&lt;String,SCAIEVInstr&gt; allISAXes
+   */
+  public static UUID UUID_DefaultRdInstrRSRDStrategy = uuidFor("DefaultRdInstrRSRDStrategy");
 
   /**
    * UUID for a DecoupledDHStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.decoupled.DecoupledDHStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-                  HashMap<SCAIEVNode,HashMap<PipelineStage,HashSet<String>>> op_stage_instr,
-                  HashMap<String,SCAIEVInstr> allISAXes
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *       HashMap&lt;String,SCAIEVInstr&gt; allISAXes
    */
   public static UUID UUID_DecoupledDHStrategy = uuidFor("DecoupledDHStrategy");
   /**
    * UUID for a DecoupledPipeStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.decoupled.DecoupledPipeStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<SCAIEVNode,HashMap<PipelineStage,HashSet<String>>> op_stage_instr,
-   *       HashMap<SCAIEVNode,HashMap<String,PipelineStage>> spawn_instr_stage,
-   *       HashMap<String,SCAIEVInstr> allISAXes,
-   *       List<CustomCoreInterface> spawnRDAddrOverrides
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;String,PipelineStage&gt;&gt; spawn_instr_stage,
+   *       HashMap&lt;String,SCAIEVInstr&gt; allISAXes,
+   *       List&lt;CustomCoreInterface&gt; spawnRDAddrOverrides,
+   *       SCAIEVConfig cfg
    */
   public static UUID UUID_DecoupledPipeStrategy = uuidFor("DecoupledPipeStrategy");
   /**
    * UUID for a DecoupledKillStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.decoupled.DecoupledKillStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<String,SCAIEVInstr> allISAXes
+   *       HashMap&lt;String,SCAIEVInstr&gt; allISAXes
    */
   public static UUID UUID_DecoupledKillStrategy = uuidFor("DecoupledKillStrategy");
   /**
    * UUID for a SpawnRdIValidStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.decoupled.SpawnRdIValidStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<SCAIEVNode,HashMap<PipelineStage,HashSet<String>>> op_stage_instr,
-   *       HashMap<SCAIEVNode,HashMap<String,PipelineStage>> spawn_instr_stage
-   *       HashMap<String,SCAIEVInstr> allISAXes
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;String,PipelineStage&gt;&gt; spawn_instr_stage
+   *       HashMap&lt;String,SCAIEVInstr&gt; allISAXes
    */
   public static UUID UUID_SpawnRdIValidStrategy = uuidFor("SpawnRdIValidStrategy");
   /**
    * UUID for a SpawnStaticNodePipeStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.decoupled.SpawnStaticNodePipeStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<SCAIEVNode,HashMap<String,PipelineStage>> spawn_instr_stage
-   *       HashMap<String,SCAIEVInstr> allISAXes
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;String,PipelineStage&gt;&gt; spawn_instr_stage
+   *       HashMap&lt;String,SCAIEVInstr&gt; allISAXes
    */
   public static UUID UUID_SpawnStaticNodePipeStrategy = uuidFor("SpawnStaticNodePipeStrategy");
   /**
@@ -272,8 +301,8 @@ public class StrategyBuilders {
    * UUID for a SpawnFenceStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.decoupled.SpawnFenceStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<SCAIEVNode,HashMap<PipelineStage,HashSet<String>>> op_stage_instr,
-   *       HashMap<String,SCAIEVInstr> allISAXes,
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *       HashMap&lt;String,SCAIEVInstr&gt; allISAXes,
    *       boolean hasWrRD_datahazard
    */
   public static UUID UUID_SpawnFenceStrategy = uuidFor("SpawnFenceStrategy");
@@ -281,54 +310,73 @@ public class StrategyBuilders {
    * UUID for a SpawnFireStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.decoupled.SpawnFireStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<SCAIEVNode,HashMap<PipelineStage,HashSet<String>>> op_stage_instr,
-   *       HashMap<String,SCAIEVInstr> allISAXes,
-   *       Map<SCAIEVNode,Collection<String>> isaxesSortedByPriority,
-   *       Collection<SCAIEVNode> disableSpawnFireStallNodes
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *       HashMap&lt;String,SCAIEVInstr&gt; allISAXes,
+   *       Map&lt;SCAIEVNode,Collection&lt;String&gt;&gt; isaxesSortedByPriority,
+   *       Collection&lt;SCAIEVNode&gt; disableSpawnFireStallNodes
    */
   public static UUID UUID_SpawnFireStrategy = uuidFor("SpawnFireStrategy");
   /**
    * UUID for a SpawnRegisterStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.decoupled.SpawnRegisterStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<SCAIEVNode,HashMap<PipelineStage,HashSet<String>>> op_stage_instr,
-   *       Map<SCAIEVNode,Collection<String>> isaxesSortedByPriority
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *       Map&lt;SCAIEVNode,Collection&lt;String&gt;&gt; isaxesSortedByPriority
    */
   public static UUID UUID_SpawnRegisterStrategy = uuidFor("SpawnRegisterStrategy");
   /**
    * UUID for a SpawnOutputSelectStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.decoupled.SpawnOutputSelectStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<SCAIEVNode,HashMap<PipelineStage,HashSet<String>>> op_stage_instr,
-   *       Map<SCAIEVNode,Collection<String>> isaxesSortedByPriority
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *       Map&lt;SCAIEVNode,Collection&lt;String&gt;&gt; isaxesSortedByPriority,
+   *       SCAIEVConfig cfg
    */
   public static UUID UUID_SpawnOutputSelectStrategy = uuidFor("SpawnOutputSelectStrategy");
   /**
    * UUID for a SpawnOptionalInputFIFOStrategy-compatible implementation.
-   * {@link scaiev.scal.strategy.decoupled.SpawnOutputSelectStrategy}
+   * {@link scaiev.scal.strategy.decoupled.SpawnOptionalInputFIFOStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<SCAIEVNode,HashMap<PipelineStage,HashSet<String>>> op_stage_instr,
-   *       HashMap<String,SCAIEVInstr> allISAXes,
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *       HashMap&lt;String,SCAIEVInstr&gt; allISAXes,
    *       boolean SETTINGwithInputFIFO, SCAIEVConfig cfg
    */
   public static UUID UUID_SpawnOptionalInputFIFOStrategy = uuidFor("SpawnOptionalInputFIFOStrategy");
   /**
+   * UUID for a DecoupledLateRetireStrategy-compatible implementation.
+   * {@link scaiev.scal.strategy.decoupled.DecoupledLateRetireStrategy}
+   * Args: Verilog language, BNode bNodes, Core core,
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *       HashMap&lt;SCAIEVNode, HashMap&lt;String, PipelineStage&gt;&gt; spawn_instr_stage,
+   *       HashMap&lt;String,SCAIEVInstr&gt; allISAXes,
+   *       IDRetireSerializerStrategy retireSerializer,
+   *       SCAIEVConfig cfg
+   */
+  public static UUID UUID_DecoupledLateRetireStrategy = uuidFor("DecoupledLateRetireStrategy");
+  /**
    * UUID for a PipeliningRdIValidStrategy-compatible implementation.
-   * {@link scaiev.scal.strategy.decoupled.PipeliningRdIValidStrategy}
+   * {@link scaiev.scal.strategy.standard.PipeliningRdIValidStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
    *       PipelineFront minPipelineFront,
-   *       HashMap<String,SCAIEVInstr> allISAXes,
-   *       Function<PipelineStage,RdIValidStageDesc> stage_getRdIValidDesc
+   *       HashMap&lt;String,SCAIEVInstr&gt; allISAXes,
+   *       Function&lt;PipelineStage,RdIValidStageDesc&gt; stage_getRdIValidDesc
    */
   public static UUID UUID_PipeliningRdIValidStrategy = uuidFor("PipeliningRdIValidStrategy");
 
   /**
+   * UUID for a IDRetireSerializerStrategy-compatible implementation.
+   * {@link scaiev.scal.strategy.pipeline.IDRetireSerializerStrategy#constructRetireSerializer(Verilog, BNode, Core)}
+   * Args: Verilog language, BNode bNodes, Core core
+   */
+  public static UUID UUID_IDRetireSerializerStrategy_auto = uuidFor("IDRetireSerializerStrategy_auto");
+  /**
    * UUID for a SCALStateStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.state.SCALStateStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
-   *       HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage,
-   *       HashMap<String, SCAIEVInstr> allISAXes, SCAIEVConfig cfg
+   *       HashMap&lt;SCAIEVNode, HashMap&lt;PipelineStage, HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *       HashMap&lt;SCAIEVNode, HashMap&lt;String, PipelineStage&gt;&gt; spawn_instr_stage,
+   *       HashMap&lt;String, SCAIEVInstr&gt; allISAXes, SCAIEVConfig cfg,
+   *       Optional&lt;IDRetireSerializerStrategy&gt; retireSerializer_opt
    */
   public static UUID UUID_SCALStateStrategy = uuidFor("SCALStateStrategy");
 
@@ -336,8 +384,8 @@ public class StrategyBuilders {
    * UUID for a SCALStateContextStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.state.SCALStateContextStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
-   *       HashMap<String, SCAIEVInstr> allISAXes,
+   *       HashMap&lt;SCAIEVNode, HashMap&lt;PipelineStage, HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *       HashMap&lt;String, SCAIEVInstr&gt; allISAXes,
    *       SCAIEVConfig cfg
    */
   public static UUID UUID_SCALStateContextStrategy = uuidFor("SCALStateContextStrategy");
@@ -346,9 +394,9 @@ public class StrategyBuilders {
    * UUID for a SpawnOrderedMuxStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.decoupled.SpawnOrderedMuxStrategy}
    * Args: Verilog language, BNode bNodes, Core core,
-   *       HashMap<SCAIEVNode,HashMap<PipelineStage,HashSet<String>>> op_stage_instr,
-   *       HashMap<SCAIEVNode,HashMap<String,PipelineStage>> spawn_instr_stage,
-   *       HashMap<String,SCAIEVInstr> allISAXes,
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *       HashMap&lt;SCAIEVNode,HashMap&lt;String,PipelineStage&gt;&gt; spawn_instr_stage,
+   *       HashMap&lt;String,SCAIEVInstr&gt; allISAXes,
    *       boolean SETTINGenforceOrdering_Memory_Semicoupled,
    *       boolean SETTINGenforceOrdering_Memory_Decoupled,
    *       boolean SETTINGenforceOrdering_User_Semicoupled,
@@ -356,6 +404,12 @@ public class StrategyBuilders {
    *       SCAIEVConfig cfg
    */
   public static UUID UUID_SpawnOrderedMuxStrategy = uuidFor("SpawnOrderedMuxStrategy");
+  /**
+   * UUID for a DefaultHandshakeRespStrategy-compatible implementation.
+   * {@link scaiev.scal.strategy.decoupled.DefaultHandshakeRespStrategy}
+   * Args: Verilog language, BNode bNodes, Core core
+   */
+  public static UUID UUID_DefaultHandshakeRespStrategy = uuidFor("DefaultHandshakeRespStrategy");
   /**
    * UUID for a DefaultRdwrInStageStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.decoupled.DefaultRdwrInStageStrategy}
@@ -387,18 +441,21 @@ public class StrategyBuilders {
    *        Accepts a MultiNodeStrategy, but only used for one node at a time.
    *        Important: The builders returned by a strategy invocation may get combined to a single builder,
    *        and thus cannot rely on seeing each other's outputs in the registry.
+   * @param forwardRequestedFor If true, adds the source stage's requestedFor set to the node in the destination stage.
    */
-  public final MultiNodeStrategy buildNodeRegPipelineStrategy(Verilog language, BNode bNodes, PipelineFront minPipeFront,
+  public final NodeRegPipelineStrategy buildNodeRegPipelineStrategy(Verilog language, BNode bNodes, PipelineFront minPipeFront,
                                                               boolean zeroOnFlushSrc, boolean zeroOnFlushDest, boolean zeroOnBubble,
                                                               Predicate<NodeInstanceDesc.Key> can_pipe,
                                                               Predicate<NodeInstanceDesc.Key> prefer_direct,
-                                                              MultiNodeStrategy strategy_instantiateNew) {
-    return buildMultiNodeStrategy(UUID_NodeRegPipelineStrategy,
+                                                              MultiNodeStrategy strategy_instantiateNew,
+                                                              boolean forwardRequestedFor) {
+    return buildTypedStrategy(NodeRegPipelineStrategy.class, UUID_NodeRegPipelineStrategy,
                                   Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("minPipeFront", minPipeFront),
                                                 entry("zeroOnFlushSrc", zeroOnFlushSrc), entry("zeroOnFlushDest", zeroOnFlushDest),
                                                 entry("zeroOnBubble", zeroOnBubble), entry("can_pipe", can_pipe),
                                                 entry("prefer_direct", prefer_direct),
-                                                entry("strategy_instantiateNew", strategy_instantiateNew)));
+                                                entry("strategy_instantiateNew", strategy_instantiateNew),
+                                                entry("forwardRequestedFor", forwardRequestedFor)));
   }
 
   /**
@@ -463,11 +520,10 @@ public class StrategyBuilders {
   }
   /**
    * Helper function to call the builder for PipeliningRdIValidStrategy.
-   * @param strategyBuilders The StrategyBuilders object to build sub-strategies with
    * @param language The (Verilog) language object
    * @param bNodes The BNode object for the node instantiation
    * @param core The core node description
-   * @param minPipeFront The minimum stages to instantiate an RdIValid pipeline for
+   * @param minPipelineFront The minimum stages to instantiate an RdIValid pipeline for
    * @param allISAXes The ISAX descriptions
    * @param stage_getRdIValidDesc A stage mapping providing additional conditional expressions to RdIValid per ISAX
    */
@@ -512,8 +568,6 @@ public class StrategyBuilders {
 
   /**
    * Helper function to call the builder for PipeoutRegularStrategy.
-   * @param language The (Verilog) language object
-   * @param bNodes The BNode object for the node instantiation
    */
   public final SingleNodeStrategy buildPipeoutRegularStrategy() {
     return buildSingleNodeStrategy(UUID_PipeoutRegularStrategy, Map.ofEntries());
@@ -527,6 +581,16 @@ public class StrategyBuilders {
    */
   public final MultiNodeStrategy buildDefaultMemAdjStrategy(Verilog language, BNode bNodes, Core core) {
     return buildMultiNodeStrategy(UUID_DefaultMemAdjStrategy,
+                                  Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core)));
+  }
+  /**
+   * Helper function to call the builder for DefaultIDAdjStrategy.
+   * @param language The (Verilog) language object
+   * @param bNodes The BNode object for the node instantiation
+   * @param core The core node description
+   */
+  public final MultiNodeStrategy buildDefaultIDAdjStrategy(Verilog language, BNode bNodes, Core core) {
+    return buildMultiNodeStrategy(UUID_DefaultIDAdjStrategy,
                                   Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core)));
   }
   /**
@@ -550,6 +614,21 @@ public class StrategyBuilders {
   public final MultiNodeStrategy buildDefaultRerunStrategy(Verilog language, BNode bNodes, Core core) {
     return buildMultiNodeStrategy(UUID_DefaultRerunStrategy,
                                    Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core)));
+  }
+  /**
+   * Helper function to call the builder for DefaultRdInstrRSRDStrategy.
+   * @param language The (Verilog) language object
+   * @param bNodes The BNode object for the node instantiation
+   * @param core The core nodes description
+   * @param op_stage_instr The Node-Stage-ISAX mapping
+   * @param allISAXes The ISAX descriptions
+   */
+  public final MultiNodeStrategy buildDefaultRdInstrRSRDStrategy(Verilog language, BNode bNodes, Core core,
+                                                          HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
+                                                          HashMap<String, SCAIEVInstr> allISAXes) {
+    return buildMultiNodeStrategy(UUID_DefaultRdInstrRSRDStrategy,
+                                  Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core),
+                                                entry("op_stage_instr", op_stage_instr), entry("allISAXes", allISAXes)));
   }
 
   /**
@@ -576,21 +655,24 @@ public class StrategyBuilders {
    * @param op_stage_instr The Node-Stage-ISAX mapping
    * @param spawn_instr_stage The Node-ISAX-Stage mapping providing the precise sub-pipeline stage for spawn operations
    * @param allISAXes The ISAX descriptions
-   * @param spawnRDAddrOverrides Custom SCAL<->Core interfaces that specify the destination register address/ID for ISAXes entering a spawn
-   *     stage.
+   * @param spawnRDAddrOverrides Custom SCAL&lt;-&gt;Core interfaces that specify the destination register address/ID for ISAXes entering a spawn
+   *                             stage.
    *                             This could be one interface for the Execute stage (for semi-coupled spawn ISAXes)
    *                              and one for the Decoupled stage (for actual decoupled spawn ISAXes).
    *                             By default, the 'rd' field in the instruction encoding is used.
+   * @param cfg The SCAIE-V global config
    */
   public final MultiNodeStrategy buildDecoupledPipeStrategy(Verilog language, BNode bNodes, Core core,
                                                             HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
                                                             HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage,
                                                             HashMap<String, SCAIEVInstr> allISAXes,
-                                                            List<CustomCoreInterface> spawnRDAddrOverrides) {
+                                                            List<CustomCoreInterface> spawnRDAddrOverrides,
+                                                            SCAIEVConfig cfg) {
     return buildMultiNodeStrategy(UUID_DecoupledPipeStrategy,
                                   Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core),
                                                 entry("op_stage_instr", op_stage_instr), entry("spawn_instr_stage", spawn_instr_stage),
-                                                entry("allISAXes", allISAXes), entry("spawnRDAddrOverrides", spawnRDAddrOverrides)));
+                                                entry("allISAXes", allISAXes), entry("spawnRDAddrOverrides", spawnRDAddrOverrides),
+                                                entry("cfg", cfg)));
   }
   /**
    * Helper function to call the builder for DecoupledStandardModulesStrategy.
@@ -708,6 +790,18 @@ public class StrategyBuilders {
   }
 
   /**
+   * Helper function to call the builder for IDRetireSerializerStrategy (auto variant that chooses forwarding and core-specific parameters).
+   * @param language The (Verilog) language object
+   * @param bNodes The BNode object for the node instantiation
+   * @param core The core nodes description
+   */
+  public final IDRetireSerializerStrategy buildIDRetireSerializerStrategy_auto(Verilog language, BNode bNodes, Core core) {
+    return buildTypedStrategy(IDRetireSerializerStrategy.class,
+                              UUID_IDRetireSerializerStrategy_auto,
+                              Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core)));
+  }
+
+  /**
    * Helper function to call the builder for SpawnRegisterStrategy.
    * @param language The (Verilog) language object
    * @param bNodes The BNode object for the node instantiation
@@ -716,15 +810,18 @@ public class StrategyBuilders {
    * @param spawn_instr_stage The Node-ISAX-Stage mapping providing the precise sub-pipeline stage for spawn operations
    * @param allISAXes The ISAX descriptions
    * @param cfg The SCAIE-V global config
+   * @param retireSerializer_opt the serializer for instruction retires (required for cores with an Issue-tagged stage, can be empty for most MCU-class cores)
    */
   public final MultiNodeStrategy buildSCALStateStrategy(Verilog language, BNode bNodes, Core core,
                                                         HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
                                                         HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage,
-                                                        HashMap<String, SCAIEVInstr> allISAXes, SCAIEVConfig cfg) {
+                                                        HashMap<String, SCAIEVInstr> allISAXes, SCAIEVConfig cfg,
+                                                        Optional<IDRetireSerializerStrategy> retireSerializer_opt) {
     return buildMultiNodeStrategy(UUID_SCALStateStrategy, Map.ofEntries(entry("language", language), entry("bNodes", bNodes),
                                                                         entry("core", core), entry("op_stage_instr", op_stage_instr),
                                                                         entry("spawn_instr_stage", spawn_instr_stage),
-                                                                        entry("allISAXes", allISAXes), entry("config", cfg)));
+                                                                        entry("allISAXes", allISAXes), entry("config", cfg),
+                                                                        entry("retireSerializer_opt", retireSerializer_opt)));
   }
 
   /**
@@ -755,11 +852,13 @@ public class StrategyBuilders {
    */
   public final MultiNodeStrategy buildSpawnOutputSelectStrategy(Verilog language, BNode bNodes, Core core,
                                                                 HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
-                                                                Map<SCAIEVNode, Collection<String>> isaxesSortedByPriority) {
+                                                                Map<SCAIEVNode, Collection<String>> isaxesSortedByPriority,
+                                                                SCAIEVConfig cfg) {
     return buildMultiNodeStrategy(UUID_SpawnOutputSelectStrategy,
                                   Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core),
                                                 entry("op_stage_instr", op_stage_instr),
-                                                entry("isaxesSortedByPriority", isaxesSortedByPriority)));
+                                                entry("isaxesSortedByPriority", isaxesSortedByPriority),
+                                                entry("cfg", cfg)));
   }
   /**
    * Helper function to call the builder for SpawnOutputSelectStrategy.
@@ -780,6 +879,31 @@ public class StrategyBuilders {
                                                 entry("op_stage_instr", op_stage_instr), entry("allISAXes", allISAXes),
                                                 entry("SETTINGwithInputFIFO", SETTINGwithInputFIFO),
                                                 entry("cfg", cfg)));
+  }
+  /**
+   * Helper function to call the builder for DecoupledLateRetireStrategy.
+   * @param language The (Verilog) language object
+   * @param bNodes The BNode object for the node instantiation
+   * @param core The core nodes description
+   * @param op_stage_instr The Node-Stage-ISAX mapping
+   * @param spawn_instr_stage The Node-ISAX-Stage mapping providing the precise sub-pipeline stage for spawn operations
+   * @param allISAXes The ISAX descriptions
+   * @param retireSerializer The serializer for instruction retires
+   * @param cfg The SCAIE-V global config
+   */
+  public final MultiNodeStrategy buildDecoupledLateRetireStrategy(
+      Verilog language, BNode bNodes, Core core,
+      HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
+      HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage,
+      HashMap<String, SCAIEVInstr> allISAXes,
+      IDRetireSerializerStrategy retireSerializer,
+      SCAIEVConfig cfg) {
+    return buildMultiNodeStrategy(UUID_DecoupledLateRetireStrategy,
+        Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core),
+                      entry("op_stage_instr", op_stage_instr), entry("spawn_instr_stage", spawn_instr_stage),
+                      entry("allISAXes", allISAXes),
+                      entry("retireSerializer", retireSerializer),
+                      entry("cfg", cfg)));
   }
   /**
    * Helper function to call the builder for SpawnOrderedMuxStrategy.
@@ -812,6 +936,16 @@ public class StrategyBuilders {
                       entry("cfg", cfg)));
   }
   /**
+   * Helper function to call the builder for DefaultHandshakeRespStrategy.
+   * @param language The (Verilog) language object
+   * @param bNodes The BNode object for the node instantiation
+   * @param core The core nodes description
+   */
+  public final MultiNodeStrategy buildDefaultHandshakeRespStrategy(Verilog language, BNode bNodes, Core core) {
+      return buildMultiNodeStrategy(UUID_DefaultHandshakeRespStrategy,
+          Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core)));
+  }
+  /**
    * Helper function to call the builder for DefaultRdwrInStageStrategy.
    * @param language The (Verilog) language object
    * @param bNodes The BNode object for the node instantiation
@@ -838,7 +972,8 @@ public class StrategyBuilders {
                                        (Boolean)args.get("zeroOnFlushSrc"), (Boolean)args.get("zeroOnFlushDest"),
                                        (Boolean)args.get("zeroOnBubble"), (Predicate<NodeInstanceDesc.Key>)args.get("can_pipe"),
                                        (Predicate<NodeInstanceDesc.Key>)args.get("prefer_direct"),
-                                       (MultiNodeStrategy)args.get("strategy_instantiateNew"));
+                                       (MultiNodeStrategy)args.get("strategy_instantiateNew"),
+                                       (Boolean)args.get("forwardRequestedFor"));
   }
   private final SingleNodeStrategy default_buildDirectReadNodeStrategy(Map<String, Object> args) {
     return new DirectReadNodeStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"));
@@ -881,6 +1016,9 @@ public class StrategyBuilders {
   private final MultiNodeStrategy default_buildDefaultMemAdjStrategy(Map<String, Object> args) {
     return new DefaultMemAdjStrategy(this, (Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"));
   }
+  private final MultiNodeStrategy default_buildDefaultIDAdjStrategy(Map<String, Object> args) {
+    return new DefaultIDAdjStrategy(this, (Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"));
+  }
   @SuppressWarnings("unchecked") /* Need to rely on the caller */
   private final SingleNodeStrategy default_buildDefaultValidCancelReqStrategy(Map<String, Object> args) {
     return new DefaultValidCancelReqStrategy(this, (Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"),
@@ -888,6 +1026,12 @@ public class StrategyBuilders {
   }
   private final MultiNodeStrategy default_buildDefaultRerunStrategy(Map<String, Object> args) {
     return new DefaultRerunStrategy(this, (Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"));
+  }
+  @SuppressWarnings("unchecked") /* Need to rely on the caller */
+  private final MultiNodeStrategy default_buildDefaultRdInstrRSRDStrategy(Map<String, Object> args) {
+    return new DefaultRdInstrRSRDStrategy(this, (Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"),
+                                   (HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>>)args.get("op_stage_instr"),
+                                   (HashMap<String, SCAIEVInstr>)args.get("allISAXes"));
   }
 
   @SuppressWarnings("unchecked") /* Need to rely on the caller */
@@ -902,7 +1046,8 @@ public class StrategyBuilders {
                                      (HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>>)args.get("op_stage_instr"),
                                      (HashMap<SCAIEVNode, HashMap<String, PipelineStage>>)args.get("spawn_instr_stage"),
                                      (HashMap<String, SCAIEVInstr>)args.get("allISAXes"),
-                                     (List<CustomCoreInterface>)args.get("spawnRDAddrOverrides"));
+                                     (List<CustomCoreInterface>)args.get("spawnRDAddrOverrides"),
+                                     (SCAIEVConfig)args.get("cfg"));
   }
   @SuppressWarnings("unchecked")
   private final MultiNodeStrategy default_buildDecoupledKillStrategy(Map<String, Object> args) {
@@ -948,12 +1093,16 @@ public class StrategyBuilders {
                                      (HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>>)args.get("op_stage_instr"),
                                      (Map<SCAIEVNode, Collection<String>>)args.get("isaxesSortedByPriority"));
   }
+  private final MultiNodeStrategy default_buildIDRetireSerializerStrategy_auto(Map<String, Object> args) {
+    return IDRetireSerializerStrategy.constructRetireSerializer((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"));
+  }
   @SuppressWarnings("unchecked") /* Need to rely on the caller */
   private final MultiNodeStrategy default_buildSCALStateStrategy(Map<String, Object> args) {
     return new SCALStateStrategy(this, (Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"),
                                  (HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>>)args.get("op_stage_instr"),
                                  (HashMap<SCAIEVNode, HashMap<String, PipelineStage>>)args.get("spawn_instr_stage"),
-                                 (HashMap<String, SCAIEVInstr>)args.get("allISAXes"), (SCAIEVConfig)args.get("config"));
+                                 (HashMap<String, SCAIEVInstr>)args.get("allISAXes"), (SCAIEVConfig)args.get("config"),
+                                 (Optional<IDRetireSerializerStrategy>)args.get("retireSerializer_opt"));
   }
   @SuppressWarnings("unchecked") /* Need to rely on the caller */
   private final MultiNodeStrategy default_buildSCALStateContextStrategy(Map<String, Object> args) {
@@ -965,7 +1114,8 @@ public class StrategyBuilders {
   private final MultiNodeStrategy default_buildSpawnOutputSelectStrategy(Map<String, Object> args) {
     return new SpawnOutputSelectStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"),
                                          (HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>>)args.get("op_stage_instr"),
-                                         (Map<SCAIEVNode, Collection<String>>)args.get("isaxesSortedByPriority"));
+                                         (Map<SCAIEVNode, Collection<String>>)args.get("isaxesSortedByPriority"),
+                                         (SCAIEVConfig)args.get("cfg"));
   }
   @SuppressWarnings("unchecked") /* Need to rely on the caller */
   private final MultiNodeStrategy default_buildSpawnOptionalInputFIFOStrategy(Map<String, Object> args) {
@@ -973,6 +1123,15 @@ public class StrategyBuilders {
                                               (HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>>)args.get("op_stage_instr"),
                                               (HashMap<String, SCAIEVInstr>)args.get("allISAXes"),
                                               (Boolean)args.get("SETTINGwithInputFIFO"), (SCAIEVConfig)args.get("cfg"));
+  }
+  @SuppressWarnings("unchecked") /* Need to rely on the caller */
+  private final MultiNodeStrategy default_buildDecoupledLateRetireStrategy(Map<String, Object> args) {
+    return new DecoupledLateRetireStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"),
+                                           (HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>>)args.get("op_stage_instr"),
+                                           (HashMap<SCAIEVNode, HashMap<String, PipelineStage>>)args.get("spawn_instr_stage"),
+                                           (HashMap<String, SCAIEVInstr>)args.get("allISAXes"),
+                                           (IDRetireSerializerStrategy)args.get("retireSerializer"),
+                                           (SCAIEVConfig)args.get("cfg"));
   }
   @SuppressWarnings("unchecked") /* Need to rely on the caller */
   private final MultiNodeStrategy default_buildSpawnOrderedMuxStrategy(Map<String, Object> args) {
@@ -983,6 +1142,10 @@ public class StrategyBuilders {
         (HashMap<String, SCAIEVInstr>)args.get("allISAXes"), (Boolean)args.get("SETTINGenforceOrdering_Memory_Semicoupled"),
         (Boolean)args.get("SETTINGenforceOrdering_Memory_Decoupled"), (Boolean)args.get("SETTINGenforceOrdering_User_Semicoupled"),
         (Boolean)args.get("SETTINGenforceOrdering_User_Decoupled"), (SCAIEVConfig)args.get("cfg"));
+  }
+
+  private final MultiNodeStrategy default_buildDefaultHandshakeRespStrategy(Map<String, Object> args) {
+    return new DefaultHandshakeRespStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"));
   }
   private final MultiNodeStrategy default_buildDefaultRdwrInStageStrategy(Map<String, Object> args) {
     return new DefaultRdwrInStageStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"));

@@ -23,6 +23,7 @@ import org.yaml.snakeyaml.TypeDescription;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.Constructor;
 import scaiev.backend.BNode;
+import scaiev.coreconstr.Core.CoreTag;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.NodeTypeTag;
 import scaiev.pipeline.PipelineStage;
@@ -214,6 +215,7 @@ public class CoreDatab {
       public int getCostly() { return costly; }
       public void setCostly(int costly) { this.costly = costly; }
     }
+    List<String> tags = new ArrayList<>();
     PipelineStageDesc pipeline = new PipelineStageDesc();
     List<OperationDesc> operations = new ArrayList<>();
     public SerialCoreDescription() {
@@ -222,10 +224,26 @@ public class CoreDatab {
     }
     public PipelineStageDesc getPipeline() { return pipeline; }
     public void setPipeline(PipelineStageDesc pipeline) { this.pipeline = pipeline; }
-    /** Converts the serializable pipeline description to a root PipelineStage */
-    public Optional<PipelineStage> asPipeline() { return pipeline.asPipeline_thisAndChildren(true); }
     public List<OperationDesc> getOperations() { return operations; }
     public void setOperations(List<OperationDesc> operations) { this.operations = operations; }
+    public List<String> getTags() { return tags; }
+    public void setTags(List<String> tags) { this.tags = tags; }
+
+    /** Converts the serializable pipeline description to a root PipelineStage (Optional.empty() on error) */
+    public Optional<PipelineStage> asPipeline() { return pipeline.asPipeline_thisAndChildren(true); }
+    /** Converts the serial list of core tags to an EnumSet (Optional.empty() on error) */
+    public Optional<EnumSet<CoreTag>> convertTags() {
+      EnumSet<CoreTag> tagsVal = EnumSet.noneOf(CoreTag.class);
+      for (String tagName : tags) {
+        var tagVal_opt = Stream.of(CoreTag.values()).filter(tagVal -> tagVal.serialName.equals(tagName)).findAny();
+        if (tagVal_opt.isEmpty()) {
+          logger.error("CoreDatab. Enountered invalid core tag '{}'.", tagName);
+          return Optional.empty();
+        }
+        tagsVal.add(tagVal_opt.get());
+      }
+      return Optional.of(tagsVal);
+    }
   }
 
   /** Translate legacy operation names to match BNode. */
@@ -343,13 +361,16 @@ public class CoreDatab {
               nodes_of1_core.get(fnode).OverrideLatest(new ScheduleFront(maxStage));
             }
           }
-          // System.out.println("INFO: Core, with max nr stages/states: "+maxStage+" and
-          // SCAIE-V operations: "+nodes_of1_core);
 
           // Convert the parsed pipeline description into a PipelineStage graph.
           Optional<PipelineStage> rootStage_opt = coreDescr.asPipeline();
           if (rootStage_opt.isEmpty()) {
             logger.error("CoreDatab. Unable to convert core pipeline from yaml file {}", coreFile.getName());
+            continue;
+          }
+          Optional<EnumSet<CoreTag>> coreTags_opt = coreDescr.convertTags();
+          if (rootStage_opt.isEmpty()) {
+            logger.error("CoreDatab. Unable to convert core tags from yaml file {}", coreFile.getName());
             continue;
           }
           PipelineStage rootStage = rootStage_opt.get();
@@ -361,7 +382,7 @@ public class CoreDatab {
             int lastRdFlushStage = Optional.ofNullable(nodes_of1_core.get(BNode.RdFlush)).map(node -> node.GetLatest().asInt()).orElse(-1);
             if (lastRdFlushStage == -1)
               lastRdFlushStage = maxStage;
-            rootStage.getChildrenByStagePos(lastRdFlushStage).forEach(commitStage -> commitStage.addTag(StageTag.Commit));
+            rootStage.getChildrenByStagePos(lastRdFlushStage, maxStage).forEach(commitStage -> commitStage.addTag(StageTag.Commit));
 
             // Add the special decoupled stage to the end of the pipeline.
             PipelineStage decoupledStage =
@@ -380,7 +401,7 @@ public class CoreDatab {
           }
           assert (rootStage.getChildren().size() == 1);
 
-          Core newCore = new Core(coreName, rootStage);
+          Core newCore = new Core(coreName, rootStage, coreTags_opt.get());
           newCore.PutNodes(nodes_of1_core);
           newCore.maxStage = maxStage;
           cores.put(coreName, newCore);

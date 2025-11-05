@@ -14,7 +14,7 @@ import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.strategy.SingleNodeStrategy;
 
-/** Implements certain standard modules (SimpleFIFO, SimpleShift, SimpleCounter) via {@link NodeInstanceDesc.Purpose#HDL_MODULE}. */
+/** Implements certain standard modules (ScaievFIFO, ScaievShift, ScaievCounter) via {@link NodeInstanceDesc.Purpose#HDL_MODULE}. */
 public class DecoupledStandardModulesStrategy extends SingleNodeStrategy {
   // logging
   protected static final Logger logger = LogManager.getLogger();
@@ -22,9 +22,9 @@ public class DecoupledStandardModulesStrategy extends SingleNodeStrategy {
   public DecoupledStandardModulesStrategy() {}
 
   // Module names
-  private static final String FIFOmoduleName = "SimpleFIFO";
-  private static final String ShiftmoduleName = "SimpleShift";
-  private static final String CountermoduleName = "SimpleCounter";
+  private static final String FIFOmoduleName = "ScaievFIFO";
+  private static final String ShiftmoduleName = "ScaievShift";
+  private static final String CountermoduleName = "ScaievCounter";
 
   public enum FIFOFeature {
     /** Placeholder to allow for inline conditions in calls of {@link DecoupledStandardModulesStrategy#makeFIFONode(FIFOFeature...)}. */
@@ -110,12 +110,15 @@ public class DecoupledStandardModulesStrategy extends SingleNodeStrategy {
         + "    input                 clk_i,\n"
         + "    input                 rst_i,\n"
         + "    input                 clear_i,\n"
-        + "    input                 write_valid_i,\n" + (hasWriteFront ? "    input                 write_front_i,\n" : "") +
-        "    input                 read_valid_i,\n"
+        + "    input                 write_valid_i,\n"
+        + (hasWriteFront ? "    input                 write_front_i,\n" : "")
+        + "    input                 read_valid_i,\n"
         + "    input  [DATAW-1:0]    data_i,\n"
         + "    output                not_empty,\n"
-        + "    output                not_full,\n" + (hasLevel ? "    output [$clog2(NR_ELEMENTS)-1:0] level_trim,\n" : "") +
-        (hasReadahead ? "    input                 readahead_i,\n" : "") + "    output [DATAW-1:0]    data_o\n"
+        + "    output                not_full,\n"
+        + (hasLevel ? "    output [$clog2(NR_ELEMENTS)-1:0] level_trim,\n" : "")
+        + (hasReadahead ? "    input                 readahead_i,\n" : "")
+        + "    output [DATAW-1:0]    data_o\n"
         + "\n"
         + ");\n"
         + "\n"
@@ -180,11 +183,11 @@ public class DecoupledStandardModulesStrategy extends SingleNodeStrategy {
         + "`ifndef SYNTHESIS\n"
         + "always @(posedge clk_i) if (!rst_i) begin\n"
         + "    if (is_empty && read_valid_i) begin\n"
-        + "        $display(\"ERROR: SimpleFIFO underflow (%m)\");\n"
+        + "        $display(\"ERROR: ScaievFIFO underflow (%m)\");\n"
         + "        $stop;\n"
         + "    end\n"
         + "    if (!not_full && !read_valid_i && write_valid_i) begin\n"
-        + "        $display(\"ERROR: SimpleFIFO overflow (%m)\");\n"
+        + "        $display(\"ERROR: ScaievFIFO overflow (%m)\");\n"
         + "        $stop;\n"
         + "    end\n"
         + "end\n"
@@ -325,14 +328,14 @@ public class DecoupledStandardModulesStrategy extends SingleNodeStrategy {
       EnumSet<FIFOFeature> features = getFeaturesFromFIFONode(nodeKey.getNode());
       String fifoModuleName = nodeKey.getNode().name;
       assert (fifoModuleName.equals(makeFIFONode(features.toArray(new FIFOFeature[features.size()])).name));
-      return Optional.of(NodeLogicBuilder.fromFunction("StandardModulesStrategy_SimpleFIFO", registry -> {
+      return Optional.of(NodeLogicBuilder.fromFunction("StandardModulesStrategy_" + nodeKey.getNode().name, registry -> {
         NodeLogicBlock ret = new NodeLogicBlock();
         ret.otherModules = FIFOModule(fifoModuleName, features);
         ret.outputs.add(new NodeInstanceDesc(nodeKey, fifoModuleName, ExpressionType.AnyExpression));
         return ret;
       }));
-    } else if (nodeKey.getNode().name.equals("SimpleShift") ||
-               (nodeKey.getNode().name.equals("SimpleShift_LateFlush") && (withLateFlush = true))) {
+    } else if (nodeKey.getNode().name.equals(ShiftmoduleName) ||
+               (nodeKey.getNode().name.equals(ShiftmoduleName+"_LateFlush") && (withLateFlush = true))) {
       final boolean withLateFlush_ = withLateFlush;
       return Optional.of(NodeLogicBuilder.fromFunction("StandardModulesStrategy_" + nodeKey.getNode().name, registry -> {
         NodeLogicBlock ret = new NodeLogicBlock();
@@ -340,8 +343,8 @@ public class DecoupledStandardModulesStrategy extends SingleNodeStrategy {
         ret.outputs.add(new NodeInstanceDesc(nodeKey, ShiftmoduleName, ExpressionType.AnyExpression));
         return ret;
       }));
-    } else if (nodeKey.getNode().name.equals("SimpleCounter")) {
-      return Optional.of(NodeLogicBuilder.fromFunction("StandardModulesStrategy_SimpleCounter", registry -> {
+    } else if (nodeKey.getNode().name.equals(CountermoduleName)) {
+      return Optional.of(NodeLogicBuilder.fromFunction("StandardModulesStrategy_" + nodeKey.getNode().name, registry -> {
         NodeLogicBlock ret = new NodeLogicBlock();
         ret.otherModules = CounterModule();
         ret.outputs.add(new NodeInstanceDesc(nodeKey, FIFOmoduleName, ExpressionType.AnyExpression));

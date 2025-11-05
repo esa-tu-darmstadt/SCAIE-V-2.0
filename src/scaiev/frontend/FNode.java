@@ -15,6 +15,15 @@ public class FNode {
   // logging
   protected static final Logger logger = LogManager.getLogger();
 
+  /** obsolete */
+  public SCAIEVNode ISAX_isReady = new SCAIEVNode("IsReady", 1, true) {
+    { oneInterfToISAX = false; }
+  };
+  /** obsolete */
+  public SCAIEVNode BranchTaken = new SCAIEVNode("BranchTaken", 1, true);
+  /** obsolete */
+  public SCAIEVNode WrJump = new SCAIEVNode("WrJump", datawidth, true);
+
   public SCAIEVNode WrRD = new SCAIEVNode("WrRD", datawidth, true) {
     {
       DH = true;
@@ -42,6 +51,7 @@ public class FNode {
   public SCAIEVNode RdPC = new SCAIEVNode("RdPC", datawidth, false) {
     { tags.add(NodeTypeTag.staticReadResult); }
   };
+  /** obsolete */
   public SCAIEVNode RdImm = new SCAIEVNode("RdImm", datawidth, true) {
     { tags.add(NodeTypeTag.staticReadResult); }
   };
@@ -96,12 +106,6 @@ public class FNode {
       tags.add(NodeTypeTag.perStageStatus);
     }
   };
-  public SCAIEVNode RdCSR = new SCAIEVNode("RdCSR", datawidth, false) {
-    { tags.add(NodeTypeTag.nonStaticReadResult); }
-  };
-  public SCAIEVNode WrCSR = new SCAIEVNode("WrCSR", datawidth, true) {
-    { validBy = AdjacentNode.validReq; }
-  };
   /**
    * Optional interface for spawn ISAXes, should be set to 1. ISAXes should always create the spawn variant of this operation and set
    * validReq accordingly.
@@ -112,6 +116,22 @@ public class FNode {
   public static String rdPrefix = "Rd";
   public static String wrPrefix = "Wr";
 
+  /** Updates the bit width of registers, addresses, and memory words. Expects bitness 32 or 64. */
+  public void updateBitness(int bitness) {
+    if (bitness != 32 && bitness != 64)
+      throw new IllegalArgumentException("bitness unexpected (expected 32 or 64, got %d)".formatted(bitness));
+    RdImm.size = bitness;
+    RdMem.size = bitness;
+    RdPC.size = bitness;
+    RdRS1.size = bitness;
+    RdRS2.size = bitness;
+    RdRD.size = bitness;
+    WrJump.size = bitness;
+    WrMem.size = bitness;
+    WrPC.size = bitness;
+    WrRD.size = bitness;
+  }
+
   private HashSet<SCAIEVNode> allFrontendNodes = null;
   protected void refreshAllNodesSet() { allFrontendNodes = null; }
   public HashSet<SCAIEVNode> GetAllFrontendNodes() {
@@ -119,6 +139,10 @@ public class FNode {
     if (allFrontendNodes != null)
       return allFrontendNodes;
     allFrontendNodes = new HashSet<SCAIEVNode>();
+
+    allFrontendNodes.add(ISAX_isReady);
+    allFrontendNodes.add(BranchTaken);
+    allFrontendNodes.add(WrJump);
 
     allFrontendNodes.add(WrRD);
     allFrontendNodes.add(WrMem);
@@ -137,8 +161,6 @@ public class FNode {
     allFrontendNodes.add(WrStall);
     allFrontendNodes.add(RdFlush);
     allFrontendNodes.add(WrFlush);
-    allFrontendNodes.add(RdCSR);
-    allFrontendNodes.add(WrCSR);
     allFrontendNodes.add(WrCommit);
     if (!this.user_FNode.isEmpty())
       allFrontendNodes.addAll(this.user_FNode);

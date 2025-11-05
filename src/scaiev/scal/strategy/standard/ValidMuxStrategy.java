@@ -15,7 +15,9 @@ import scaiev.frontend.SCAIEVInstr;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
 import scaiev.frontend.SCAIEVNode.NodeTypeTag;
+import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
+import scaiev.pipeline.PipelineStage.StageKind;
 import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeInstanceDesc.ExpressionType;
 import scaiev.scal.NodeInstanceDesc.Key;
@@ -23,11 +25,13 @@ import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
+import scaiev.scal.NodeRegistry;
 import scaiev.scal.NodeRegistryRO;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.strategy.SingleNodeStrategy;
 import scaiev.util.Verilog;
 
-/** Strategy that MUXes a node based on the active ISAXes. */
+/** Strategy that MUXes a node from ISAXes. Also handles  */
 public class ValidMuxStrategy extends SingleNodeStrategy {
 
   // logging
@@ -55,24 +59,37 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
     this.allISAXes = allISAXes;
   }
   private HashMap<NodeInstanceDesc.Key, RequestedForSet> spawnValidRespRequestedFor_byKey = new HashMap<>();
-  NodeLogicBlock CreateValidEncodingIValid(NodeRegistryRO registry, NodeInstanceDesc.Key nodeKey, HashSet<String> lookAtISAX,
-                                           SCAIEVNode operation, SCAIEVNode checkAdj, String defaultValue, NodeLogicBlock ret,
+  /**
+   * Builds the output selection for the provided ISAXes, and searches for other sources (nodes by aux, semi-coupled spawn).
+   * Determines the valid and value expressions for each input.
+   * @param registry registry for node lookups
+   * @param nodeKey the requested key
+   * @param lookAtISAX the ISAXes to multiplex from
+   * @param baseNode the base node (usually the node itself or, if it's an aux node, its parent in bNodes)
+   * @param ret the NodeLogicBlock to add the mux logic/declarations/outputs to
+   * @param requestedFor the RequestedForSet to use in the MUX output node
+   */
+  void CreateValidEncodingIValid(NodeRegistryRO registry, NodeInstanceDesc.Key nodeKey, HashSet<String> lookAtISAX,
+                                           SCAIEVNode baseNode, NodeLogicBlock ret,
                                            RequestedForSet requestedFor) {
     PipelineStage stage = nodeKey.getStage();
     String tab = language.tab;
 
-    SCAIEVNode assignNode = operation;
-    if (!checkAdj.getAdj().equals(AdjacentNode.none))
-      assignNode = checkAdj;
+    SCAIEVNode assignNode = nodeKey.getNode();
+    SCAIEVNode checkAdj = nodeKey.getNode();
     String assignNodeName = language.CreateLocalNodeName(assignNode.NodeNegInput(), stage, "");
-    SCAIEVNode correctcheckAdj;
+
+    //The node to look in the ISAX schedule for, to check if the ISAX itself provides the value
+    // (either as adjacent to baseNode or standalone)
+    SCAIEVNode relevantNodeInISAXSchedule;
     if (checkAdj.getAdj().validMarkerFor != null &&
         checkAdj.getAdj().validMarkerFor !=
             AdjacentNode.none) // for exp in case of wrmem_addr_valid, we need to check if ISAX contains addr Adj
-      correctcheckAdj = bNodes.GetAdjSCAIEVNode(bNodes.GetNonAdjNode(checkAdj), checkAdj.getAdj().validMarkerFor).orElseThrow();
+      relevantNodeInISAXSchedule = bNodes.GetAdjSCAIEVNode(bNodes.GetNonAdjNode(checkAdj), checkAdj.getAdj().validMarkerFor).orElseThrow();
     else
-      correctcheckAdj = checkAdj;
+      relevantNodeInISAXSchedule = checkAdj;
 
+    /** Container for all sources to multiplex from (from ISAX, from internal logic by aux, from semi-coupled spawn)*/ 
     class PriorityEntry {
       String isax = "";
       int aux = 0;
@@ -97,19 +114,30 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
                                                 .stream()
                                                 .map(orderEntry -> new PriorityEntry().forISAX(orderEntry.getValue()))
                                                 .collect(Collectors.toCollection(ArrayList::new));
-    // Check for semi-coupled spawn
-    Optional<SCAIEVNode> spawnNode_opt =
-        operation.tags.contains(NodeTypeTag.isPortNode) ? Optional.empty() : bNodes.GetMySpawnNode(operation);
-    if (spawnNode_opt.isPresent() && op_stage_instr.containsKey(spawnNode_opt.get()) &&
-        op_stage_instr.get(spawnNode_opt.get()).containsKey(stage)) {
+    boolean needsDefault = false;
+    // Check for spawn
+    Optional<SCAIEVNode> spawnNode_opt = bNodes.GetEquivalentSpawnNode(baseNode);
+    if (spawnNode_opt.isPresent()) {
+      boolean spawnNodeIsUsed = op_stage_instr.containsKey(spawnNode_opt.get()) &&
+          op_stage_instr.get(spawnNode_opt.get()).containsKey(stage);
+      //Select the appropriate adjacent node
       spawnNode_opt = spawnNode_opt.flatMap(
           spawnNode -> checkAdj.isAdj() ? bNodes.GetAdjSCAIEVNode(spawnNode, checkAdj.getAdj()) : Optional.of(spawnNode));
-      if (spawnNode_opt.isPresent()) {
+      if (spawnNode_opt.isPresent() && spawnNodeIsUsed) { //semi-coupled spawn
         // Semi-coupled spawn needs to be checked first for correct instruction ordering,
         //  since tightly-coupled (e.g. single-cycle) instructions in <stage> (currently) prevent new spawn instructions from entering
         //  <stage> until they leave <stage>.
-        // lookAtISAXOrdered.put(lookAtISAXOrdered.isEmpty() ? 0 : (lookAtISAXOrdered.lastKey() + 1), "--spawn--");
         lookAtISAXOrdered.add(new PriorityEntry().forSpawn());
+      }
+      //Special case: semi-coupled spawn is scheduled before WrRD (maybe Mem) is allowed.
+      // -> Need to pipeline from prior-stage ValidMuxStrategy.
+      if (spawnNode_opt.isPresent() && spawnNode_opt.get().isInput &&
+          stage.getKind() == StageKind.Core && core.GetNodes().containsKey(baseNode) &&
+          core.TranslateStageScheduleNumber(core.GetNodes().get(baseNode).GetEarliest()).contains(stage) &&
+          op_stage_instr.getOrDefault(spawnNode_opt.get(), new HashMap<>()).keySet().stream()
+            .anyMatch(spawnStage -> new PipelineFront(stage).isAfter(spawnStage, false) &&
+                                    !core.StageIsInRange(core.GetNodes().get(baseNode), spawnStage))) {
+        needsDefault = true; //Pipe from previous stage
       }
     }
     for (NodeInstanceDesc lookedUp : registry.lookupAll(nodeKey, false)) {
@@ -118,11 +146,10 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
       }
     }
     if (lookAtISAXOrdered.isEmpty())
-      return new NodeLogicBlock();
+      return;
 
     boolean isValidAdj = (checkAdj.getAdj() == AdjacentNode.validReq || checkAdj.getAdj() == AdjacentNode.addrReq);
     boolean defaultGeneratedBySCAL = (checkAdj.getAdj() == AdjacentNode.cancelReq);
-    boolean needsDefault = false;
 
     class ConditionalAssignEntry {
       public ConditionalAssignEntry(boolean isExclusive, String cond, String expr) {
@@ -136,20 +163,19 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
     };
     List<ConditionalAssignEntry> conditionalAssigns = new ArrayList<>();
 
-    //		for (Integer priority  :  lookAtISAXOrdered.descendingKeySet()) {
-    //			String ISAX = lookAtISAXOrdered.get(priority);
     for (int priority = lookAtISAXOrdered.size() - 1; priority >= 0; --priority) {
       PriorityEntry orderEntry = lookAtISAXOrdered.get(priority);
-      // boolean isSpawn = ISAX.equals("--spawn--");
       if (!orderEntry.isax.isEmpty())
         requestedFor.addRelevantISAX(orderEntry.isax);
       String RdIValid;
 
       if (orderEntry.spawn) {
+        //Separate handling for spawn
         SCAIEVNode spawnOperation = spawnNode_opt.get();
         SCAIEVNode baseOperation = (spawnOperation.isAdj() ? bNodes.GetSCAIEVNode(spawnOperation.nameParentNode) : spawnOperation);
         SCAIEVNode userValid =
             (spawnOperation.validBy == AdjacentNode.none) ? null : bNodes.GetAdjSCAIEVNode(baseOperation, spawnOperation.validBy).get();
+        // Get expression to check if the mux source is currently valid.
         if (isValidAdj || checkAdj.getAdj() == AdjacentNode.cancelReq)
           userValid = spawnOperation;
         if (userValid != null) {
@@ -159,7 +185,7 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
         } else {
           var spawnKey = new NodeInstanceDesc.Key(spawnOperation, stage, "");
           logger.error("ValidMuxStrategy: Cannot build a mux condition for " + spawnKey.toString(false) + " (semi-coupled spawn)");
-          RdIValid = "MISSING_" + spawnOperation.name + "_valid_" + stage.getName();
+          RdIValid = NodeRegistry.MISSING_PREFIX + spawnOperation.name + "_valid_" + stage.getName();
         }
         String assignSignal;
         if (isValidAdj || checkAdj.getAdj() == AdjacentNode.addrReq)
@@ -170,26 +196,22 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
           assignSignal = assignNodeInst.getExpression();
         }
         conditionalAssigns.add(new ConditionalAssignEntry(true, RdIValid, assignSignal));
-        // body += tab.repeat(2) +RdIValid+" : "+assignNodeName +" = " + assignSignal+ ";\n";
-        // assignLogic = "always_comb "+assignNodeName +" = " + assignSignal+ ";\n";
+
         if (checkAdj.getAdj() == AdjacentNode.validReq &&
             bNodes.GetAdjSCAIEVNode(spawnNode_opt.get(), AdjacentNode.validResp).isPresent()) {
           // If ValidMuxStrategy translates validReq from spawn into non-spawn, also translate validResp back into spawn.
           SCAIEVNode spawnRespNode = bNodes.GetAdjSCAIEVNode(spawnNode_opt.get(), AdjacentNode.validResp).orElseThrow();
-          var nonspawnRespNode_opt = bNodes.GetAdjSCAIEVNode(operation, AdjacentNode.validResp);
+          var nonspawnRespNode_opt = bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.validResp);
           String validReqFromSpawnExpr = RdIValid + " && " + assignSignal;
           String respExpr = "";
           if (nonspawnRespNode_opt.isPresent()) {
             // Use validResp if possible.
             NodeInstanceDesc respDesc = registry.lookupRequired(new NodeInstanceDesc.Key(nonspawnRespNode_opt.get(), stage, ""));
-            if (!respDesc.getExpression().startsWith("MISSING_"))
+            if (!respDesc.getExpression().startsWith(NodeRegistry.MISSING_PREFIX))
               respExpr = validReqFromSpawnExpr + " && " + respDesc.getExpression();
           }
           if (respExpr.isEmpty()) {
-            String stallCond = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, stage, ""));
-            var wrStallInst_opt = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrStall, stage, ""));
-            if (wrStallInst_opt.isPresent())
-              stallCond += " || " + wrStallInst_opt.get().getExpression();
+            String stallCond = SCALUtil.buildCond_StageStalling(bNodes, registry, stage, false);
             respExpr = validReqFromSpawnExpr + " && !(" + stallCond + ")";
           }
           var spawnValidRespKey = new NodeInstanceDesc.Key(spawnRespNode, stage, "");
@@ -207,16 +229,18 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
       // Create RdIValid = user valid for instr without encoding, else decode instr and create IValid
       if (orderEntry.aux != 0 || !orderEntry.isax.isEmpty() && allISAXes.get(orderEntry.isax).HasNoOp() ||
           core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdInstr).GetEarliest()).isAfter(stage, false)) {
-        assert (!operation.isAdj());
-        SCAIEVNode baseOperation = operation; //(operation.isAdj() ? bNodes.GetSCAIEVNode(operation.nameParentNode) : operation);
+        assert (!baseNode.isAdj());
+        SCAIEVNode baseOperation = baseNode;
+
         SCAIEVNode userValid =
-            (operation.validBy == AdjacentNode.none) ? null : bNodes.GetAdjSCAIEVNode(baseOperation, operation.validBy).get();
+            (baseNode.validBy == AdjacentNode.none) ? null : bNodes.GetAdjSCAIEVNode(baseOperation, baseNode.validBy).get();
         if (checkAdj.getAdj() == AdjacentNode.cancelReq)
           userValid = checkAdj;
-        if (operation.getAdj() == AdjacentNode.validReq)
+
+        if (baseNode.getAdj() == AdjacentNode.validReq)
           RdIValid = registry.lookupExpressionRequired(
-              new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, operation, stage, orderEntry.isax, orderEntry.aux));
-        else if (!operation.isInput && !operation.DH) // if output (read node) and has no DH ==> no valid bit required, constant read
+              new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, baseNode, stage, orderEntry.isax, orderEntry.aux));
+        else if (!baseNode.isInput && !baseNode.DH) // if output (read node) and has no DH ==> no valid bit required, constant read
           RdIValid = "1'b0";
         else if (userValid != null)
           RdIValid = registry.lookupExpressionRequired(
@@ -224,7 +248,7 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
         else {
           logger.error("ValidMuxStrategy: Cannot build a mux condition for {} (ISAX {} aux {})", nodeKey.toString(false), orderEntry.isax,
                        orderEntry.aux);
-          RdIValid = "MISSING_" + nodeKey.getNode().name + "_valid_" + stage.getName() + "_" + orderEntry.isax + "_" + orderEntry.aux;
+          RdIValid = NodeRegistry.MISSING_PREFIX + nodeKey.getNode().name + "_valid_" + stage.getName() + "_" + orderEntry.isax + "_" + orderEntry.aux;
         }
       } else {
         RdIValid = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdIValid, stage, orderEntry.isax));
@@ -232,8 +256,8 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
 
       boolean assignProvidedByISAX =
           orderEntry.aux == 0 && !orderEntry.isax.isEmpty() &&
-          (allISAXes.get(orderEntry.isax).HasSchedWith(operation, snode -> snode.HasAdjSig(correctcheckAdj.getAdj())) ||
-           allISAXes.get(orderEntry.isax).HasSchedWith(correctcheckAdj, snode -> true)) &&
+          (allISAXes.get(orderEntry.isax).HasSchedWith(baseNode, snode -> snode.HasAdjSig(relevantNodeInISAXSchedule.getAdj())) ||
+           allISAXes.get(orderEntry.isax).HasSchedWith(relevantNodeInISAXSchedule, snode -> true)) &&
           !assignNode.noInterfToISAX;
 
       // Create body
@@ -260,11 +284,11 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
         needsDefault = true;
       }
     }
-    if (isValidAdj || operation.tags.contains(NodeTypeTag.accumulatesUntilCommit)) {
+    if (isValidAdj || baseNode.tags.contains(NodeTypeTag.accumulatesUntilCommit)) {
       var defaultAssignNodeInst =
           registry.lookupRequired(new NodeInstanceDesc.Key(Purpose.match_WIREDIN_OR_PIPEDIN, assignNode, stage, ""));
       String assignExpr = "0";
-      if (!defaultAssignNodeInst.getExpression().startsWith("MISSING_")) {
+      if (!defaultAssignNodeInst.getExpression().startsWith(NodeRegistry.MISSING_PREFIX)) {
         requestedFor.addAll(defaultAssignNodeInst.getRequestedFor(), true); // Add the input's requestedFor set.
         assignExpr = defaultAssignNodeInst.getExpression();
       }
@@ -317,49 +341,47 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
     }
     body += "end\n";
     if (conditionalAssigns.isEmpty()) {
-      // if((nrElem==0) && !isValidAdj && !needsDefault) {
-      // logger.error("Encountered unsupported node " + checkAdj.name + " in ValidMuxStrategy");
       logger.warn("ValidMuxStrategy: Found no supported elements for " + nodeKey.toString(false));
-      return new NodeLogicBlock();
+      return;
     }
 
     ret.declarations += (language.CreateDeclSig(assignNode.NodeNegInput(), stage, "", true, assignNodeName));
     ret.outputs.add(new NodeInstanceDesc(new Key(assignNode, stage, ""), assignNodeName, ExpressionType.WireName, requestedFor));
     ret.logic += body;
-    //		if(nrElem==1 && !isValidAdj)
-    //			ret.logic += assignLogic;
-    //		else if((nrElem==0) && checkAdj.getAdj() ==AdjacentNode.addrReq)
-    //			ret.logic += empty_assignLogic;
-    //		else
-    //			ret.logic += body;
-    return ret;
   }
   HashSet<NodeInstanceDesc.Key> implementedKeys = new HashSet<>();
   @Override
   public Optional<NodeLogicBuilder> implement(Key nodeKey) {
     // if (nodeKey.getNode().tags.contains(NodeTypeTag.supportsPortNodes))
     //	return Optional.empty();
-    SCAIEVNode baseNode = nodeKey.getNode().isAdj() ? bNodes.GetSCAIEVNode(nodeKey.getNode().nameParentNode) : nodeKey.getNode();
-    if (!bNodes.HasSCAIEVFNode(baseNode.name))
+    SCAIEVNode baseNode = bNodes.GetNonAdjNode(nodeKey.getNode());
+    //Only operate on nodes listed as FNode (i.e., base nodes that can be used on the ISAX interface).
+    if (baseNode.name.isEmpty() || !bNodes.HasSCAIEVFNode(baseNode.name))
       return Optional.empty();
-    // Special case: For custom registers, the (Rd|Wr)<reg>_addr node is registered explicitly in a separate stage.
-    SCAIEVNode lookupNode_ = baseNode;
-    if (bNodes.IsUserBNode(nodeKey.getNode())) {
-      if (nodeKey.getNode().getAdj() == AdjacentNode.addr)
-        lookupNode_ = nodeKey.getNode();
-      else if (nodeKey.getNode().getAdj().validMarkerFor == AdjacentNode.addr)
-        lookupNode_ = bNodes.GetAdjSCAIEVNode(bNodes.GetNonAdjNode(nodeKey.getNode()), AdjacentNode.addr).orElseThrow();
-    }
-    SCAIEVNode lookupNode = lookupNode_;
-    if (nodeKey.getPurpose().matches(NodeInstanceDesc.Purpose.REGULAR) &&
-        nodeKey.getNode().isInput                                       // Is an input node to the core (-> an output from SCAL to the core)
-        && !nodeKey.getNode().isSpawn()                                 // Not handling decoupled/spawn
+ 
+    if (nodeKey.getPurpose().matches(NodeInstanceDesc.Purpose.REGULAR)
+        && nodeKey.getNode().isInput                                    // Is an input node to the core (-> an output from SCAL to the core)
+        && !nodeKey.getNode().isSpawn()                                 // Not MUXing to decoupled/spawn nodes
         && !nodeKey.getNode().tags.contains(NodeTypeTag.perStageStatus) // WrFlush, WrStall, etc. are handled by WrStallFlushStrategy
         //&& this.op_stage_instr.getOrDefault(lookupNode, new HashMap<>()).containsKey(nodeKey.getStage()) //Some ISAX uses the base node
         && nodeKey.getISAX().isEmpty() // This strategy MUXes between all ISAXes, outputting a node with an empty ISAX field
     ) {
       if (!implementedKeys.add(NodeInstanceDesc.Key.keyWithPurpose(nodeKey, Purpose.REGULAR)))
         return Optional.empty(); // If this strategy already created a builder without any outputs, ignore it.
+
+      // Lookup relevant ISAXes in op_stage_instr using the base node.
+      SCAIEVNode lookupNode_ = baseNode;
+      // Special case: For custom registers, the (Rd|Wr)<reg>_addr node is registered explicitly in a separate stage.
+      // -> For addr and addr_valid nodes for a custom register, lookup relevant ISAXes from the addr node.
+      if (bNodes.IsUserBNode(nodeKey.getNode())) {
+        if (nodeKey.getNode().getAdj() == AdjacentNode.addr)
+          lookupNode_ = nodeKey.getNode();
+        else if (nodeKey.getNode().getAdj().validMarkerFor == AdjacentNode.addr)
+          lookupNode_ = bNodes.GetAdjSCAIEVNode(bNodes.GetNonAdjNode(nodeKey.getNode()), AdjacentNode.addr).orElseThrow();
+      }
+
+      SCAIEVNode lookupNode = lookupNode_;
+
       var requestedFor = new RequestedForSet();
       return Optional.of(
           NodeLogicBuilder.fromFunction("ValidMuxStrategy (" + nodeKey.toString() + ")", (NodeRegistryRO registry, Integer aux) -> {
@@ -368,8 +390,7 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
 
             NodeLogicBlock updateBlock = new NodeLogicBlock();
 
-            CreateValidEncodingIValid(registry, nodeKey, relevantISAXes, baseNode, nodeKey.getNode(), nodeKey.getNode().isAdj() ? "1" : "0",
-                                      updateBlock, requestedFor);
+            CreateValidEncodingIValid(registry, nodeKey, relevantISAXes, baseNode, updateBlock, requestedFor);
 
             // for WrPC, we need to create an associated flush signal to the processor
             // as writing the PC redirects program flow
@@ -389,7 +410,6 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
                     new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.REGULAR, bNodes.WrFlush, prevStage, "", 0));
               }
             }
-
             return updateBlock;
           }));
     }

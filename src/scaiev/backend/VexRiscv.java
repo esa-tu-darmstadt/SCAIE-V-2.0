@@ -72,6 +72,8 @@ public class VexRiscv extends CoreBackend {
     BNode.WrCommit_spawn.tags.add(NodeTypeTag.noCoreInterface);
     BNode.WrCommit_spawn_validReq.tags.add(NodeTypeTag.noCoreInterface);
     BNode.WrCommit_spawn_validResp.tags.add(NodeTypeTag.noCoreInterface);
+    BNode.WrInStageID.tags.add(NodeTypeTag.noCoreInterface);
+    BNode.WrInStageID_valid.tags.add(NodeTypeTag.noCoreInterface);
     core.PutNode(BNode.RdInStageValid,
                  new CoreNode(1, 0, this.stages.length - 1, this.stages.length, BNode.RdInStageValid.name));
     this.strategyBuilders = scalAPI.getStrategyBuilders();
@@ -96,7 +98,8 @@ public class VexRiscv extends CoreBackend {
                                        (Boolean)args.get("zeroOnFlushSrc"), (Boolean)args.get("zeroOnFlushDest"),
                                        (Boolean)args.get("zeroOnBubble"), (Predicate<NodeInstanceDesc.Key>)args.get("can_pipe"),
                                        (Predicate<NodeInstanceDesc.Key>)args.get("prefer_direct"),
-                                       (MultiNodeStrategy)args.get("strategy_instantiateNew")) {
+                                       (MultiNodeStrategy)args.get("strategy_instantiateNew"),
+                                       (Boolean)args.get("forwardRequestedFor")) {
       @Override
       protected NodeLogicBuilder makePipelineBuilder_single(NodeInstanceDesc.Key nodeKey, ImplementedKeyInfo implementation) {
         PipelineStage stage = nodeKey.getStage();
@@ -274,7 +277,7 @@ public class VexRiscv extends CoreBackend {
 
     // Read Reg file?
     String add_comma = "";
-    if (isax.HasNode(BNode.WrRD))
+    if (reqWrRD)
       add_comma = tab.repeat(tabs) + ",";
     if (isax.HasNode(BNode.RdRS1) || defaultMemAddr)
       setupText += tab.repeat(tabs) + "RS1_USE                  -> True,\n";

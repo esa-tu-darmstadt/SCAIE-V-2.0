@@ -14,9 +14,11 @@ import java.util.function.Function;
  **/
 public abstract class SwitchableNodeLogicBuilder extends TriggerableNodeLogicBuilder {
 
+  /** True iff the builder has been switched on */
   protected boolean active = false;
 
   /**
+   * @param name the name of the builder
    * @param nodeKey the key to use for triggering; its Purpose value will be replaced with a new one; ISAX and aux will be ignored.
    */
   public SwitchableNodeLogicBuilder(String name, NodeInstanceDesc.Key nodeKey) { super(name, nodeKey); }
@@ -58,12 +60,12 @@ public abstract class SwitchableNodeLogicBuilder extends TriggerableNodeLogicBui
   /**
    * The inner equivalent of {@link NodeLogicBuilder#apply(NodeRegistryRO, int)} for {@link SwitchableNodeLogicBuilder}.
    * Will only be called once the builder has been triggered.
+   * @param registry the registry providing the existing nodes and that collects a list of missing dependencies
+   * @param aux a unique value to tag accumulated nodes with
+   * @return the logic instance created by the builder, usually providing one or several nodes
    */
   protected abstract NodeLogicBlock applySwitched(NodeRegistryRO registry, int aux);
 
-  /**
-   * The inner equivalent of {@link NodeLogicBuilder#apply(NodeRegistryRO, int)} for {@link TriggerableNodeLogicBuilder}.
-   */
   @Override
   protected NodeLogicBlock applyTriggered(NodeRegistryRO registry, int aux) {
     if (active)
@@ -78,7 +80,7 @@ public abstract class SwitchableNodeLogicBuilder extends TriggerableNodeLogicBui
    *     for implementation reasons
    * @param fn with args (NodeRegistryRO registry, int aux), implements {@link SwitchableNodeLogicBuilder#applySwitched(NodeRegistryRO,
    *     int)}
-   * @return
+   * @return a SwitchableNodeLogicBuilder for fn
    */
   public static SwitchableNodeLogicBuilder fromFunction(String name, NodeInstanceDesc.Key triggerNodeKey,
                                                         BiFunction<NodeRegistryRO, Integer, NodeLogicBlock> fn) {
@@ -96,7 +98,7 @@ public abstract class SwitchableNodeLogicBuilder extends TriggerableNodeLogicBui
    *     for implementation reasons
    * @param fn with args (NodeRegistryRO registry), implements {@link SwitchableNodeLogicBuilder#applySwitched(NodeRegistryRO, int)}
    *     ignoring the aux parameter
-   * @return
+   * @return a SwitchableNodeLogicBuilder for fn
    */
   public static SwitchableNodeLogicBuilder fromFunction(String name, NodeInstanceDesc.Key triggerNodeKey,
                                                         Function<NodeRegistryRO, NodeLogicBlock> fn) {

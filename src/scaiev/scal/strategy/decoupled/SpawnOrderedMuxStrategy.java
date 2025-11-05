@@ -393,10 +393,16 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
 
     String FIFOmoduleName = registry.lookupExpressionRequired(
         new NodeInstanceDesc.Key(Purpose.HDL_MODULE, DecoupledStandardModulesStrategy.makeFIFONode(), core.GetRootStage(), ""));
-    ret.logic += FIFOmoduleName + "#(" + fifoDepth + "," + (additionalIDWidth + selectWidth) + ") " + fifoName + " (\n" + tab +
-                 language.clk + ",\n" + tab + language.reset + ",\n" + tab + clearCond + ",\n" + tab + enqcondWireName + ",\n" + tab +
-                 deqcondWireName + ",\n" + tab + enqidWireName + ",\n" + tab + validWireName + ",\n" + tab + notFullWireName + ",\n" + tab +
-                 selectWireName + "\n"
+    ret.logic += FIFOmoduleName + "#(" + fifoDepth + "," + (additionalIDWidth + selectWidth) + ") " + fifoName + " (\n"
+                 + tab + language.clk + ",\n"
+                 + tab + language.reset + ",\n"
+                 + tab + clearCond + ",\n"
+                 + tab + enqcondWireName + ",\n"
+                 + tab + deqcondWireName + ",\n"
+                 + tab + enqidWireName + ",\n"
+                 + tab + validWireName + ",\n"
+                 + tab + notFullWireName + ",\n"
+                 + tab + selectWireName + "\n"
                  + ");\n";
 
     // Backpressure on all sub-pipeline entries of the ISAX - not only those sub-pipelines we are handling - to prevent FIFO overflow.
@@ -726,9 +732,11 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
         keyIter.remove();
       } else if (nodeKey.getPurpose().matches(Purpose.REGULAR) && !nodeKey.getNode().isInput /*(core -> ) SCAL -> ISAX*/) {
         if (nodeKey.getISAX().isEmpty() && nodeKey.getNode().getAdj() == AdjacentNode.validResp &&
+            !nodeKey.getNode().equals(bNodes.WrCommit_spawn_validResp) &&
             requiresCommitToCore(bNodes.GetSCAIEVNode(nodeKey.getNode().nameParentNode), nodeKey.getStage())) {
           // Special case: Set validResp for 'commit-to-core' operations to the commit condition.
           if (isNew) {
+            requestedForByKey.put(requestedForKey, requestedForSet);
             out.accept(
                 NodeLogicBuilder.fromFunction("SpawnOrderedMuxStrategy_buildGeneralValidResp_" + nodeKey.toString(), (registry, aux) -> {
                   var ret = new NodeLogicBlock();

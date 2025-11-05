@@ -6,16 +6,8 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
-import java.util.TreeMap;
-import java.util.TreeSet;
-import java.util.function.BiFunction;
 import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -28,7 +20,6 @@ import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
 import scaiev.frontend.SCAIEVNode.NodeTypeTag;
 import scaiev.frontend.SCAL;
-import scaiev.frontend.Scheduled;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
@@ -39,13 +30,15 @@ import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.NodeRegistryRO;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
+import scaiev.scal.strategy.pipeline.IDRetireSerializerStrategy;
 import scaiev.scal.strategy.pipeline.NodeRegPipelineStrategy;
 import scaiev.scal.strategy.standard.ValidMuxStrategy;
-import scaiev.scal.strategy.state.SCALStateContextStrategy;
+import scaiev.scal.strategy.state.SCALStateStrategy_IDBasedDHCommit.DH_IDMapping;
+import scaiev.scal.strategy.state.SCALStateStrategy_IDBasedDHCommit.IDBasedDHCommitHandler;
 import scaiev.ui.SCAIEVConfig;
-import scaiev.util.Lang;
 import scaiev.util.ListRemoveView;
 import scaiev.util.Log2;
 import scaiev.util.Verilog;
@@ -64,6 +57,7 @@ public class SCALStateStrategy extends MultiNodeStrategy {
   private HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage;
   private HashMap<String, SCAIEVInstr> allISAXes;
   private SCAIEVConfig cfg;
+  private Optional<IDRetireSerializerStrategy> retireSerializer_opt;
 
   /**
    * @param strategyBuilders The StrategyBuilders object to build sub-strategies with
@@ -73,11 +67,14 @@ public class SCALStateStrategy extends MultiNodeStrategy {
    * @param op_stage_instr The Node-Stage-ISAX mapping
    * @param spawn_instr_stage The Node-ISAX-Stage mapping providing the precise sub-pipeline stage for spawn operations
    * @param allISAXes The ISAX descriptions
+   * @param cfg The SCAIE-V global config
+   * @param retireSerializer_opt the serializer for instruction retires (required for cores with an Issue-tagged stage, can be empty for most MCU-class cores)
    */
   public SCALStateStrategy(StrategyBuilders strategyBuilders, Verilog language, BNode bNodes, Core core,
                            HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
                            HashMap<SCAIEVNode, HashMap<String, PipelineStage>> spawn_instr_stage,
-                           HashMap<String, SCAIEVInstr> allISAXes, SCAIEVConfig cfg) {
+                           HashMap<String, SCAIEVInstr> allISAXes, SCAIEVConfig cfg,
+                           Optional<IDRetireSerializerStrategy> retireSerializer_opt) {
     this.strategyBuilders = strategyBuilders;
     this.bNodes = bNodes;
     this.language = language;
@@ -86,12 +83,13 @@ public class SCALStateStrategy extends MultiNodeStrategy {
     this.spawn_instr_stage = spawn_instr_stage;
     this.allISAXes = allISAXes;
     this.cfg = cfg;
+    this.retireSerializer_opt = retireSerializer_opt;
   }
 
   private static final SCAIEVNode RegfileModuleNode = new SCAIEVNode("__RegfileModule");
   private static final SCAIEVNode RegfileModuleSingleregNode = new SCAIEVNode("__RegfileModuleSinglereg");
   private static final Purpose ReglogicImplPurpose = new Purpose("ReglogicImpl", true, Optional.empty(), List.of());
-  
+
   protected SCALStateStrategy_PortMapping portMapper;
   protected SCALStateStrategy_PortMapping makePortMapper() {
     return new SCALStateStrategy_PortMapping(this, strategyBuilders, language, bNodes, core,
@@ -103,8 +101,10 @@ public class SCALStateStrategy extends MultiNodeStrategy {
     return portMapper;
   }
 
-  
-  EarlyRWImplementation makeEarlyRW() {
+
+  EarlyRWImplementation makeEarlyRW(RegfileInfo regfile) {
+    if (regfile.earlyReads.size() > 0 && regfile.depth == 1)
+      return new EarlyRWSimpleForwardingImplementation(this, language, bNodes, core);
     return new EarlyRWImplementation(this, language, bNodes, core);
   }
 
@@ -112,13 +112,70 @@ public class SCALStateStrategy extends MultiNodeStrategy {
     return regName + "_" + signalName + (portIdx > 0 ? "_" + (portIdx + 1) : "");
   }
 
-  enum DHForwardApproach {
-    /** On read/write announcement, stall as long as the register is marked dirty */
-    WaitUntilCommit,
-    /** Combinational search in the write queue */
-    WriteQueueSearch,
-    /** Use a second register file containing pre-commit renames for forwarding purposes */
-    RenamedRegfile
+  protected class RegInternalUtils {
+    RegfileInfo regfile;
+    List<SCAIEVNode> writeNodes;
+    RegInternalUtils(RegfileInfo regfile) {
+      this.regfile = regfile;
+      writeNodes = regfile.writeback_writes.stream().map(key -> key.getNode()).distinct().toList();
+    }
+    public String getWireName_dhInIssueStage(int iRead, PipelineStage issueStage) {
+      return String.format("dhRd%s_%s_%d", regfile.regName, issueStage.getName(), iRead);
+    }
+
+    public String getWireName_WrIssue_addr_valid(int iPort) {
+      return String.format("wrReg_%s_%d_issue_addr_valid", regfile.regName, iPort);
+    }
+    public String getWireName_WrIssue_addr_valid_perstage(int iPort, PipelineStage issueStage) {
+      return String.format("wrReg_%s_%d_issue_addr_valid_%s", regfile.regName, iPort, issueStage.getName());
+    }
+    public String getWireName_WrIssue_addr(int iPort) { return String.format("wrReg_%s_%d_issue_addr", regfile.regName, iPort); }
+  }
+
+  abstract protected static class CommitHandler {
+    /**
+     * Resets the state of the commit handler
+     * ({@link #getResetDirtyConds()}, {@link #getWriteToBackingConds()})
+     * for another builder invocation.
+     */
+    abstract void reset();
+
+    /** Processes a write port. Adds assign logic for 'validRespWireName'. */
+    abstract void processWritePort(int iPort, WritebackExpr writeback, NodeRegistryRO registry, NodeLogicBlock logicBlock);
+    /** All 'reset dirty' conditions from the processWritePort calls since the last reset. */
+    abstract List<ResetDirtyCond> getResetDirtyConds();
+    /** All writeback conditions from the processWritePort calls since the last reset. */
+    abstract List<WriteToBackingCond> getWriteToBackingConds();
+
+    /** Performs an additional build step after all processWritePort calls have been made. */
+    void buildPost(NodeRegistryRO registry, NodeLogicBlock logicBlock) {}
+
+    /** Implements any inner strategies */
+    void implementInner(Consumer<NodeLogicBuilder> out, Iterable<NodeInstanceDesc.Key> nodeKeys, boolean isLast) {}
+  }
+
+  abstract protected static class ReadForwardHandler {
+    /**
+     * Resets the state of the forward handler
+     * ({@link #getForwardConds()})
+     * for another builder invocation.
+     */
+    abstract void reset();
+
+    /**
+     * Processes a read port.
+     * Called after all calls to CommitHandler.processWritePort.
+     * Only called for ports that have forwarding enabled.
+     */
+    abstract void processReadPort(int iPort, ReadreqExpr readRequest, NodeRegistryRO registry, NodeLogicBlock logicBlock);
+    /** All forward conditions from the processReadPort calls since the last reset. */
+    abstract List<ReadForwardCond> getForwardConds();
+
+    /** Performs an additional build step after all processReadPort calls have been made. */
+    void buildPost(NodeRegistryRO registry, NodeLogicBlock logicBlock) {}
+
+    /** Implements any inner strategies */
+    void implementInner(Consumer<NodeLogicBuilder> out, Iterable<NodeInstanceDesc.Key> nodeKeys, boolean isLast) {}
   }
 
   static class PortRename {
@@ -136,10 +193,19 @@ public class SCALStateStrategy extends MultiNodeStrategy {
     public PortMuxGroup(NodeInstanceDesc.Key groupKey) { this.groupKey = groupKey; }
   }
 
+  record EarlyWritePipelinerEntry(
+      /** The stage that the pipeliner pipelines to */
+      PipelineStage pipetoStage,
+      /** The ported write node (non-adj) being pipelined*/
+      SCAIEVNode earlyWritePortNode,
+      /** The pipeliner */
+      NodeRegPipelineStrategy pipeliner) {}
+  record IssueReadEntry(NodeInstanceDesc.Key readKey, boolean disableForwarding) {}
+
   static class RegfileInfo {
     String regName = null;
     PipelineFront issueFront = new PipelineFront();
-    PipelineFront commitFront = new PipelineFront();
+    PipelineFront writebackFront = new PipelineFront();
     int width = 0, depth = 0;
 
     /** The list of reads before issueFront. */
@@ -149,12 +215,14 @@ public class SCALStateStrategy extends MultiNodeStrategy {
 
     /** The list of writes before issueFront. */
     List<NodeInstanceDesc.Key> earlyWrites = new ArrayList<>();
+    /** The list of pipeliners for early write requests */
+    List<EarlyWritePipelinerEntry> earlyWriteValidPipeliners = new ArrayList<>();
     /** A version of {@link RegfileInfo#earlyWrites} before port mapping. */
     List<NodeInstanceDesc.Key> earlyWritesUnmapped = new ArrayList<>();
 
     /**
      * The list of writes in or after issueFront.
-     * Each entry is the key to the Wr<CustomReg> node.
+     * Each entry is the key to the Wr&lt;CustomReg&gt; node.
      * Stages with regular ISAXes have a combined entry (with ISAX field empty),
      *   while 'always'-ISAXes are listed as separate keys (with ISAX field set).
      * aux!=0 is (currently) used to ensure always/no-opcode ISAXes get dedicated ports
@@ -169,14 +237,29 @@ public class SCALStateStrategy extends MultiNodeStrategy {
     List<NodeInstanceDesc.Key> regularReadsUnmapped = new ArrayList<>();
 
     /** The port-grouped reads to perform in issueFront. The key stage has no meaning, the read should be done in all issueFront stages. */
-    List<NodeInstanceDesc.Key> issue_reads = new ArrayList<>();
+    List<IssueReadEntry> issue_reads = new ArrayList<>();
 
     /**
-     * The remapped write, write_spawn node keys in the commit stage(s).
+     * The remapped write, write_spawn node keys in the writeback stage(s).
      * Priority is ascending, i.e. the last write has the highest priority.
-     * For writes in different commit stages, the order depends on the instruction ID.
+     * For writes in different writeback stages, the order depends on the instruction ID.
      */
-    List<NodeInstanceDesc.Key> commit_writes = new ArrayList<>();
+    List<NodeInstanceDesc.Key> writeback_writes = new ArrayList<>();
+
+    /**
+     * The commit handlers, listed by writeback port.
+     */
+    List<CommitHandler> commit_handlers_by_writeport = new ArrayList<>();
+
+    /**
+     * The list of unique commit handlers. Must contain all handlers from {@link #commit_handlers_by_writeport} and must not contain duplicates.
+     */
+    List<CommitHandler> unique_commit_handlers = new ArrayList<>();
+
+    /**
+     * The list of read forward handlers. Must not contain duplicates.
+     */
+    List<ReadForwardHandler> read_forward_handlers = new ArrayList<>();
 
     /** The renames to apply from requested to scheduled reads/writes */
     List<PortRename> portRenames = new ArrayList<>();
@@ -196,30 +279,177 @@ public class SCALStateStrategy extends MultiNodeStrategy {
     ValidMuxStrategy portMuxStrategy = null;
 
     /**
-     * The approach to use in implementing the 'early' register file. Does not support WaitUntilCommit.
-     * Note: Since early register writes have no requirement to announce the address in any specific stage front,
-     *       potential RaW hazards have to be resolved by issuing pipeline flushes.
-     *       In cases where one ISAX writes in the same stage as another reads (i.e. at least one 'always' ISAX), no data hazard safety is
-     * provided. If two ISAXes write to the same register in an instruction lifetime, the later write will be selected; if both writes are
-     * sent in the same stage, one of both will be selected (priority selected statically, with no guarantees)
+     * If set, will write into a scoreboard before writing back to the register file.
+     * This mode tracks the commit/flush state and discards the result on flush.
+     * This mode also ensures the 'dirty' flag is reset correctly on flush.
      */
-    DHForwardApproach earlyForwardApproach = DHForwardApproach.WaitUntilCommit;
-    DHForwardApproach forwardApproach = DHForwardApproach.WaitUntilCommit;
+    boolean useScoreboard = true; //TODO: make configurable
+
+    /**
+     * The utils object for this register file.
+     */
+    RegInternalUtils utils = null;
   }
 
-  private RegfileInfo configureRegfile(String name, PipelineFront issueFront, PipelineFront commitFront, List<NodeInstanceDesc.Key> reads,
+  /** Information on a write request source */
+  protected static class WritebackExpr {
+    /** The (ported) write node of this request */
+    SCAIEVNode baseNode;
+    /** The pipeline stage of this request */
+    PipelineStage stage;
+    /** Whether the write request is valid */
+    String wrValidExpr;
+    /** Whether the write request is being cancelled */
+    String wrCancelExpr;
+    /** The register address to write to */
+    String wrAddrExpr;
+    /** The data to write */
+    String wrDataExpr;
+    /** Whether the stage the write request comes from is stalling */
+    String stallDataStageCond;
+    /** Whether the stage the write request comes from is being flushed */
+    String flushDataStageCond;
+    /** */
+    String validRespWireName;
+  }
+  /** Condition and expressions for when to reset the 'dirty flag' for a register */
+  protected static class ResetDirtyCond {
+    /** The (ported) write node which completed, or null if it is not clear */
+    SCAIEVNode baseNode;
+    /** The 'reset dirty flag' condition */
+    String condExpr;
+    /** The address corresponding to the condition */
+    String addrExpr;
+  }
+  /** Condition and expressions for when to write back the register */
+  protected static class WriteToBackingCond {
+    /** The writeback condition */
+    String condExpr;
+    /** The writeback register address */
+    String addrExpr;
+    /** The writeback data */
+    String dataExpr;
+    /** The write port index (physical register file == {@link RegfileInfo#writeback_writes} index) */
+    int iPort;
+  }
+  /** Information on a read request */
+  protected static record ReadreqExpr (
+    /** The key of the read group (shared across regfile.issueFront) */
+    NodeInstanceDesc.Key readGroupKey,
+    /** The 'address valid' wire name */
+    String addrValidExpr,
+    /** The address wire name */
+    String addrExpr
+  ) {}
+  /** Information on a read port, internally used for forwarding */
+  private static record ForwardToWires (
+    /** The wire to which to write the 'forward valid' flag to */
+    String forwardValidWire,
+    /** The wire to which to write the forwarded data to */
+    String forwardDataWire
+  ) {}
+  /** Condition and expressions from the forwarder */
+  protected static record ReadForwardCond (
+    /** The 'forward valid' expression */
+    String dataValidExpr,
+    /** The 'forward data' expression */
+    String dataExpr,
+    /** The read port index to forward to */
+    int iPort
+  ) {}
+
+  class DefaultCommitHandler extends CommitHandler {
+    List<ResetDirtyCond> resetDirtyConds = new ArrayList<>();
+    List<WriteToBackingCond> writeToBackingConds = new ArrayList<>();
+    @Override
+    void reset() {
+      resetDirtyConds.clear();
+      writeToBackingConds.clear();
+    }
+    /** Processes a write port. Returns the 'validResp' condition. */
+    @Override
+    void processWritePort(int iPort, WritebackExpr writeback, NodeRegistryRO registry, NodeLogicBlock logicBlock) {
+      //Reset dirty whenever a write request is valid or being cancelled (or flushed)
+      ResetDirtyCond dirtyCond = new ResetDirtyCond();
+      dirtyCond.baseNode = writeback.baseNode;
+      dirtyCond.condExpr = String.format("(%s || %s) && !(%s)", writeback.wrValidExpr, writeback.wrCancelExpr, writeback.stallDataStageCond);
+      dirtyCond.addrExpr = writeback.wrAddrExpr;
+      resetDirtyConds.add(dirtyCond);
+      //Write back whenever a write request is valid and not being flushed
+      WriteToBackingCond writeCond = new WriteToBackingCond();
+      writeCond.condExpr = String.format("%s && !(%s) && !(%s)", writeback.wrValidExpr, writeback.stallDataStageCond, writeback.flushDataStageCond);
+      writeCond.addrExpr = writeback.wrAddrExpr;
+      writeCond.dataExpr = writeback.wrDataExpr;
+      writeCond.iPort = iPort;
+      writeToBackingConds.add(writeCond);
+      if (!writeback.validRespWireName.isEmpty())
+        logicBlock.logic += String.format("assign %s = %s && !(%s);\n", writeback.validRespWireName, dirtyCond.condExpr, writeback.flushDataStageCond);
+    }
+    @Override
+    List<ResetDirtyCond> getResetDirtyConds() {
+      return resetDirtyConds;
+    }
+    @Override
+    List<WriteToBackingCond> getWriteToBackingConds() {
+      return writeToBackingConds;
+    }
+  }
+
+  /**
+   * Selects/constructs the CommitHandlers to use for each writeback port (regfile.writebackWrites)
+   *  and the corresponding ReadForwardHandlers (if any).
+   * Sets up regfile.commit_handlers_by_writeport and regfile.read_forward_handlers.
+   * Returns immediately if commit_handlers_by_writeport is filled already.
+   */
+  void setupCommitAndForwardHandlers(RegfileInfo regfile) {
+    assert(regfile.utils != null);
+    assert(regfile.commit_handlers_by_writeport.isEmpty()
+           || regfile.commit_handlers_by_writeport.size() == regfile.writeback_writes.size());
+    if (!regfile.commit_handlers_by_writeport.isEmpty())
+      return;
+    regfile.unique_commit_handlers.clear();
+    regfile.read_forward_handlers.clear();
+    if (regfile.writeback_writes.isEmpty())
+      return; //no need to construct anything
+    if (retireSerializer_opt.isEmpty())
+      regfile.useScoreboard = false;
+    //For now: Use only one type per register file.
+    CommitHandler useForAll = null;
+    if (regfile.useScoreboard) {
+      IDRetireSerializerStrategy serializer = constructOrReuseRetireSerializer(regfile.issueFront.asList());
+      DH_IDMapping idMapping = new DH_IDMapping(core, language, bNodes, serializer,
+          2, 1, 2, //TODO: make configurable
+                   // innerIDWidth must be min. 2 for now (-> 3 scoreboard entries)
+                   // -> 'overflow stall' condition does not work properly with width 1
+          regfile.utils, regfile);
+      var idBasedHandler = new IDBasedDHCommitHandler(core, language, bNodes, idMapping, regfile, regfile.utils);
+      //TODO: Configure forwarder (enable/disable, use only for some writes/reads, etc.)
+      regfile.read_forward_handlers.add(idBasedHandler.getReadForwarder());
+      useForAll = idBasedHandler;
+    }
+    else {
+      useForAll = new DefaultCommitHandler();
+    }
+    for (int i = 0; i < regfile.writeback_writes.size(); ++i)
+      regfile.commit_handlers_by_writeport.add(useForAll);
+    regfile.unique_commit_handlers.add(useForAll);
+
+    assert(regfile.commit_handlers_by_writeport.stream().allMatch(handler -> regfile.unique_commit_handlers.contains(handler)));
+  }
+
+  private RegfileInfo configureRegfile(String name, PipelineFront issueFront, PipelineFront writebackFront, List<NodeInstanceDesc.Key> reads,
                                        List<NodeInstanceDesc.Key> writes, int width, int depth) {
     RegfileInfo ret = regfilesByName.get(name);
     if (ret == null) {
       ret = new RegfileInfo();
       ret.regName = name;
-      ret.commitFront = commitFront;
+      ret.writebackFront = writebackFront;
       ret.width = width;
       ret.depth = depth;
       regfiles.add(ret);
       regfilesByName.put(name, ret);
     } else {
-      assert (ret.commitFront.asList().equals(commitFront.asList()));
+      assert (ret.writebackFront.asList().equals(writebackFront.asList()));
       assert (ret.width == width);
       assert (ret.depth == depth);
     }
@@ -243,6 +473,8 @@ public class SCALStateStrategy extends MultiNodeStrategy {
                             .distinct()
                             .collect(Collectors.toCollection(ArrayList::new));
     getPortMapper().generatePortMapping(ret);
+    ret.commit_handlers_by_writeport.clear();
+    ret.unique_commit_handlers.clear();
     return ret;
   }
 
@@ -259,8 +491,7 @@ public class SCALStateStrategy extends MultiNodeStrategy {
 
     final int addrSize = Log2.clog2(elements);
     final int numReadPorts = regfile.earlyReads.size() + regfile.issue_reads.size();
-    final int numWritePorts = regfile.commit_writes.size();
-    final List<SCAIEVNode> writeNodes = regfile.commit_writes.stream().map(key -> key.getNode()).distinct().toList();
+    final int numWritePorts = regfile.writeback_writes.size();
 
     // global signals shared between all regfiles (context info)
     final String[] gSignals = {"rcontext_i", "wcontext_i"};
@@ -334,24 +565,23 @@ public class SCALStateStrategy extends MultiNodeStrategy {
 
     ret.logic += ".*);\n";
 
-    var utils = new Object() {
-      public String getWireName_dhInIssueStage(int iRead, PipelineStage issueStage) {
-        return String.format("dhRd%s_%s_%d", regfile.regName, issueStage.getName(), iRead);
-      }
+    if (regfile.utils == null)
+      regfile.utils = new RegInternalUtils(regfile);
+    var utils = regfile.utils;
+    setupCommitAndForwardHandlers(regfile);
 
-      public String getWireName_WrIssue_addr_valid(int iPort) {
-        return String.format("wrReg_%s_%d_issue_addr_valid", regfile.regName, iPort);
-      }
-      public String getWireName_WrIssue_addr(int iPort) { return String.format("wrReg_%s_%d_issue_addr", regfile.regName, iPort); }
-    };
-
+    List<PipelineStage> issueStages = regfile.issueFront.asList();
+    ReadreqExpr[] issueReadForwardRequest = new ReadreqExpr[regfile.issue_reads.size()];
+    ForwardToWires[] issueReadForwardToWires = new ForwardToWires[regfile.issue_reads.size()];
     for (int iRead = 0; iRead < regfile.issue_reads.size(); ++iRead) {
+      final int iRead_ = iRead;
       if (auxReads.size() <= iRead)
         auxReads.add(registry.newUniqueAux());
       int auxRead = auxReads.get(iRead);
 
-      NodeInstanceDesc.Key readGroupKey = regfile.issue_reads.get(iRead);
-      assert (readGroupKey.getAux() == 0); // keys are supposed to be general
+      IssueReadEntry readGroupEntry = regfile.issue_reads.get(iRead);
+      assert(readGroupEntry.readKey().getAux() == 0); // keys are supposed to be general
+      assert(issueStages.size() > 0);
 
       ////Read during the issue stage.
       ////A typical scenario, given several issue stages, is that the requested read result is in an execution unit.
@@ -360,11 +590,13 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       ////The result will be pipelined if needed.
       //boolean specificIssueStageOnly = regfile.issueFront.contains(requestedReadKey.getStage());
 
-      for (PipelineStage issueStage : regfile.issueFront.asList()) {
+      for (PipelineStage issueStage : issueStages) {
         //if (specificIssueStageOnly && issueStage != requestedReadKey.getStage())
         //  continue;
         String wireName_dhInAddrStage = utils.getWireName_dhInIssueStage(iRead, issueStage);
         ret.declarations += String.format("logic %s;\n", wireName_dhInAddrStage);
+        String wireName_dhInAddrStage_preforward = wireName_dhInAddrStage + "_preforward";
+        ret.declarations += String.format("logic %s;\n", wireName_dhInAddrStage_preforward);
         // add a WrFlush signal (equal to the wrPC_valid signal) as an output with aux != 0
         // StallFlushDeqStrategy will collect this flush signal
         ret.outputs.add(
@@ -374,22 +606,35 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       }
 
       NodeInstanceDesc.Key nodeKey_readInFirstIssueStage =
-          new NodeInstanceDesc.Key(Purpose.REGULAR, readGroupKey.getNode(), regfile.issueFront.asList().get(0), readGroupKey.getISAX());
+          new NodeInstanceDesc.Key(Purpose.REGULAR, readGroupEntry.readKey().getNode(),
+                                  regfile.issueFront.asList().get(0), readGroupEntry.readKey().getISAX());
       String wireName_readInIssueStage = nodeKey_readInFirstIssueStage.toString(false) + "_s";
       ret.declarations += String.format("logic [%d-1:0] %s;\n", regfile.width, wireName_readInIssueStage);
       ret.outputs.add(new NodeInstanceDesc(nodeKey_readInFirstIssueStage, wireName_readInIssueStage, ExpressionType.WireName));
 
+      String wireName_readInIssueStage_preforward = nodeKey_readInFirstIssueStage.toString(false) + "_preforward_s";
+      ret.declarations += String.format("logic [%d-1:0] %s;\n", regfile.width, wireName_readInIssueStage_preforward);
+
+      //Bitmap wire specifying if the selected read is from stage I but stalls due to DH.
+      // -> is also 0 for stalls from resource conflicts.
+      String wireName_readIsPrimaryDH = makeRegModuleSignalName(regfile.regName, "primaryDH", iRead); //(not a regfile module pin)
+      ret.declarations += String.format("logic [%d-1:0] %s;\n", issueStages.size(), wireName_readIsPrimaryDH);
+
       String readLogic = "";
-      readLogic += "always_comb begin \n";
+      readLogic += "always_comb begin\n";
       readLogic +=
-          tab + String.format("%s = %s;\n", wireName_readInIssueStage, makeRegModuleSignalName(regfile.regName, rSignal_rdata, iRead));
+          tab + String.format("%s = %s;\n", wireName_readInIssueStage_preforward, makeRegModuleSignalName(regfile.regName, rSignal_rdata, iRead));
       readLogic += tab + String.format("%s = 0;\n", makeRegModuleSignalName(regfile.regName, rSignal_re, iRead));
       if (elements > 1)
         readLogic += tab + tab + String.format("%s = 'x;\n", makeRegModuleSignalName(regfile.regName, rSignal_raddr, iRead));
       for (PipelineStage issueStage : regfile.issueFront.asList())
-        readLogic += tab + String.format("%s = 0;\n", utils.getWireName_dhInIssueStage(iRead, issueStage));
+        readLogic += tab + String.format("%s_preforward = 0;\n", utils.getWireName_dhInIssueStage(iRead, issueStage));
+      readLogic += tab + String.format("%s = '0;\n", wireName_readIsPrimaryDH);
 
-      for (PipelineStage issueStage : regfile.issueFront.asList()) {
+      String[] stageReadAddrExpr = new String[issueStages.size()];
+      //The read port can be used from several issue stages (only one at a time).
+      for (int iIssueStage = 0; iIssueStage < issueStages.size(); ++iIssueStage) {
+        PipelineStage issueStage = issueStages.get(iIssueStage);
         //if (specificIssueStageOnly && issueStage != requestedReadKey.getStage())
         //  continue;
 
@@ -397,7 +642,7 @@ public class SCALStateStrategy extends MultiNodeStrategy {
 
         if (issueStage != nodeKey_readInFirstIssueStage.getStage()) {
           NodeInstanceDesc.Key nodeKey_readInIssueStage =
-              new NodeInstanceDesc.Key(Purpose.REGULAR, readGroupKey.getNode(), issueStage, readGroupKey.getISAX());
+              new NodeInstanceDesc.Key(Purpose.REGULAR, readGroupEntry.readKey().getNode(), issueStage, readGroupEntry.readKey().getISAX());
           ret.outputs.add(new NodeInstanceDesc(nodeKey_readInIssueStage, wireName_readInIssueStage, ExpressionType.AnyExpression_Noparen));
         }
 
@@ -406,37 +651,90 @@ public class SCALStateStrategy extends MultiNodeStrategy {
         String rdAddrExpr =
             (elements > 1)
                 ? registry.lookupExpressionRequired(new NodeInstanceDesc.Key(
-                      bNodes.GetAdjSCAIEVNode(readGroupKey.getNode(), AdjacentNode.addr).orElseThrow(), issueStage, readGroupKey.getISAX()))
+                      bNodes.GetAdjSCAIEVNode(readGroupEntry.readKey().getNode(), AdjacentNode.addr).orElseThrow(),
+                      issueStage,
+                      readGroupEntry.readKey().getISAX()))
                 : "0";
+        stageReadAddrExpr[iIssueStage] = rdAddrExpr;
         String rdRegAddrValidExpr = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(
-            bNodes.GetAdjSCAIEVNode(readGroupKey.getNode(), AdjacentNode.addrReq).orElseThrow(), issueStage, readGroupKey.getISAX()));
+            bNodes.GetAdjSCAIEVNode(readGroupEntry.readKey().getNode(), AdjacentNode.addrReq).orElseThrow(),
+            issueStage,
+            readGroupEntry.readKey().getISAX()));
+
+        //TODO: Detect hazards with regfile writes from another issue stage.
 
         readLogic += tab + "if (" + rdRegAddrValidExpr + ") begin\n";
         readLogic += tab + tab + "if (!" + makeRegModuleSignalName(regfile.regName, rSignal_re, iRead) + ") begin\n";
-        readLogic += tab + tab + String.format("%s = 1;\n", makeRegModuleSignalName(regfile.regName, rSignal_re, iRead));
+        readLogic += tab + tab + tab + String.format("%s = 1;\n", makeRegModuleSignalName(regfile.regName, rSignal_re, iRead));
         if (elements > 1)
-          readLogic += tab + tab + String.format("%s = %s;\n", makeRegModuleSignalName(regfile.regName, rSignal_raddr, iRead), rdAddrExpr);
+          readLogic += tab + tab + tab + String.format("%s = %s;\n", makeRegModuleSignalName(regfile.regName, rSignal_raddr, iRead), rdAddrExpr);
 
-        readLogic += tab + tab + String.format("%s = %s[%s] == 1;\n", wireName_dhInAddrStage, dirtyRegName, rdAddrExpr);
+        readLogic += tab + tab + tab + String.format("%s_preforward = %s[%s] == 1;\n", wireName_dhInAddrStage, dirtyRegName, rdAddrExpr);
+        readLogic += tab + tab + tab + String.format("%s[%d] = %s_preforward;\n", wireName_readIsPrimaryDH, iIssueStage, wireName_dhInAddrStage);
         readLogic += tab + tab + "end\n";
-        readLogic += tab + tab + "else\n" + tab + tab + String.format("%s = 1;\n", wireName_dhInAddrStage);
+        // Stall if there's multiple issue stages attempting to use this read port.
+        readLogic += tab + tab + "else begin\n"
+                     + tab + tab + tab + String.format("%s_preforward = 1;\n", wireName_dhInAddrStage)
+                     //+ tab + tab + tab + String.format("%s = 0;\n", makeRegModuleSignalName(regfile.regName, rSignal_re, iRead))
+                     + tab + tab + "end\n";
         readLogic += tab + "end\n";
+      }
+      //Start a new always_comb block for the forwarding.
+      //Default: Use the results (data, is DH) without forwarding.
+      readLogic += """
+          end
+          always_comb begin
+              %s = %s;
+              %s
+          """.formatted(wireName_readInIssueStage, wireName_readInIssueStage_preforward,
+                        issueStages.stream().map(issueStage -> "%1$s = %1$s_preforward;\n"
+                                                               .formatted(utils.getWireName_dhInIssueStage(iRead_, issueStage)))
+                                            .reduce((a,b)->a+b).orElseThrow());
+
+      if (!readGroupEntry.disableForwarding) {
+        String wireName_forwardValid = makeRegModuleSignalName(regfile.regName, "forwardValid", iRead); //(not a regfile module pin)
+        ret.declarations += String.format("logic %s;\n", wireName_forwardValid);
+        String wireName_forwardData = makeRegModuleSignalName(regfile.regName, "forwardData", iRead); //(not a regfile module pin)
+        ret.declarations += String.format("logic [%d-1:0] %s;\n", regfile.width, wireName_forwardData);
+        //The forward request expression.
+        issueReadForwardRequest[iRead] = new ReadreqExpr(readGroupEntry.readKey(),
+                                                         makeRegModuleSignalName(regfile.regName, rSignal_re, iRead),
+                                                         (elements <= 1) ? "0" : makeRegModuleSignalName(regfile.regName, rSignal_raddr, iRead));
+        //The wires to assign the forward to.
+        issueReadForwardToWires[iRead] = new ForwardToWires(wireName_forwardValid, wireName_forwardData);
+        //Apply the forward, if valid.
+        //- Overwrite the data.
+        //- Clear the DH flag for the read masked by <wireName_readIsPrimaryDH>.
+        readLogic += """
+                if (%1$s) begin
+                    %3$s = %2$s;%4$s
+                end
+            """.formatted(wireName_forwardValid, wireName_forwardData, wireName_readInIssueStage,
+                          IntStream.range(0,issueStages.size()).mapToObj(iStage->
+                            "\n"+tab+tab+"if (%s[%d]) %s = 1'b0;".formatted(
+                              wireName_readIsPrimaryDH, iStage,
+                              utils.getWireName_dhInIssueStage(iRead_, issueStages.get(iStage)))
+                          ).reduce((a,b)->a+b).orElse(""));
+      }
+      for (int iIssueStage = 0; iIssueStage < issueStages.size(); ++iIssueStage) {
+        PipelineStage issueStage = issueStages.get(iIssueStage);
 
         // Forward early write -> read from current instruction.
         //  -> Early writes wander through the pipeline alongside an instruction.
         //     However, early writes also are meant to affect reads starting with that instruction,
         //      in contrast to regular writes that are only visible to the following instructions.
+        //  -> This needs to be done even if regular forwarding is disabled for this port.
         for (int iEarlyWrite = 0; iEarlyWrite < regfile.earlyWrites.size(); ++iEarlyWrite) {
           NodeInstanceDesc.Key earlyWriteKey = regfile.earlyWrites.get(iEarlyWrite);
           assert (Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN.matches(regfile.earlyWrites.get(iEarlyWrite).getPurpose()));
           assert (regfile.earlyWrites.get(iEarlyWrite).getAux() == 0);
-          int iWritePort = (int)regfile.commit_writes.stream().takeWhile(entry -> !entry.getNode().equals(earlyWriteKey.getNode())).count();
+          int iWritePort = (int)regfile.writeback_writes.stream().takeWhile(entry -> !entry.getNode().equals(earlyWriteKey.getNode())).count();
           String wrAddrValidWire = utils.getWireName_WrIssue_addr_valid(iWritePort);
           String wrAddrExpr = (elements > 1) ? utils.getWireName_WrIssue_addr(iWritePort) : "0";
           // The early write value is already known in the issue stage, and is pipelined just like the address.
           String earlyWriteVal_issue =
               registry.lookupExpressionRequired(new NodeInstanceDesc.Key(earlyWriteKey.getNode(), issueStage, earlyWriteKey.getISAX()));
-          readLogic += tab + String.format("if (%s && %s == %s) begin\n", wrAddrValidWire, rdAddrExpr, wrAddrExpr);
+          readLogic += tab + String.format("if (%s && %s == %s) begin\n", wrAddrValidWire, stageReadAddrExpr[iIssueStage], wrAddrExpr);
           readLogic += tab + tab + String.format("%s = %s;\n", wireName_readInIssueStage, earlyWriteVal_issue);
           readLogic += tab + "end\n";
         }
@@ -452,117 +750,162 @@ public class SCALStateStrategy extends MultiNodeStrategy {
     wrDirtyLines += String.format("always_ff @ (posedge %s) begin\n", language.clk);
     wrDirtyLines += tab + String.format("if(%s) begin \n", language.reset);
     wrDirtyLines += tab + tab + String.format("%s <= 0;\n", dirtyRegName);
+    wrDirtyLines += earlyrw.earlyDirtyFFResetLogic(registry, regfile, null, null, tab + tab);
     wrDirtyLines += tab + "end else begin\n";
 
+    WritebackExpr[] writebackExprs = new WritebackExpr[regfile.writeback_writes.size()];
+
+    assert(regfile.unique_commit_handlers.stream().distinct().count() == regfile.unique_commit_handlers.size());
+    assert(regfile.commit_handlers_by_writeport.size() == regfile.writeback_writes.size());
+    assert(regfile.commit_handlers_by_writeport.stream().allMatch(handler -> regfile.unique_commit_handlers.contains(handler)));
+
+    regfile.unique_commit_handlers.forEach(commitHandler -> commitHandler.reset());
+    regfile.read_forward_handlers.forEach(forwardHandler -> forwardHandler.reset());
+
     // Write commit logic (reset dirty bit, apply write to the register file)
-    for (int iPort = 0; iPort < regfile.commit_writes.size(); ++iPort) {
-      NodeInstanceDesc.Key wrBaseKey = regfile.commit_writes.get(iPort);
+    for (int iPort = 0; iPort < regfile.writeback_writes.size(); ++iPort) {
+      NodeInstanceDesc.Key wrBaseKey = regfile.writeback_writes.get(iPort);
       assert (!wrBaseKey.getNode().isAdj());
       assert (wrBaseKey.getAux() == 0);
       assert (Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN.matches(wrBaseKey.getPurpose()));
 
-      String wrDataExpr =
+      writebackExprs[iPort] = new WritebackExpr();
+      var writebackExpr = writebackExprs[iPort];
+
+      writebackExpr.baseNode = wrBaseKey.getNode();
+      writebackExpr.stage = wrBaseKey.getStage();
+      writebackExpr.wrDataExpr =
           registry.lookupExpressionRequired(new NodeInstanceDesc.Key(wrBaseKey.getNode(), wrBaseKey.getStage(), wrBaseKey.getISAX()));
-      String wrValidExpr = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(
-          bNodes.GetAdjSCAIEVNode(wrBaseKey.getNode(), AdjacentNode.validReq).orElseThrow(), wrBaseKey.getStage(), wrBaseKey.getISAX()));
-      String wrCancelExpr = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(
-          bNodes.GetAdjSCAIEVNode(wrBaseKey.getNode(), AdjacentNode.cancelReq).orElseThrow(), wrBaseKey.getStage(), wrBaseKey.getISAX()));
-      String wrAddrCommitExpr = (elements > 1) ? registry.lookupExpressionRequired(new NodeInstanceDesc.Key(
+      writebackExpr.wrValidExpr = registry.lookupRequired(new NodeInstanceDesc.Key(
+              bNodes.GetAdjSCAIEVNode(wrBaseKey.getNode(), AdjacentNode.validReq).orElseThrow(), wrBaseKey.getStage(), wrBaseKey.getISAX()))
+          .getExpressionWithParens();
+      writebackExpr.wrCancelExpr = registry.lookupRequired(new NodeInstanceDesc.Key(
+              bNodes.GetAdjSCAIEVNode(wrBaseKey.getNode(), AdjacentNode.cancelReq).orElseThrow(), wrBaseKey.getStage(), wrBaseKey.getISAX()))
+          .getExpressionWithParens();
+      writebackExpr.wrAddrExpr = (elements > 1) ? registry.lookupExpressionRequired(new NodeInstanceDesc.Key(
                                                      bNodes.GetAdjSCAIEVNode(wrBaseKey.getNode(), AdjacentNode.addr).orElseThrow(),
                                                      wrBaseKey.getStage(), wrBaseKey.getISAX()))
                                                : "";
 
-      String stallDataStageCond = "1'b0";
-      String flushDataStageCond = "1'b0";
+      String stallDataStageCond_ = "1'b0";
+      String flushDataStageCond_ = "1'b0";
       if (wrBaseKey.getStage().getKind() != StageKind.Decoupled) {
-        stallDataStageCond = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, wrBaseKey.getStage(), ""));
-        Optional<NodeInstanceDesc> wrstallDataStage =
-            registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrStall, wrBaseKey.getStage(), ""));
-        if (wrstallDataStage.isPresent())
-          stallDataStageCond += " || " + wrstallDataStage.get().getExpression();
+        stallDataStageCond_ = SCALUtil.buildCond_StageStalling(bNodes, registry, wrBaseKey.getStage(), false);
 
-        flushDataStageCond = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, wrBaseKey.getStage(), ""));
-        Optional<NodeInstanceDesc> wrflushDataStage =
-            registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrFlush, wrBaseKey.getStage(), ""));
-        if (wrflushDataStage.isPresent())
-          flushDataStageCond += " || " + wrflushDataStage.get().getExpression();
+        flushDataStageCond_ = SCALUtil.buildCond_StageFlushing(bNodes, registry, wrBaseKey.getStage());
       }
-
-      wrDirtyLines += tab + tab + String.format("if ((%s || %s) && !(%s)) begin\n", wrValidExpr, wrCancelExpr, stallDataStageCond);
-      if (elements > 1)
-        wrDirtyLines += tab + tab + tab + String.format("%s[%s] <= 0;\n", dirtyRegName, wrAddrCommitExpr);
-      else
-        wrDirtyLines += tab + tab + tab + String.format("%s <= 0;\n", dirtyRegName);
-      wrDirtyLines += earlyrw.earlyDirtyFFResetLogic(registry, regfile, wrBaseKey.getNode(), wrAddrCommitExpr, tab + tab + tab);
-      wrDirtyLines += tab + tab + "end\n";
+      writebackExpr.stallDataStageCond = stallDataStageCond_;
+      writebackExpr.flushDataStageCond = flushDataStageCond_;
 
       // Combinational validResp wire.
-      // Expected interface behavior is to have the validResp registered, which is done based off of this wire.
-      String validRespWireName = "";
+      String validRespWireName_ = "";
       Optional<SCAIEVNode> wrValidRespNode_opt = bNodes.GetAdjSCAIEVNode(wrBaseKey.getNode(), AdjacentNode.validResp);
       if (wrValidRespNode_opt.isPresent()) {
         var validRespKey = new NodeInstanceDesc.Key(wrValidRespNode_opt.get(), wrBaseKey.getStage(), wrBaseKey.getISAX());
-        validRespWireName = validRespKey.toString(false) + "_next_s";
-        String validRespRegName = validRespKey.toString(false) + "_r";
-        ret.declarations += String.format("logic %s;\n", validRespWireName);
-        ret.declarations += String.format("logic %s;\n", validRespRegName);
-        ret.outputs.add(new NodeInstanceDesc(validRespKey, validRespRegName, ExpressionType.WireName));
-        // Also register the combinational validResp as an output (differentiated with MARKER_CUSTOM_REG),
-        //  just to have a WireName node registered and get a free duplicate check.
-        ret.outputs.add(new NodeInstanceDesc(NodeInstanceDesc.Key.keyWithPurpose(validRespKey, Purpose.MARKER_CUSTOM_REG),
-                                             validRespWireName, ExpressionType.WireName));
-
-        ret.logic += language.CreateInAlways(true, String.format("%s <= %s;\n", validRespRegName, validRespWireName));
+        validRespWireName_ = validRespKey.toString(false) + "_s";
+        ret.declarations += String.format("logic %s;\n", validRespWireName_);
+        ret.outputs.add(new NodeInstanceDesc(validRespKey, validRespWireName_, ExpressionType.WireName));
       }
+      writebackExpr.validRespWireName = validRespWireName_;
 
-      String wrDataLines = "";
-      wrDataLines += "always_comb begin\n";
-      if (elements > 1)
-        wrDataLines += tab + String.format("%s = %d'dX;\n", makeRegModuleSignalName(regfile.regName, rSignal_waddr, iPort), addrSize);
-      wrDataLines += tab + String.format("%s = %d'dX;\n", makeRegModuleSignalName(regfile.regName, rSignal_wdata, iPort), regfile.width);
-      wrDataLines += tab + String.format("%s = 0;\n", makeRegModuleSignalName(regfile.regName, rSignal_we, iPort));
-      if (wrValidRespNode_opt.isPresent())
-        wrDataLines += tab + String.format("%s = 0;\n", validRespWireName);
+      regfile.commit_handlers_by_writeport.get(iPort).processWritePort(iPort, writebackExpr, registry, ret);
+    }
 
-      wrDataLines += tab + String.format("if (%s && !(%s) && !(%s)) begin\n", wrValidExpr, stallDataStageCond, flushDataStageCond);
-      if (elements > 1)
-        wrDataLines +=
-            tab + tab + String.format("%s = %s;\n", makeRegModuleSignalName(regfile.regName, rSignal_waddr, iPort), wrAddrCommitExpr);
-      wrDataLines += tab + tab + String.format("%s = %s;\n", makeRegModuleSignalName(regfile.regName, rSignal_wdata, iPort), wrDataExpr);
-      wrDataLines += tab + tab + String.format("%s = 1;\n", makeRegModuleSignalName(regfile.regName, rSignal_we, iPort));
-      if (wrValidRespNode_opt.isPresent())
-        wrDataLines += tab + tab + String.format("%s = 1;\n", validRespWireName);
-      wrDataLines += tab + "end\n";
+    //Call the read forwarders.
+    List<ReadForwardCond> issueReadForwardResponse = new ArrayList<>();
+    for (int iRead = 0; iRead < regfile.issue_reads.size(); ++iRead) {
+      if (issueReadForwardRequest[iRead] == null)
+        continue; // No forwarding to apply.
+      for (ReadForwardHandler handler : regfile.read_forward_handlers)
+        handler.processReadPort(iRead, issueReadForwardRequest[iRead], registry, ret);
+    }
 
-      wrDataLines += "end\n";
-      ret.logic += wrDataLines;
+    //Apply the commit handlers.
+    for (CommitHandler commitHandler : regfile.unique_commit_handlers) {
+      for (var writeToCond : commitHandler.getWriteToBackingConds()) {
+        int iPort = writeToCond.iPort;
+        String wrDataLines = "";
+        wrDataLines += "always_comb begin\n";
+        if (elements > 1)
+          wrDataLines += tab + String.format("%s = %d'dX;\n", makeRegModuleSignalName(regfile.regName, rSignal_waddr, iPort), addrSize);
+        wrDataLines += tab + String.format("%s = %d'dX;\n", makeRegModuleSignalName(regfile.regName, rSignal_wdata, iPort), regfile.width);
+        wrDataLines += tab + String.format("%s = 0;\n", makeRegModuleSignalName(regfile.regName, rSignal_we, iPort));
+        wrDataLines += tab + String.format("if (%s) begin\n", writeToCond.condExpr);
+        if (elements > 1)
+          wrDataLines +=
+              tab + tab + String.format("%s = %s;\n", makeRegModuleSignalName(regfile.regName, rSignal_waddr, iPort), writeToCond.addrExpr);
+        wrDataLines += tab + tab + String.format("%s = %s;\n", makeRegModuleSignalName(regfile.regName, rSignal_wdata, iPort), writeToCond.dataExpr);
+        wrDataLines += tab + tab + String.format("%s = 1;\n", makeRegModuleSignalName(regfile.regName, rSignal_we, iPort));
+        wrDataLines += tab + "end\n";
+  
+        wrDataLines += "end\n";
+        ret.logic += wrDataLines;
+      }
+      commitHandler.buildPost(registry, ret);
+    }
+
+    //Apply read forwards (if any).
+    for (ReadForwardHandler forwardHandler : regfile.read_forward_handlers) {
+      issueReadForwardResponse.addAll(forwardHandler.getForwardConds());
+      forwardHandler.buildPost(registry, ret);
+    }
+    for (int iRead = 0; iRead < regfile.issue_reads.size(); ++iRead) {
+      final int iRead_ = iRead;
+      ForwardToWires forwardToWires = issueReadForwardToWires[iRead];
+      if (forwardToWires == null) {
+        // Read port has no forwarding.
+        assert(issueReadForwardResponse.stream().filter(resp -> resp.iPort == iRead_).count() == 0);
+        continue;
+      }
+      StringBuilder forwardToLogic = new StringBuilder();
+      forwardToLogic.append("""
+          always_comb begin
+              %s = 0;
+              %s = '0;
+          """.formatted(forwardToWires.forwardValidWire, forwardToWires.forwardDataWire));
+      issueReadForwardResponse.stream().filter(resp -> resp.iPort == iRead_).forEach(forwardResp -> {
+        forwardToLogic.append("""
+                if (%3$s) begin
+                    %1$s = 1;
+                    %2$s = %4$s;
+                end
+            """.formatted(forwardToWires.forwardValidWire, forwardToWires.forwardDataWire,
+                          forwardResp.dataValidExpr, forwardResp.dataExpr));
+      });
+      forwardToLogic.append("end\n");
+      ret.logic += forwardToLogic;
     }
 
     // Write issue logic
-    for (int iWriteNode = 0; iWriteNode < writeNodes.size(); ++iWriteNode) {
+    for (int iWriteNode = 0; iWriteNode < utils.writeNodes.size(); ++iWriteNode) {
       if (auxWrites.size() <= iWriteNode)
         auxWrites.add(registry.newUniqueAux());
       int auxWrite = auxWrites.get(iWriteNode);
 
-      SCAIEVNode commitWriteNode = writeNodes.get(iWriteNode);
+      SCAIEVNode commitWriteNode = utils.writeNodes.get(iWriteNode);
       SCAIEVNode nonspawnWriteNode = bNodes.GetEquivalentNonspawnNode(commitWriteNode).orElse(commitWriteNode);
-      int[] writePorts = IntStream.range(0, regfile.commit_writes.size())
-                             .filter(iPort -> regfile.commit_writes.get(iPort).getNode().equals(commitWriteNode))
+      int[] writePorts = IntStream.range(0, regfile.writeback_writes.size())
+                             .filter(iPort -> regfile.writeback_writes.get(iPort).getNode().equals(commitWriteNode))
                              .toArray();
       assert (writePorts.length > 0);
-      assert (IntStream.of(writePorts).mapToObj(iPort -> regfile.commit_writes.get(iPort).getISAX()).distinct().limit(2).count() ==
+      assert (IntStream.of(writePorts).mapToObj(iPort -> regfile.writeback_writes.get(iPort).getISAX()).distinct().limit(2).count() ==
               1); // ISAX equal for all commit ports with this node
       // Note: nodeISAX is probably an empty string due to the port group assignment.
-      String nodeISAX = regfile.commit_writes.get(writePorts[0]).getISAX();
+      String nodeISAX = regfile.writeback_writes.get(writePorts[0]).getISAX();
 
       // Check if there is a write during the issue stage.
       // -> Only the targeted issue stage will need the associated logic.
       int[] tmp_writeInIssuePorts =
-          IntStream.of(writePorts).filter(iPort -> regfile.issueFront.contains(regfile.commit_writes.get(iPort).getStage())).toArray();
+          IntStream.of(writePorts).filter(iPort -> regfile.issueFront.contains(regfile.writeback_writes.get(iPort).getStage())).toArray();
       Optional<NodeInstanceDesc.Key> specificIssueKey_opt =
-          tmp_writeInIssuePorts.length == 1 ? Optional.of(regfile.commit_writes.get(tmp_writeInIssuePorts[0])) : Optional.empty();
+          tmp_writeInIssuePorts.length == 1 ? Optional.of(regfile.writeback_writes.get(tmp_writeInIssuePorts[0])) : Optional.empty();
       String isNotAnImmediateWriteCond = "1";
-      if (specificIssueKey_opt.isPresent()) {
+      if (specificIssueKey_opt.isPresent()
+          && (specificIssueKey_opt.get().getStage().getTags().contains(StageTag.Commit)
+             || specificIssueKey_opt.get().getStage().getNext().stream().allMatch(successor -> successor.getContinuous()
+                                                                                               && successor.getTags().contains(StageTag.Commit)))) {
+        // -> Limit 'write in issue' if we know it also commits in the stage.
+        //TODO: ResetDirtyCond entries should be applied after emitting the 'dirty <= 1' logic. 
         isNotAnImmediateWriteCond =
             registry
                 .lookupRequired(new NodeInstanceDesc.Key(bNodes.GetAdjSCAIEVNode(commitWriteNode, AdjacentNode.validReq).orElseThrow(),
@@ -588,19 +931,16 @@ public class SCALStateStrategy extends MultiNodeStrategy {
 
       boolean nextIsElseif = false;
       for (PipelineStage issueStage : regfile.issueFront.asList()) {
-        if (specificIssueKey_opt.isPresent() && issueStage != specificIssueKey_opt.get().getStage())
+        String addrValid_perstage_wire = utils.getWireName_WrIssue_addr_valid_perstage(iWriteNode, issueStage);
+        ret.declarations += String.format("logic %s;\n", addrValid_perstage_wire);
+
+        if (specificIssueKey_opt.isPresent() && issueStage != specificIssueKey_opt.get().getStage()) {
+          ret.logic += String.format("assign %s = 0;\n", addrValid_perstage_wire);
           continue;
-        String stallAddrStageCond = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, issueStage, ""));
-        Optional<NodeInstanceDesc> wrstallAddrStage =
-            registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrStall, issueStage, ""));
-        if (wrstallAddrStage.isPresent())
-          stallAddrStageCond += " || " + wrstallAddrStage.get().getExpression();
-        
-        String flushAddrStageCond = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, issueStage, ""));
-        Optional<NodeInstanceDesc> wrflushAddrStage =
-            registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrFlush, issueStage, ""));
-        if (wrflushAddrStage.isPresent())
-          flushAddrStageCond += " || " + wrflushAddrStage.get().getExpression();
+        }
+
+        String stallAddrStageCond = SCALUtil.buildCond_StageStalling(bNodes, registry, issueStage, false);
+        String flushAddrStageCond = SCALUtil.buildCond_StageFlushing(bNodes, registry, issueStage);
 
         String wrAddrExpr = (elements > 1)
                                 ? registry.lookupExpressionRequired(new NodeInstanceDesc.Key(
@@ -609,20 +949,26 @@ public class SCALStateStrategy extends MultiNodeStrategy {
         String wrAddrValidExpr = registry.lookupExpressionRequired(
             new NodeInstanceDesc.Key(bNodes.GetAdjSCAIEVNode(nonspawnWriteNode, AdjacentNode.addrReq).orElseThrow(), issueStage, nodeISAX));
 
+        ret.logic += String.format("assign %s = %s;\n", addrValid_perstage_wire, wrAddrValidExpr);
+
+        String wireName_dhInAddrStage = String.format("conflictWr%s_%s_%d", regfile.regName, issueStage.getName(), iWriteNode);
         {
-          // Stall the address stage if a new write has an address marked dirty.
-          String wireName_dhInAddrStage = String.format("dhWr%s_%s_%d", regfile.regName, issueStage.getName(), iWriteNode);
-          ret.declarations += String.format("wire %s;\n", wireName_dhInAddrStage);
-          ret.logic += String.format("assign %s = %s && %s[%s];\n", wireName_dhInAddrStage, wrAddrValidExpr, dirtyRegName, wrAddrExpr);
+          // Stall the address stage if a new write has an address marked dirty, or if it conflicts with a parallel issue.
+          ret.declarations += String.format("logic %s;\n", wireName_dhInAddrStage);
+          wrIssueAddrLines += tab + String.format("%s = %s && %s%s[%s]%s;\n",
+                                                  wireName_dhInAddrStage,
+                                                  wrAddrValidExpr,
+                                                  nextIsElseif ? "(" : "",
+                                                  dirtyRegName, wrAddrExpr,
+                                                  nextIsElseif ? " || %s)".formatted(addrValidWire) : "");
           ret.outputs.add(
               new NodeInstanceDesc(new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.REGULAR, bNodes.WrStall, issueStage, "", auxWrite),
                                    wireName_dhInAddrStage, ExpressionType.WireName));
           registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.WrStall, issueStage, ""));
         }
 
-        wrIssueAddrLines +=
-            tab + (nextIsElseif ? "else " : "") + String.format("if (%s && !(%s) && !(%s)) begin\n",
-                                                                wrAddrValidExpr, stallAddrStageCond, flushAddrStageCond);
+        wrIssueAddrLines += tab + String.format("if (!%s && %s && !(%s) && !(%s)) begin\n",
+                                                addrValidWire, wrAddrValidExpr, stallAddrStageCond, flushAddrStageCond);
         wrIssueAddrLines += tab + tab + String.format("%s = 1;\n", addrValidWire);
         if (elements > 1)
           wrIssueAddrLines += tab + tab + String.format("%s = %s;\n", addrWire, wrAddrExpr);
@@ -640,6 +986,18 @@ public class SCALStateStrategy extends MultiNodeStrategy {
 
       wrIssueAddrLines += "end\n";
       ret.logic += wrIssueAddrLines;
+    }
+
+    for (CommitHandler commitHandler : regfile.unique_commit_handlers) {
+      for (var resetDirtyCond : commitHandler.getResetDirtyConds()) {
+        wrDirtyLines += tab + tab + String.format("if (%s) begin\n", resetDirtyCond.condExpr);
+        if (elements > 1)
+          wrDirtyLines += tab + tab + tab + String.format("%s[%s] <= 0;\n", dirtyRegName, resetDirtyCond.addrExpr);
+        else
+          wrDirtyLines += tab + tab + tab + String.format("%s <= 0;\n", dirtyRegName);
+        wrDirtyLines += earlyrw.earlyDirtyFFResetLogic(registry, regfile, resetDirtyCond.baseNode, resetDirtyCond.addrExpr, tab + tab + tab);
+        wrDirtyLines += tab + tab + "end\n";
+      }
     }
 
     wrDirtyLines += tab + "end\n";
@@ -664,38 +1022,32 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       List<Integer> auxReads = new ArrayList<>();
       List<Integer> auxWrites = new ArrayList<>();
     };
-    var earlyRWImplementation = makeEarlyRW();
+    EarlyRWImplementation earlyRWImplementation = makeEarlyRW(regfile);
     out.accept(NodeLogicBuilder.fromFunction("SCALStateBuilder_RegfileLogic(" + nodeKey.toString() + ")", (registry, aux) -> {
       return buildRegfileLogic(registry, aux, runtimeData.auxReads, runtimeData.auxWrites, regfile, nodeKey, earlyRWImplementation);
     }));
     return true;
   }
 
-  static class PipelineStrategyKey {
-    public PipelineStage stage;
-    public boolean flushToZero;
-    public PipelineStrategyKey(PipelineStage stage, boolean flushToZero) {
-      this.stage = stage;
-      this.flushToZero = flushToZero;
-    }
-    @Override
-    public int hashCode() {
-      return Objects.hash(flushToZero, stage);
-    }
-    @Override
-    public boolean equals(Object obj) {
-      if (this == obj)
-        return true;
-      if (obj == null)
-        return false;
-      if (getClass() != obj.getClass())
-        return false;
-      PipelineStrategyKey other = (PipelineStrategyKey)obj;
-      return flushToZero == other.flushToZero && Objects.equals(stage, other.stage);
-    }
-  }
+  static record PipelineStrategyKey(PipelineStage stage, boolean resetToZero) {}
 
-  HashMap<PipelineStrategyKey, MultiNodeStrategy> pipelineStrategyByPipetoStage = new HashMap<>();
+  HashMap<PipelineStrategyKey, NodeRegPipelineStrategy> pipelineStrategyByPipetoStage = new HashMap<>();
+
+  /**
+   * Constructs or reuses an IDRetireSerializerStrategy for the given set of issue (assign ID) stages.
+   */
+  protected final IDRetireSerializerStrategy constructOrReuseRetireSerializer(List<PipelineStage> assignStages) {
+    if (!assignStages.isEmpty() && !retireSerializer_opt.isPresent()) {
+      throw new IllegalArgumentException("Got no retire serializer, assignStages should be empty.");
+    }
+    if (assignStages.isEmpty())
+      return null;
+    PipelineFront serializerAssignFront = retireSerializer_opt.get().getIssueFront();
+    if (assignStages.stream().anyMatch(stage -> !serializerAssignFront.contains(stage))) {
+      throw new IllegalArgumentException("assignStages contains stages not processed by the retire serializer.");
+    }
+    return retireSerializer_opt.get();
+  }
 
   boolean implementSingle(Consumer<NodeLogicBuilder> out, NodeInstanceDesc.Key nodeKey, boolean isLast) {
     // Implement register logic
@@ -722,15 +1074,15 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       return false;
 
     SCAIEVNode addrNode = addrNode_opt.get();
-    if (nodeKey.getPurpose().matches(Purpose.PIPEDIN)) {
+    if (nodeKey.getPurpose().matches(Purpose.PIPEDIN) || nodeKey.getPurpose().matches(NodeRegPipelineStrategy.Purpose_Getall_ToPipeTo)) {
       // Check if a pipeline can/should be instantiated for the given nodeKey.
       RegfileInfo regfile = regfilesByName.get(regName);
       if (regfile == null)
         return false;
-      boolean instantiatePipeline = false;
+      boolean implementWithPipeliner = false;
       if (!regfile.issueFront.isAroundOrAfter(nodeKey.getStage(), false) && !nodeKey.getNode().isSpawn() && isLast) {
         // Pipeline the read data or read/write address
-        instantiatePipeline = true;
+        implementWithPipeliner = true;
       }
       if (nodeKey.getNode().name.startsWith(BNode.wrPrefix) // && regfile.commitFront.isAroundOrAfter(nodeKey.getStage(), false)
           && regfile.earlyWrites.stream().anyMatch(
@@ -742,18 +1094,27 @@ public class SCALStateStrategy extends MultiNodeStrategy {
           isLast) {
         assert (!nodeKey.getNode().isSpawn());
         // Pipeline the early write request to the issue front.
-        instantiatePipeline = true;
+        implementWithPipeliner = true;
       }
-      if (instantiatePipeline) {
-        boolean flushToZero = nodeKey.getNode().isValidNode() || nodeKey.getNode().getAdj() == AdjacentNode.cancelReq;
-        var pipelineStrategy = pipelineStrategyByPipetoStage.computeIfAbsent(
-            new PipelineStrategyKey(nodeKey.getStage(), flushToZero),
-            strategyMapKey
-            -> strategyBuilders.buildNodeRegPipelineStrategy(language, bNodes, new PipelineFront(nodeKey.getStage()), false, false,
-                                                             strategyMapKey.flushToZero,
-                                                             _nodeKey -> true, _nodeKey -> false, MultiNodeStrategy.noneStrategy));
-        pipelineStrategy.implement(out, new ListRemoveView<>(List.of(nodeKey)), false);
-        return true;
+      if (implementWithPipeliner) {
+        boolean resetToZero = nodeKey.getNode().isValidNode() || nodeKey.getNode().getAdj() == AdjacentNode.cancelReq;
+        var pipelinerMapKey = new PipelineStrategyKey(nodeKey.getStage(), resetToZero);
+        MultiNodeStrategy pipelineStrategy = pipelineStrategyByPipetoStage.get(pipelinerMapKey);
+        if (pipelineStrategy == null && nodeKey.getPurpose().matches(Purpose.PIPEDIN)) { //Create a new one
+          var pipeliner = strategyBuilders.buildNodeRegPipelineStrategy(language, bNodes, new PipelineFront(nodeKey.getStage()),
+                                                                        false, false, pipelinerMapKey.resetToZero,
+                                                                        _nodeKey -> true, _nodeKey -> false, MultiNodeStrategy.noneStrategy,
+                                                                        false);
+          if (resetToZero) //
+            regfile.earlyWriteValidPipeliners.add(new EarlyWritePipelinerEntry(
+                nodeKey.getStage(), bNodes.GetNonAdjNode(nodeKey.getNode()), pipeliner));
+          pipelineStrategyByPipetoStage.put(pipelinerMapKey, pipeliner);
+          pipelineStrategy = pipeliner;
+        }
+        if (pipelineStrategy != null) {
+          pipelineStrategy.implement(out, new ListRemoveView<>(List.of(nodeKey)), false);
+          return true;
+        }
       }
       return false;
     }
@@ -777,8 +1138,26 @@ public class SCALStateStrategy extends MultiNodeStrategy {
         logger.error("Custom registers: Found no address/issue stage for {}", baseNode.name);
         return true;
       }
-      final PipelineFront commitFront = new PipelineFront(core.GetRootStage().getAllChildren().filter(
+      PipelineFront commitFront = new PipelineFront(core.GetRootStage().getAllChildren().filter(
           stage -> stage.getTags().contains(StageTag.Commit) && addrPipelineFront.isAroundOrBefore(stage, false)));
+      if (commitFront.asList().isEmpty()) {
+        var coreNode = core.GetNodes().get(bNodes.WrCustReg_data_constraint);
+        if (coreNode == null) {
+          logger.error("Custom registers: Found no viable writeback stage constraint for core {}", core.GetName());
+          return true;
+        }
+        PipelineFront earliestFront = core.TranslateStageScheduleNumber(coreNode.GetEarliest());
+        PipelineFront latestFront = core.TranslateStageScheduleNumber(coreNode.GetLatest());
+        commitFront = new PipelineFront(core.GetRootStage().getAllChildren().filter(
+                                        stage -> earliestFront.isAroundOrBefore(stage, false)
+                                                 && (latestFront.isAroundOrAfter(stage, false)
+                                                     || stage.getKind() == StageKind.Decoupled)
+                                                 && addrPipelineFront.isAroundOrBefore(stage, false)));
+      }
+      if (commitFront.asList().isEmpty()) {
+        logger.error("Custom registers: Found no writeback stages for {}", baseNode.name);
+        return true;
+      }
       boolean isRead = nodeKey.getNode().name.startsWith("Rd");
       List<NodeInstanceDesc.Key> opKeys = op_stage_instr.getOrDefault(nodeKey.getNode(), new HashMap<>())
                                               .entrySet()
@@ -881,8 +1260,20 @@ public class SCALStateStrategy extends MultiNodeStrategy {
     return false;
   }
 
+  /**
+   * Call inner strategies
+   */
+  void implementInner(Consumer<NodeLogicBuilder> out, Iterable<NodeInstanceDesc.Key> nodeKeys, boolean isLast) {
+    for (var regfile : regfiles) {
+      for (CommitHandler commitHandler : regfile.unique_commit_handlers) {
+        commitHandler.implementInner(out, nodeKeys, isLast);
+      }
+    }
+  }
+
   @Override
   public void implement(Consumer<NodeLogicBuilder> out, Iterable<NodeInstanceDesc.Key> nodeKeys, boolean isLast) {
+    implementInner(out, nodeKeys, isLast);
     Iterator<NodeInstanceDesc.Key> nodeKeyIter = nodeKeys.iterator();
     while (nodeKeyIter.hasNext()) {
       var nodeKey = nodeKeyIter.next();

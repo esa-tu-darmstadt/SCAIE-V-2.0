@@ -24,7 +24,7 @@ import scaiev.util.Verilog;
 
 /**
  * Implementation logic for the early stage portions of an early SCALStateStrategy read/write.
- * (From the issue stage onwards, the writes behave like a regular port and are handled in the core part of the implementation.)
+ * (From the issue stage onwards, the writes behave like a regular port and are handled in the main part of the implementation.)
  */
 public class EarlyRWImplementation {
 
@@ -37,13 +37,10 @@ public class EarlyRWImplementation {
   protected Core core;
 
   /**
-   * @param strategyBuilders The StrategyBuilders object to build sub-strategies with
+   * @param stateStrategy The state strategy to build early RW on
    * @param language The (Verilog) language object
    * @param bNodes The BNode object for the node instantiation
    * @param core The core nodes description
-   * @param op_stage_instr The Node-Stage-ISAX mapping
-   * @param spawn_instr_stage The Node-ISAX-Stage mapping providing the precise sub-pipeline stage for spawn operations
-   * @param allISAXes The ISAX descriptions
    */
   public EarlyRWImplementation(SCALStateStrategy stateStrategy, Verilog language, BNode bNodes, Core core) {
     this.stateStrategy = stateStrategy;
@@ -60,6 +57,8 @@ public class EarlyRWImplementation {
   /**
    * Returns the FF logic to reset the 'dirty for early read' flag,
    * or an empty string if the group of the write node is already being forwarded or handled another way.
+   * @param writeNode the write node that completed, or null if all entries are to be reset
+   * @param addr the address expression to clear, or null to reset all entries
    */
   String earlyDirtyFFResetLogic(NodeRegistryRO registry, RegfileInfo regfile, SCAIEVNode writeNode, String addr, String lineTabs) {
     // All hazards handled by WrRerunNext plus stalling from the general dirty reg
@@ -78,11 +77,15 @@ public class EarlyRWImplementation {
    * Can set rdata_outLogic and stallOutLogic with blocking assignments.
    */
   String earlyReadForwardLogic(NodeRegistryRO registry, RegfileInfo regfile, NodeInstanceDesc.Key earlyReadKey, String rdata_outLogic,
-                               String raddr, String stallOutLogic, String lineTabs) {
+                               String raddr, String stallOutLogic, String lateDirtyRegName,
+                               String lineTabs, NodeLogicBlock logicBlock) {
     return "";
   }
   NodeLogicBlock earlyRead(NodeRegistryRO registry, RegfileInfo regfile, List<Integer> auxReads, String regfilePin_rdata,
                            String regfilePin_re, String regfilePin_raddr, String dirtyRegName) {
+    String earlyDirtyRegName = getEarlyDirtyName(regfile);
+    if (earlyDirtyRegName == null)
+      earlyDirtyRegName = dirtyRegName;
     String tab = language.tab;
     int elements = regfile.depth;
     NodeLogicBlock ret = new NodeLogicBlock();
@@ -112,10 +115,10 @@ public class EarlyRWImplementation {
 
       String readLogic = "";
       readLogic += "always_comb begin\n";
-      if (!regfile.commit_writes.isEmpty()) {
+      if (!regfile.writeback_writes.isEmpty()) {
         // Stall the early read stage if the requested register is marked dirty.
         assert (regfile.regularReads.stream().allMatch(regularKey -> regularKey.getStage() != earlyReadStage));
-        readLogic += tab + String.format("%s = %s && %s[%s];\n", wireName_dhInEarlyStage, rdAddrValidExpr, dirtyRegName, rdAddrExpr);
+        readLogic += tab + String.format("%s = %s && %s[%s];\n", wireName_dhInEarlyStage, rdAddrValidExpr, earlyDirtyRegName, rdAddrExpr);
       } else
         readLogic += tab + String.format("%s = 0;\n", wireName_dhInEarlyStage);
       readLogic +=
@@ -124,7 +127,7 @@ public class EarlyRWImplementation {
       if (elements > 1)
         readLogic += tab + String.format("%s = 'x;\n", stateStrategy.makeRegModuleSignalName(regfile.regName, regfilePin_raddr, readPortn));
       readLogic +=
-          earlyReadForwardLogic(registry, regfile, requestedReadKey, wireName_earlyRead, rdAddrExpr, wireName_dhInEarlyStage, tab);
+          earlyReadForwardLogic(registry, regfile, requestedReadKey, wireName_earlyRead, rdAddrExpr, wireName_dhInEarlyStage, dirtyRegName, tab, ret);
       readLogic += "end\n";
       ret.logic += readLogic;
 
@@ -137,14 +140,14 @@ public class EarlyRWImplementation {
   }
   NodeLogicBlock issueWriteToEarlyReadHazard(NodeRegistryRO registry, RegfileInfo regfile, int auxRerun) {
     NodeLogicBlock ret = new NodeLogicBlock();
-    if (regfile.commit_writes.size() > 0 && regfile.earlyReads.size() > 0) {
+    if (regfile.writeback_writes.size() > 0 && regfile.earlyReads.size() > 0) {
       // Issue WrRerunNext in an issue stage if it is announcing an (upcoming) write.
       // This flushes out any possible RaW hazards with early reads.
       // Note: If there are several issue stages (-> multi-issue core),
       //  the WrRerunNext implementation of the core may have to flush concurrent issues depending on the logical instruction ordering.
       for (PipelineStage issueStage : regfile.issueFront.asList()) {
         String anyWriteInitiatedExpr =
-            regfile.commit_writes.stream()
+            regfile.writeback_writes.stream()
                 .filter(commitWriteKey -> rerunPreissueOn(regfile, commitWriteKey.getNode()))
                 .map(commitWriteKey -> {
                   SCAIEVNode commitWriteNode = commitWriteKey.getNode();

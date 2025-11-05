@@ -31,7 +31,7 @@ public class FileWriter {
   protected static final Logger logger = LogManager.getLogger();
 
   private static class FileUpdateInfo {
-    /** LinkedHashMap<Grep,ToWrite>>, order is important so that declarations of new signals will be before these are used in assigns */
+    /** LinkedHashMap, order is important so that declarations of new signals will be before these are used in assigns */
     public LinkedHashMap<ToWrite, String> updates = new LinkedHashMap<ToWrite, String>();
     /** If set, treat the input file as empty, regardless of whether an actual input file exists */
     public boolean clear = false;

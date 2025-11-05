@@ -9,13 +9,13 @@ pipeline:
   nextStages: []
   children:
   - {name: fetch,      kind: core,          externalID: 0,  continuous: true,  tags: [inorder], nextStages: [decode], children: []}
-  - {name: decode,     kind: core,          externalID: 1,  continuous: false, tags: [inorder], nextStages: [issue], children: []}
-  - {name: issue,      kind: core,          externalID: 2,  continuous: true,  tags: [inorder], nextStages: [executesv1, executecva], children: []}
+  - {name: decode,     kind: core,          externalID: 1,  continuous: false, tags: [inorder, regrename], nextStages: [issue], children: []}
+  - {name: issue,      kind: core,          externalID: 2,  continuous: true,  tags: [inorder, issue], nextStages: [executesv1, executecva], children: []}
   # Execute marked as commit (for custom register commit
-  - {name: executesv1, kind: core,          externalID: 3,  continuous: true,  tags: [inorder, execute, commit], nextStages: [decoupled1], children: []}
-  - {name: decoupled1, kind: decoupled,     externalID: 4,  continuous: true,  tags: [inorder, commit], nextStages: [], children: []}
+  - {name: executesv1, kind: core,          externalID: 3,  continuous: true,  tags: [inorder, execute], nextStages: [decoupled1], children: []} #, commit
+  - {name: decoupled1, kind: decoupled,     externalID: 4,  continuous: true,  tags: [inorder], nextStages: [], children: []} #, commit
   # Internal stage invisible to the ISAX; placeholder to indicate that not all instructions (i.e. only ISAX instructions) from issue enter executesv1.
-  - {name: executecva, kind: core_internal, externalID: -1, continuous: true,  tags: [inorder, commit, noisax], nextStages: [], children: []}
+  - {name: executecva, kind: core_internal, externalID: -1, continuous: true,  tags: [inorder, noisax], nextStages: [], children: []} #, commit
   ## Internal stage invisible to the ISAX; successor to executesv1 for non-decoupled ISAXes, internally used for custom register commit.
   #- {name: commitsv1,  kind: core_internal, externalID: -1, continuous: true,  tags: [inorder, commit], nextStages: [], children: []}
   ## Internal stage invisible to the ISAX; successor to decoupled1, internally used for custom register commit.

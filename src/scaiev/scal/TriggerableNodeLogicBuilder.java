@@ -18,11 +18,13 @@ import scaiev.scal.NodeInstanceDesc.Purpose;
 public abstract class TriggerableNodeLogicBuilder extends NodeLogicBuilder {
 
   // protected NodeLogicBuilder inner;
+  /** The trigger key to listen for (unspecified aux) */
   protected NodeInstanceDesc.Key triggerKey;
+  /** True iff the trigger will already be updated in the next build iteration */
   protected boolean triggerPending = true; // The builder will be triggered once from registering the builder.
 
   /**
-   * @param inner the inner NodeLogicBuilder
+   * @param name the name for the builder
    * @param nodeKey the key to use for triggering; its Purpose value will be replaced with a new one; ISAX and aux will be ignored for
    *     implementation reasons.
    */
@@ -37,6 +39,7 @@ public abstract class TriggerableNodeLogicBuilder extends NodeLogicBuilder {
    * @param inner the inner NodeLogicBuilder
    * @param nodeKey the key to use for triggering; its Purpose value will be replaced with a new one; ISAX and aux will be ignored for
    *     implementation reasons.
+   * @return a new TriggerableNodeLogicBuilder
    */
   public static TriggerableNodeLogicBuilder makeWrapper(NodeLogicBuilder inner, NodeInstanceDesc.Key nodeKey) {
     return new TriggerableNodeLogicBuilder("Triggerable-" + inner.name, nodeKey) {
@@ -47,9 +50,11 @@ public abstract class TriggerableNodeLogicBuilder extends NodeLogicBuilder {
     };
   }
 
+  /** A trigger output emitter for use in a NodeLogicBuilder */
   public class RepeatingTrigger {
     int lastVal = 0;
     boolean didInitialTrigger = false;
+    /** constructor */
     RepeatingTrigger() {}
     /**
      * Function that should be called for each invocation of the calling builder.
@@ -97,11 +102,15 @@ public abstract class TriggerableNodeLogicBuilder extends NodeLogicBuilder {
   /**
    * Determines if the NodeLogicBuilder should continue to listen for triggers.
    * The default behavior in {@link TriggerableNodeLogicBuilder} is to always be triggerable.
+   * @return true iff triggers should be handled
    */
   protected boolean isTriggerable() { return true; }
 
   /**
    * The inner equivalent of {@link NodeLogicBuilder#apply(NodeRegistryRO, int)} for {@link TriggerableNodeLogicBuilder}.
+   * @param registry the registry providing the existing nodes and that collects a list of missing dependencies
+   * @param aux a unique value to tag accumulated nodes with
+   * @return the logic instance created by the builder, usually providing one or several nodes
    */
   protected abstract NodeLogicBlock applyTriggered(NodeRegistryRO registry, int aux);
 
@@ -121,7 +130,7 @@ public abstract class TriggerableNodeLogicBuilder extends NodeLogicBuilder {
    *     for implementation reasons
    * @param fn with args (NodeRegistryRO registry, int aux), implements {@link TriggerableNodeLogicBuilder#applyTriggered(NodeRegistryRO,
    *     int)}
-   * @return
+   * @return a TriggerableNodeLogicBuilder for fn
    */
   public static TriggerableNodeLogicBuilder fromFunction(String name, NodeInstanceDesc.Key triggerNodeKey,
                                                          BiFunction<NodeRegistryRO, Integer, NodeLogicBlock> fn) {
@@ -139,7 +148,7 @@ public abstract class TriggerableNodeLogicBuilder extends NodeLogicBuilder {
    *     for implementation reasons
    * @param fn with args (NodeRegistryRO registry), implements {@link TriggerableNodeLogicBuilder#applyTriggered(NodeRegistryRO, int)}
    *     ignoring the aux parameter
-   * @return
+   * @return a TriggerableNodeLogicBuilder for fn
    */
   public static TriggerableNodeLogicBuilder fromFunction(String name, NodeInstanceDesc.Key triggerNodeKey,
                                                          Function<NodeRegistryRO, NodeLogicBlock> fn) {

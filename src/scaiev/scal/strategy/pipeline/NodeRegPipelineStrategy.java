@@ -2,14 +2,18 @@ package scaiev.scal.strategy.pipeline;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import scaiev.backend.BNode;
+import scaiev.frontend.SCAIEVNode;
+import scaiev.frontend.SCAIEVNode.AdjacentNode;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
@@ -19,7 +23,9 @@ import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
+import scaiev.scal.NodeRegistry;
 import scaiev.scal.NodeRegistryRO;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.TriggerableNodeLogicBuilder;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.util.ListRemoveView;
@@ -47,17 +53,51 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
 
   protected MultiNodeStrategy strategy_instantiateNew;
 
-  protected static class ImplementedKeyInfo {
+  protected boolean forwardRequestedFor;
+
+  /**
+   * Carries metadata for an implemented key (specific to each adjacent node).
+   * For internal use by NodeRegPipelineStrategy and any overriding pipelining implementations.
+   */
+  public static class ImplementedKeyInfo {
+    /**
+     * A triggerable builder wrapping several builders (pipelining / non-pipelining implementation).
+     * The builders wrapped by this must not depend on another.
+     * If a pipelining primitive wants to create builders depending on another,
+     *   it should only create the main builder for the key and instantiate the rest through separate calls of {@link MultiNodeStrategy#implement(Consumer, Iterable, boolean)}.
+     * <br/>
+     * Note: This is initially null.
+     */
     TriggerableNodeLogicBuilder triggerable = null;
+    /**
+     * Internal tracking for NodeRegPipelineStrategy. Indicates if a PIPEDIN instance has been requested.
+     */
     boolean allowPipein = false;
+    /**
+     * Internal tracking for NodeRegPipelineStrategy. Indicates if the key must always be pipelined.
+     */
     boolean pipeliningIsRequired = false;
+    /**
+     * Indicates if the node instance in the destination stage should receive
+     * the 'requestedFor' entries from the source instance.
+     */
+    boolean forwardRequestedFor = false;
+    /**
+     * Internal tracking for NodeRegPipelineStrategy.
+     * Possibly: Builders that can implement the node in the given stage without pipelining
+     *           (should not be a concern for pipelining primitives)
+     */
     List<NodeLogicBuilder> baseBuilders = new ArrayList<>();
+
+    /** 
+     * The list of all requested Purpose_Getall_ToPipeTo nodes associated with the builder.
+     * The {@link #triggerable} builder will be triggered if the set changes.
+     */
+    Set<NodeInstanceDesc.Key> requestedGetallToPipeTo = new HashSet<>();
   }
 
   /** Per-composition state: Keys already implemented */
   HashMap<NodeInstanceDesc.Key, ImplementedKeyInfo> implementedKeys = new HashMap<>();
-
-  // TODO: Implement a per-stage selection of the implementation for pipelineBuilder_optionalSingle
 
   /**
    * @param language The (Verilog) language object
@@ -76,10 +116,12 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
    *        Important: The builders returned by a strategy invocation may get combined to a single builder,
    *        and thus cannot rely on seeing each other's outputs in the registry.
    *        Important: The returned builders will not be able to see the PIPEDIN variant of the same key.
+   * @param forwardRequestedFor If true, adds the source stage's requestedFor set to the node in the destination stage.
    */
   public NodeRegPipelineStrategy(Verilog language, BNode bNodes, PipelineFront minPipeFront, boolean zeroOnFlushSrc,
                                  boolean zeroOnFlushDest, boolean zeroOnBubble, Predicate<NodeInstanceDesc.Key> can_pipe,
-                                 Predicate<NodeInstanceDesc.Key> prefer_direct, MultiNodeStrategy strategy_instantiateNew) {
+                                 Predicate<NodeInstanceDesc.Key> prefer_direct, MultiNodeStrategy strategy_instantiateNew,
+                                 boolean forwardRequestedFor) {
     this.language = language;
     this.bNodes = bNodes;
     this.minPipeFront = minPipeFront;
@@ -91,11 +133,18 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
     this.prefer_direct = prefer_direct;
 
     this.strategy_instantiateNew = strategy_instantiateNew;
+
+    this.forwardRequestedFor = forwardRequestedFor;
   }
 
-  protected static String flushstallCombineRdWrCondition(String rdExpr, Optional<NodeInstanceDesc> wrExpr) {
-    return wrExpr.isEmpty() ? rdExpr : String.format("(%s || %s)", rdExpr, wrExpr.get().getExpression());
-  }
+  /**
+   * A special Purpose to read the pipelining buffers.
+   * If there are several elements in the buffer to a given stage, the resulting node's {@link SCAIEVNode#elements} field will be set accordingly;
+   * in that case, the resulting expression will be multi-dimensional.
+   * {@link SCAIEVNode#elements} values below 2 indicate a single element and a single dimension.
+   * Note: If there is no pipeliner for the given key, the lookup with this Purpose value will not resolve (i.e., NodeRegistry will create a stub with {@link NodeRegistry#MISSING_PREFIX}).
+   */
+  public static final NodeInstanceDesc.Purpose Purpose_Getall_ToPipeTo = new NodeInstanceDesc.Purpose("Getall_ToPipeTo", true, Optional.empty(), List.of());
 
   /**
    * Constructs a NodeLogicBuilder that builds a simple register implementation using RdStall.
@@ -118,27 +167,24 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
 
       NodeLogicBlock ret = new NodeLogicBlock();
       if (prevStageNodeInstance.isPresent()) {
+        if (implementation.forwardRequestedFor)
+          requestedFor.addAll(prevStageNodeInstance.get().getRequestedFor(), true);
         // The name of the register to declare.
         String nameReg = language.CreateBasicNodeName(nodeKey.getNode(), stage, nodeKey.getISAX(), true) +
                          (nodeKey.getAux() != 0 ? "_" + nodeKey.getAux() : "") + "_regpipein";
         // The expression that defines the updated register value.
         String value = prevStageNodeInstance.get().getExpression();
-        boolean value_missing = prevStageNodeInstance.get().getExpression().startsWith("MISSING_");
+        boolean value_missing = prevStageNodeInstance.get().getExpression().startsWith(NodeRegistry.MISSING_PREFIX);
         if (zeroOnFlushSrc) {
           // If the previous stage is being flushed and not stalling, register a zero instead of the current value.
-          String rdflushPrevStage =
-              registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, stageFrom, ""), requestedFor);
-          Optional<NodeInstanceDesc> wrflushPrevStage =
-              registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrFlush, stageFrom, ""));
-          value = "(" + flushstallCombineRdWrCondition(rdflushPrevStage, wrflushPrevStage) + ") ? 0 : " + value;
+          String flushPrevStage = SCALUtil.buildCond_StageFlushing(bNodes, registry, stageFrom, requestedFor);
+          value = "(" + flushPrevStage + ") ? 0 : " + value;
         }
         // Add the declaration for the register.
         ret.declarations += language.CreateDeclSig(nodeKey.getNode(), stage, nodeKey.getISAX(), true, nameReg);
 
         // The conditions for whether a new value is being pipelined.
-        String rdstallPrevStage = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, stageFrom, ""), requestedFor);
-        Optional<NodeInstanceDesc> wrstallPrevStage =
-            registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrStall, stageFrom, ""));
+        String stallPrevStage = SCALUtil.buildCond_StageStalling(bNodes, registry, stageFrom, false, requestedFor);
         var pipeintoCondInst_opt =
             registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.RdPipeInto, stageFrom, "stage_" + stage.getName()));
         String pipeintoCond = pipeintoCondInst_opt.isPresent() ? String.format(" && %s", pipeintoCondInst_opt.get().getExpression()) : "";
@@ -149,21 +195,21 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
         String regLogic = "";
         regLogic += "always@(posedge " + language.clk + ") begin\n" + tab + "if (" + language.reset + ")\n" + tab.repeat(2) + nameReg +
                     " <= 0;\n" // Reset value: 0
-                    + tab + "else if (!(" + flushstallCombineRdWrCondition(rdstallPrevStage, wrstallPrevStage) + ")" + pipeintoCond +
+                    + tab + "else if (!(" + stallPrevStage + ")" + pipeintoCond +
                     ")\n" + tab.repeat(2) + nameReg + " <= " + value + ";\n"; //
-        if (zeroOnBubble) {
-          String rdstallCurStage = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, stage, ""), requestedFor);
-          Optional<NodeInstanceDesc> wrstallCurStage = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrStall, stage, ""));
+        boolean doZeroOnBubble = zeroOnBubble || !implementation.requestedGetallToPipeTo.isEmpty()
+                                                 && (nodeKey.getNode().getAdj().isValidMarker() || nodeKey.getNode().getAdj() == AdjacentNode.cancelReq);
+        if (doZeroOnBubble) {
+          String stallCurStage = SCALUtil.buildCond_StageStalling(bNodes, registry, stage, false, requestedFor);
           // Previous stage is stalled -> no new value to pipeline.
           // Now, if the current stage is not stalling, it will become a bubble.
-          regLogic += tab + "else if (!(" + flushstallCombineRdWrCondition(rdstallCurStage, wrstallCurStage) + "))\n" + tab.repeat(2) +
+          regLogic += tab + "else if (!(" + stallCurStage + "))\n" + tab.repeat(2) +
                       nameReg + " <= 0;\n";
         }
         if (zeroOnFlushDest) {
-          String rdflushCurStage = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, stage, ""), requestedFor);
-          Optional<NodeInstanceDesc> wrflushCurStage = registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.WrFlush, stage, ""));
+          String flushCurStage = SCALUtil.buildCond_StageFlushing(bNodes, registry, stage, requestedFor);
           // Current stage is being flushed.
-          regLogic += tab + "else if (" + flushstallCombineRdWrCondition(rdflushCurStage, wrflushCurStage) + ")\n" + tab.repeat(2) +
+          regLogic += tab + "else if (" + flushCurStage + ")\n" + tab.repeat(2) +
                       nameReg + " <= 0;\n";
         }
         regLogic += "end\n";
@@ -171,16 +217,32 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
 
         NodeInstanceDesc.Key generatedNodeKey = new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.PIPEDIN, nodeKey.getNode(),
                                                                          nodeKey.getStage(), nodeKey.getISAX(), nodeKey.getAux());
+        ExpressionType generatedNodeExprType = !value_missing ? ExpressionType.WireName : ExpressionType.AnyExpression_Noparen;
+        String generatedNodeVal = !value_missing ? nameReg : String.format("%s%s~from_previous", NodeRegistry.MISSING_PREFIX, nameReg);
         if (value_missing) {
-          // Output "MISSING_<..>" in case a rule polls for NodeRegPipelineStrategy validity.
+          // Output NodeRegistry.MISSING_PREFIX+"<..>" in case a rule polls for NodeRegPipelineStrategy validity.
           // Also clear the logic for the same reason, while still keeping the dependencies,
           //  in case downstream node construction just needs a couple more iterations.
           ret.logic = "";
           ret.declarations = "";
-          ret.outputs.add(
-              new NodeInstanceDesc(generatedNodeKey, "MISSING_" + nameReg + "~from_previous", ExpressionType.AnyExpression, requestedFor));
-        } else
-          ret.outputs.add(new NodeInstanceDesc(generatedNodeKey, nameReg, ExpressionType.WireName, requestedFor));
+        }
+        ret.outputs.add(new NodeInstanceDesc(generatedNodeKey, generatedNodeVal, generatedNodeExprType, requestedFor));
+
+        for (NodeInstanceDesc.Key getallToPipeToKey : implementation.requestedGetallToPipeTo) {
+          assert(getallToPipeToKey.getNode().equals(nodeKey.getNode()));
+          assert(getallToPipeToKey.getStage().equals(nodeKey.getStage()));
+          assert(getallToPipeToKey.getISAX().equals(nodeKey.getISAX()) && getallToPipeToKey.getAux() == nodeKey.getAux());
+          var getallOutputKey = new NodeInstanceDesc.Key(getallToPipeToKey.getPurpose(), nodeKey.getNode(), getallToPipeToKey.getStage(),
+                                                         getallToPipeToKey.getISAX(), getallToPipeToKey.getAux());
+          if (nodeKey.getNode().getAdj().isValidMarker() || nodeKey.getNode().getAdj() == AdjacentNode.cancelReq) {
+            String inStageValid = registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdInStageValid, getallToPipeToKey.getStage(), ""))
+                                      .getExpressionWithParens();
+            ret.outputs.add(new NodeInstanceDesc(getallOutputKey, generatedNodeVal + " && " + inStageValid, ExpressionType.AnyExpression, requestedFor));
+          }
+          else {
+            ret.outputs.add(new NodeInstanceDesc(getallOutputKey, generatedNodeVal, ExpressionType.AnyExpression_Noparen, requestedFor));
+          }
+         }
       }
 
       return ret;
@@ -215,8 +277,9 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
   protected boolean implementSingle(NodeInstanceDesc.Key nodeKey, Consumer<NodeLogicBuilder> out) {
     List<NodeLogicBuilder> baseBuilders = new ArrayList<>();
     ListRemoveView<NodeInstanceDesc.Key> implementKeyAsNew_RemoveView = new ListRemoveView<>(List.of(nodeKey));
-    this.strategy_instantiateNew.implement(builder -> baseBuilders.add(builder), implementKeyAsNew_RemoveView, false);
-    // Determine if strategy_inatantiateNew can handle the key, based on whether it removed it from the list.
+    if (!nodeKey.getPurpose().matches(Purpose_Getall_ToPipeTo))
+      this.strategy_instantiateNew.implement(builder -> baseBuilders.add(builder), implementKeyAsNew_RemoveView, false);
+    // Determine if strategy_instantiateNew can handle the key, based on whether it removed it from the list.
     boolean canBeImplementedAsNew = implementKeyAsNew_RemoveView.isEmpty();
     if (!minPipeFront.isAroundOrBefore(nodeKey.getStage(), false) || !this.can_pipe.test(nodeKey)) {
       baseBuilders.forEach(builder -> out.accept(builder));
@@ -239,15 +302,23 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
         implementation.triggerable.trigger(out);
       }
       if (!baseBuilders.isEmpty()) {
+        assert(!nodeKey.getPurpose().matches(Purpose_Getall_ToPipeTo));
         implementation.baseBuilders.addAll(baseBuilders);
         implementation.triggerable.trigger(out);
       }
-      return nodeKey.getPurpose().matches(Purpose.PIPEDIN) || canBeImplementedAsNew;
+      if (nodeKey.getPurpose().matches(Purpose_Getall_ToPipeTo)) {
+        implementation.requestedGetallToPipeTo.add(nodeKey);
+        implementation.triggerable.trigger(out);
+      }
+      return nodeKey.getPurpose().matches(Purpose.PIPEDIN) || nodeKey.getPurpose().matches(Purpose_Getall_ToPipeTo) || canBeImplementedAsNew;
     }
+    if (nodeKey.getPurpose().matches(Purpose_Getall_ToPipeTo))
+      return false; //Will not create a pipeliner just for Purpose_Getall_ToPipeTo.
     implementation = new ImplementedKeyInfo();
     implementation.baseBuilders = baseBuilders;
     implementation.allowPipein = nodeKey.getPurpose().matches(Purpose.PIPEDIN);
     implementation.pipeliningIsRequired = baseBuilders.isEmpty();
+    implementation.forwardRequestedFor = this.forwardRequestedFor;
 
     implementedKeys.put(implementedKey, implementation);
 
@@ -334,7 +405,7 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
     NodeLogicBuilder defaultBuilder =
         NodeLogicBuilder.fromFunction("pipelineBuilder_MISSING (" + nodeKey.toString(false) + ")", (NodeRegistryRO registry) -> {
           NodeLogicBlock ret = new NodeLogicBlock();
-          ret.outputs.add(new NodeInstanceDesc(implementedKey, "MISSING_" + nodeKey.toString(), ExpressionType.AnyExpression_Noparen));
+          ret.outputs.add(new NodeInstanceDesc(implementedKey, NodeRegistry.MISSING_PREFIX + nodeKey.toString(), ExpressionType.AnyExpression_Noparen));
           return ret;
         });
 

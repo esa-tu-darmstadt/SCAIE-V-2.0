@@ -10,6 +10,11 @@ public class EitherOrNodeLogicBuilder extends NodeLogicBuilder {
 
   NodeLogicBuilder[] inner;
 
+  /**
+   * @param name a short, descriptive name for the builder
+   * @param inner the inner builders; the first one that returns
+   *              some logic will be used in {@link #apply(NodeRegistryRO, int)}
+   */
   public EitherOrNodeLogicBuilder(String name, NodeLogicBuilder... inner) {
     super(name);
     this.inner = inner;

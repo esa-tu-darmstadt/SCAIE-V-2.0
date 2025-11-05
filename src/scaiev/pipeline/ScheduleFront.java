@@ -45,4 +45,10 @@ public class ScheduleFront {
       throw new java.lang.UnsupportedOperationException("TimeFront#asInt is not supported for PipelineFront");
     return asStagePosInt;
   }
+  @Override
+  public String toString() {
+    if (asStagePosInt != Integer.MIN_VALUE)
+      return Integer.toString(asStagePosInt);
+    return asFront.asList().stream().map(stage->stage.getName()).reduce((a,b) -> a+", "+b).orElse("");
+  }
 }
