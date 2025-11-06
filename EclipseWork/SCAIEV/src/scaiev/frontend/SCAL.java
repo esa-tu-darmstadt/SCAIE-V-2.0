@@ -117,7 +117,9 @@ public class SCAL implements SCALBackendAPI {
 			this.instr = instr;
 		}
 	}
-	
+	// Vars for adding logic to the module from any function 
+	private String declarations = ""; 
+	private String logic = "";
 	// Module names 
 	private String FIFOmoduleName = "SimpleFIFO";
 	private String ShiftmoduleName = "SimpleShift";
@@ -252,7 +254,7 @@ public class SCAL implements SCALBackendAPI {
 		this.toFile = new FileWriter(inPath);
 	    this.myLanguage = new Verilog(toFile,virtualBackend); // core needed for verification purposes    
 	    myLanguage.BNode = BNode;
-	    String interfToISAX = "",  interfToCore = "",  declarations = "",  logic = "", otherModules = "";
+	    String interfToISAX = "",  interfToCore = "", otherModules = ""; // logic and declarations are global
 	     
 	    //////////////////////   GENERATE LOGIC FOR INTERNAL STATES ////////////
     	// Generate module for private registers
@@ -998,6 +1000,13 @@ public class SCAL implements SCALBackendAPI {
 	    
 		////////////////////// ADDITIONAL INTERF TO CORE //////////////////////
     	/// Generate any additional interf to core which was required by other nodes /////////
+    	// First add to list the nodes that should not generate interf to core by definition 
+	    for(SCAIEVNode operation : this.op_stage_instr.keySet()) 
+	    	if(operation.noInterfToCore)
+	    		for(int stage : op_stage_instr.get(operation).keySet()) {
+	    			NodeStagePair remove = new NodeStagePair(operation,stage);			
+	    			removeFrCoreInterf.add(remove);
+	    		}
     	// Generate interf between this module and core 
 	    for(SCAIEVNode operation : this.addToCoreInterf.keySet()) {
 	    	if(!operation.isAdj()) { // Add main nodes (not adjacent)
@@ -1347,8 +1356,9 @@ public class SCAL implements SCALBackendAPI {
 	    	 }
 	     }
 	     
-	     // Add RdIvalid for user RdCustomRegisters 
-	     for (SCAIEVNode node : this.op_stage_instr.keySet())
+	     // Add signals for user RdCustomRegisters (RdIValid, RdInstr for addr if required) 
+	     Set<Integer> rdInstrStages = null;// = new Set<Integer>() ;
+	     for (SCAIEVNode node : this.op_stage_instr.keySet()) {
     		 for(AdjacentNode adjacent : BNode.GetAdj(node)) {
     			 SCAIEVNode adjNode = BNode.GetAdjSCAIEVNode(node, adjacent);
     			 if( !node.isInput && this.BNode.IsUserBNode(node) &&  !adjNode.isSpawn() &&  adjacent == AdjacentNode.validReq) { // if it's a user state node and it's output (RdCustomReg)
@@ -1360,7 +1370,23 @@ public class SCAL implements SCALBackendAPI {
 					 AddRdIValid(allReads,node, node.commitStage,maxStageRdInstr);		// afterwards,RdCustom_valid_req handled in SCAL In the part where we generate all validreq for writes		 
     			 }
 	    	 }
-
+    		 if( node.isInput && this.BNode.IsUserBNode(node) && !node.isSpawn() && node.elements>1) { // we need addr, so instr fields. if not required, could be optimized away by setting the addr valid sig to ct 1
+    			 AddToCoreInterfHashMap(BNode.RdInstr, this.core.GetNodes().get(node).GetEarliest());
+    			 rdInstrStages = this.op_stage_instr.get(node).keySet();
+    		 }
+	     }
+	     if(rdInstrStages!=null)
+		     for (int i : rdInstrStages) {
+				// AddIn_op_stage_instr(BNode.RdInstr, i, "");// workaround to have rdinstr signal
+				// Can we generate this interf to core? If not, let's create the register
+				if(this.core.GetNodes().get(BNode.RdInstr).GetExpensive()>=i) {
+					HashSet<Integer> stages = new HashSet<Integer>();
+					stages.add(i);
+					addRdNodeReg.put(BNode.RdInstr, stages);
+					declarations += "wire [31:0] "+ this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), i, "")+";\n";
+					logic += this.myLanguage.CreateAssign(this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), i, ""), this.myLanguage.CreateRegNodeName(BNode.RdInstr, i, ""));
+				}
+		     }
 	     // Add RdIvalid if we have spawn dec memory, we need to store adddr, but mem addr computed in spawn_start stage + 1. Add rdivalid in +1 for FIFO addr write signal
 	     if((this.op_stage_instr.containsKey(BNode.WrMem_spawn) || this.op_stage_instr.containsKey(BNode.RdMem_spawn)) && (this.core.GetStartSpawnStage() < this.core.GetNodes().get(BNode.WrMem).GetEarliest())) {
 			 HashSet<String> allSpawnMem = new  HashSet<String> (); 
@@ -1562,6 +1588,14 @@ public class SCAL implements SCALBackendAPI {
 
 	
 	private boolean AddIn_op_stage_instr(SCAIEVNode operation,int stage, String instruction) {
+		// Some checks 
+		// Do we have such an instr? If not, then let's build a dummy one
+		if(!ISAXes.containsKey(instruction)) {
+			SCAIEVInstr dummy = new SCAIEVInstr(instruction);
+			ISAXes.put(instruction, dummy);
+		}
+		
+			 
 		if(!op_stage_instr.containsKey(operation)) 
 			op_stage_instr.put(operation, new HashMap<Integer,HashSet<String>>()); 
 		else if(op_stage_instr.get(operation).containsKey(stage) && op_stage_instr.get(operation).get(stage).contains(instruction))
@@ -2264,13 +2298,23 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 	 */
 	private String CreateAndRegisterTextInterfaceForCore(SCAIEVNode operation, int stage, String instrName, String dataT)
 	{
+		boolean supportedByCore = true; 
+		SCAIEVNode searchNode = operation; 
+		if(operation.isAdj())
+			searchNode=BNode.GetSCAIEVNode(operation.nameParentNode);
+		if(!operation.isSpawn())
+			if( (this.core.GetNodes().get(searchNode).GetEarliest()>stage) || (this.core.GetNodes().get(searchNode).GetLatest()<stage))
+				supportedByCore = false; 
+		if(operation.noInterfToCore)
+			supportedByCore = false; 
 		String topWireName = "core_" + this.myLanguage.CreateBasicNodeName(operation, stage, instrName, false) + (operation.isInput ? "_to_scal" : "_from_scal");
 		String scalPinName = this.myLanguage.CreateFamNodeName(operation, stage, instrName, false);
 		String corePinName = this.myLanguage.CreateFamNodeName(operation.NodeNegInput(), stage, instrName, false);
 		if (!netlist.containsKey(topWireName))
 		{
 			SCALPinNet net = new SCALPinNet(operation.size, scalPinName, corePinName, "");
-			netlist.put(topWireName, net);
+			if(supportedByCore)
+				netlist.put(topWireName, net);
 		}
 		else
 		{

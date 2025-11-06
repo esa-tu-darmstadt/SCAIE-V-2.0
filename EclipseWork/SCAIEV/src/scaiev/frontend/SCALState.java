@@ -152,6 +152,27 @@ private HashSet<String> textInterface = new  HashSet<String>();
 			////////// Create regs logic
 			if(node.isInput && allBNodes.IsUserBNode(node)  && !node.isSpawn())
 				textLogic += InstReg(node.name, node.size , node.elements);
+			/////////// Signals on interf for deeper regs  (addr, addr_valid)
+			if(node.elements>1 && allBNodes.IsUserFNode(node) && node.isInput && !node.isSpawn()) {
+				int earliest = this.core.GetNodes().get(node).GetEarliest();
+				int writebackStage = this.core.GetNodes().get(node).GetLatest();
+				
+				SCAIEVNode addrNode = allBNodes.GetAdjSCAIEVNode(node,AdjacentNode.addr );
+				SCAIEVNode addrReqNode = allBNodes.GetAdjSCAIEVNode(node,AdjacentNode.addrReq );
+				SCAIEVNode RdNode = allBNodes.GetSCAIEVNode(allBNodes.GetNameRdNode(node));
+				SCAIEVNode addrRdNode = allBNodes.GetAdjSCAIEVNode(RdNode,AdjacentNode.addr );
+				SCAIEVNode addrRdReqNode = allBNodes.GetAdjSCAIEVNode(RdNode,AdjacentNode.addrReq );
+				AddToInterface(BNode.RdInstr.NodeNegInput(), earliest); // to read data 
+				AddToInterface(addrRdReqNode, earliest);
+				AddToInterface(addrRdNode, earliest);
+				
+				for(int stage = earliest;stage <= writebackStage;stage++ )  
+					if(this.op_stage_instr.get(node).containsKey(stage)) {
+						AddToInterface(addrNode, stage);
+						AddToInterface(addrReqNode, stage);
+					}
+					
+			}
 			
 			////////// Datahazard mechanism
 			if(allBNodes.IsUserFNode(node) && node.isInput && !node.isSpawn() && node.DH ) {
@@ -195,8 +216,6 @@ private HashSet<String> textInterface = new  HashSet<String>();
 										+ myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(),stage , "")+"[19:15] & ~{"+addrRdNode.size+"{"+addrReq+"}} )"
 										+" && "+ myLanguage.CreateNodeName(reqRdNode,earliest , "")+" && "+myLanguage.CreateNodeName(reqWrNode,stage , "")+") \n"
 										+ tab+ myLanguage.CreateNodeName(allBNodes.RdStall, earliest, "")+" = 1;\n";
-								AddToInterface(BNode.RdInstr.NodeNegInput(), earliest);
-								AddToInterface(BNode.RdInstr.NodeNegInput(), stage);
 								AddToInterface(reqRdNode, earliest);
 							}
 						}
@@ -243,7 +262,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 			/////////// SPAWN MECHANISM ////////
 			if(node.isSpawn() && allBNodes.IsUserBNode(node)) {
 				int stageSpawn = this.core.maxStage+1;
-				textDelcare += "wire [32-1:0] spawn_"+node.nameParentNode+"_data;\nwire spawn_"+node.nameParentNode+"_valid;\n";
+				textDelcare += "wire [32-1:0] spawn_"+node.nameParentNode+"_data,spawn_"+node.nameParentNode+"_addr ;\nwire spawn_"+node.nameParentNode+"_valid;\n";
 			//	textLogic += myLanguage.CreateAssign(myLanguage.CreateNodeName(allBNodes.GetAdjSCAIEVNode(node  , AdjacentNode.spawnAllowed), stageSpawn, ""),"1'b1"); For the moment default 1, so not added
 				textLogic += myLanguage.CreateAssign(myLanguage.CreateNodeName(allBNodes.GetAdjSCAIEVNode(node  , AdjacentNode.validResp), stageSpawn, ""),"1'b1");
 				textLogic += myLanguage.CreateAssign("spawn_"+node.nameParentNode+"_valid",myLanguage.CreateNodeName(allBNodes.GetAdjSCAIEVNode(node  , AdjacentNode.validReq), stageSpawn, ""));
@@ -261,7 +280,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 					if(this.op_stage_instr.containsKey(spawnNode))
 						containsSpawn = true;
 				if(!containsSpawn) {
-					textDelcare += "wire [32-1:0] spawn_"+node+"_data;\nwire spawn_"+node+"_valid;\n";
+					textDelcare += "wire [32-1:0] spawn_"+node+"_data,spawn_"+node+"_addr ;\nwire spawn_"+node+"_valid;\n";
 					textLogic += myLanguage.CreateAssign("spawn_"+node+"_valid","0");
 					textLogic += myLanguage.CreateAssign("spawn_"+node+"_data","0");
 				}
@@ -337,8 +356,8 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				noDH = true;		
 			
 			if(elements>1) {
-				addr = "[("+myLanguage.CreateNodeName(addrRdNode,minStage , "")+" & "+myLanguage.CreateNodeName(addrRdReqNode, minStage, "")+" | "
-			+ myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(),minStage , "")+"[19:15] & !"+myLanguage.CreateNodeName(addrRdReqNode, minStage, "") +")]";
+				addr = "[("+myLanguage.CreateNodeName(addrRdNode,minStage , "")+" & { "+addrRdNode.size+"{"+  myLanguage.CreateNodeName(addrRdReqNode, minStage, "")+"}} | "
+			+ myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(),minStage , "")+"[19:15] & {"+addrRdNode.size+"{!"+myLanguage.CreateNodeName(addrRdReqNode, minStage, "") +"}})]";
 			}
 			registerinst += myLanguage.CreateAssign(
 								myLanguage.CreateNodeName(regRdNode, minStage, "") ,
