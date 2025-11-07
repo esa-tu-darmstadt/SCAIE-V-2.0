@@ -154,35 +154,35 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				textLogic += InstReg(node.name, node.size , node.elements);
 			/////////// Signals on interf for deeper regs  (addr, addr_valid)
 			if(node.elements>1 && allBNodes.IsUserFNode(node) && node.isInput && !node.isSpawn()) {
-				int earliest = this.core.GetNodes().get(node).GetEarliest();
-				int writebackStage = this.core.GetNodes().get(node).GetLatest();
-				
-				SCAIEVNode addrNode = allBNodes.GetAdjSCAIEVNode(node,AdjacentNode.addr );
-				SCAIEVNode addrReqNode = allBNodes.GetAdjSCAIEVNode(node,AdjacentNode.addrReq );
+				SCAIEVNode addrWrNode = allBNodes.GetAdjSCAIEVNode(node,AdjacentNode.addr );
+				SCAIEVNode addrWrReqNode = allBNodes.GetAdjSCAIEVNode(node,AdjacentNode.addrReq );
 				SCAIEVNode RdNode = allBNodes.GetSCAIEVNode(allBNodes.GetNameRdNode(node));
 				SCAIEVNode addrRdNode = allBNodes.GetAdjSCAIEVNode(RdNode,AdjacentNode.addr );
 				SCAIEVNode addrRdReqNode = allBNodes.GetAdjSCAIEVNode(RdNode,AdjacentNode.addrReq );
+				int earliest = this.core.GetNodes().get(RdNode).GetEarliest();
+				int writebackStage = this.core.GetNodes().get(node).GetLatest();	
 				AddToInterface(BNode.RdInstr.NodeNegInput(), earliest); // to read data 
 				AddToInterface(addrRdReqNode, earliest);
 				AddToInterface(addrRdNode, earliest);
 				
+				// Interf for write nodes
 				for(int stage = earliest;stage <= writebackStage;stage++ )  
 					if(this.op_stage_instr.get(node).containsKey(stage)) {
-						AddToInterface(addrNode, stage);
-						AddToInterface(addrReqNode, stage);
-					}
-					
+						AddToInterface(addrWrNode, stage);
+						AddToInterface(addrWrReqNode, stage);
+					}	
 			}
 			
 			////////// Datahazard mechanism
 			if(allBNodes.IsUserFNode(node) && node.isInput && !node.isSpawn() && node.DH ) {
-				int earliest = this.core.GetNodes().get(node).GetEarliest();
+				SCAIEVNode RdNode = allBNodes.GetSCAIEVNode(allBNodes.GetNameRdNode(node));
+				
+				int earliest = this.core.GetNodes().get(RdNode).GetEarliest();
 				int writebackStage = this.core.GetNodes().get(node).GetLatest();
 				
 				if(node.elements>1) {
 					SCAIEVNode addrNode = allBNodes.GetAdjSCAIEVNode(node,AdjacentNode.addr );
 					SCAIEVNode addrReqNode = allBNodes.GetAdjSCAIEVNode(node,AdjacentNode.addrReq );
-					SCAIEVNode RdNode = allBNodes.GetSCAIEVNode(allBNodes.GetNameRdNode(node));
 					SCAIEVNode addrRdNode = allBNodes.GetAdjSCAIEVNode(RdNode,AdjacentNode.addr );
 					SCAIEVNode addrRdReqNode = allBNodes.GetAdjSCAIEVNode(RdNode,AdjacentNode.addrReq );					
 					SCAIEVNode reqRdNode = allBNodes.GetAdjSCAIEVNode(RdNode,AdjacentNode.validReq );
@@ -208,7 +208,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 							} else  { 
 								textDelcare += myLanguage.CreateDeclReg(addrReqNode, stage, "");
 								textDelcare += myLanguage.CreateDeclSig(addrReqNode, stage, "",false);
-							
+							System.out.println("   reqRdNode  "+reqRdNode+" reqWrNode "+reqWrNode);
 								datahaz += "if( ("+myLanguage.CreateNodeName(addrRdNode,earliest , "")+" & {"+addrRdNode.size+"{"+myLanguage.CreateNodeName(addrRdReqNode, earliest, "")+"}} | "
 										+ myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(),earliest , "")+"[19:15] & ~{"+addrRdNode.size+"{"+myLanguage.CreateNodeName(addrRdReqNode, earliest, "")+"}} )"
 										+ " == "
