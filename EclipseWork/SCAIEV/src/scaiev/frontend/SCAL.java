@@ -242,7 +242,7 @@ public class SCAL implements SCALBackendAPI {
 	}
 	
 	public void PrepareEarliest(HashMap<SCAIEVNode, Integer> node_earliestStageValid ) {
-		this.node_earliestStageValid = node_earliestStageValid;
+		this.node_earliestStageValid.putAll(node_earliestStageValid);
 	}
 	
 	/**
@@ -1356,8 +1356,9 @@ public class SCAL implements SCALBackendAPI {
 	    	 }
 	     }
 	     
-	     // Add signals for user RdCustomRegisters (RdIValid, RdInstr for addr if required) 
-	     Set<Integer> rdInstrStages = null;// = new Set<Integer>() ;
+	     // Add signals for user RdCustomRegisters (RdIValid, RdInstr for addr if required)
+	     int earliest = 0;
+		 int writebackStage = -1;
 	     for (SCAIEVNode node : this.op_stage_instr.keySet()) {
     		 for(AdjacentNode adjacent : BNode.GetAdj(node)) {
     			 SCAIEVNode adjNode = BNode.GetAdjSCAIEVNode(node, adjacent);
@@ -1370,23 +1371,32 @@ public class SCAL implements SCALBackendAPI {
 					 AddRdIValid(allReads,node, node.commitStage,maxStageRdInstr);		// afterwards,RdCustom_valid_req handled in SCAL In the part where we generate all validreq for writes		 
     			 }
 	    	 }
+    		 
     		 if( node.isInput && this.BNode.IsUserBNode(node) && !node.isSpawn() && node.elements>1) { // we need addr, so instr fields. if not required, could be optimized away by setting the addr valid sig to ct 1
-    			 AddToCoreInterfHashMap(BNode.RdInstr, this.core.GetNodes().get(node).GetEarliest());
-    			 rdInstrStages = this.op_stage_instr.get(node).keySet();
+    			 SCAIEVNode RdNode = BNode.GetSCAIEVNode(BNode.GetNameRdNode(node));				
+        		 earliest = this.core.GetNodes().get(RdNode).GetEarliest();
+    			 writebackStage = this.core.GetNodes().get(node).GetLatest();
+    			 this.declarations += "wire "+this.myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(RdNode, AdjacentNode.addrReq).NodeNegInput(), earliest, "")+" = 0; // custom instr not supported by the automated flow yet\n ";
+    			 for (int currstage=earliest; currstage <= writebackStage; currstage++ ) 
+    				this.declarations += "wire "+this.myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node, AdjacentNode.addrReq).NodeNegInput(), currstage, "")+" = 0; // custom instr not supported by the automated flow yet \n";
+    			 
     		 }
 	     }
-	     if(rdInstrStages!=null)
-		     for (int i : rdInstrStages) {
+	     HashSet<Integer> statestages = new HashSet<Integer>();
+	     for (int currstage=earliest; currstage <= writebackStage; currstage++ ) {
 				// AddIn_op_stage_instr(BNode.RdInstr, i, "");// workaround to have rdinstr signal
 				// Can we generate this interf to core? If not, let's create the register
-				if(this.core.GetNodes().get(BNode.RdInstr).GetExpensive()>=i) {
-					HashSet<Integer> stages = new HashSet<Integer>();
-					stages.add(i);
-					addRdNodeReg.put(BNode.RdInstr, stages);
-					declarations += "wire [31:0] "+ this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), i, "")+";\n";
-					logic += this.myLanguage.CreateAssign(this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), i, ""), this.myLanguage.CreateRegNodeName(BNode.RdInstr, i, ""));
-				}
+			 AddToCoreInterfHashMap(BNode.RdInstr,currstage);		
+	    	 if(this.core.GetNodes().get(BNode.RdInstr).GetExpensive()<=currstage) {
+	    		 statestages.add(currstage);
+				declarations += "wire [31:0] "+ this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), currstage, "")+";\n";
+				logic += this.myLanguage.CreateAssign(this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), currstage, ""), this.myLanguage.CreateRegNodeName(BNode.RdInstr, currstage, ""));
 		     }
+	     }
+	     if(!statestages.isEmpty())
+	    	 addRdNodeReg.put(BNode.RdInstr, statestages);
+	     
+	     
 	     // Add RdIvalid if we have spawn dec memory, we need to store adddr, but mem addr computed in spawn_start stage + 1. Add rdivalid in +1 for FIFO addr write signal
 	     if((this.op_stage_instr.containsKey(BNode.WrMem_spawn) || this.op_stage_instr.containsKey(BNode.RdMem_spawn)) && (this.core.GetStartSpawnStage() < this.core.GetNodes().get(BNode.WrMem).GetEarliest())) {
 			 HashSet<String> allSpawnMem = new  HashSet<String> (); 

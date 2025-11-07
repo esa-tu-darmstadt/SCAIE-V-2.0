@@ -39,10 +39,11 @@ private HashSet<String> textInterface = new  HashSet<String>();
 	// Infos for SCAL
 	public HashMap<SCAIEVNode, Integer> PrepareEarliest() {
 		HashMap<SCAIEVNode, Integer> node_stageValid = new HashMap<SCAIEVNode, Integer>();
-		for(SCAIEVNode node : op_stage_instr.keySet()) {
-			if(allBNodes.IsUserBNode(node) && node.isInput && !node.isSpawn())
-				node_stageValid.put(node,this.core.GetNodes().get(node).GetEarliest()); // considered that also in rd stage wr possible
-		}
+		for(SCAIEVNode node : op_stage_instr.keySet()) 
+			if(allBNodes.IsUserBNode(node) && node.isInput && !node.isSpawn()) {
+				SCAIEVNode RdNode = allBNodes.GetSCAIEVNode(allBNodes.GetNameRdNode(node));
+				node_stageValid.put(node,this.core.GetNodes().get(RdNode).GetEarliest()); // we need starting from read stage for DH
+			}
 		return node_stageValid;		
 	};
 		
@@ -152,6 +153,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 			////////// Create regs logic
 			if(node.isInput && allBNodes.IsUserBNode(node)  && !node.isSpawn())
 				textLogic += InstReg(node.name, node.size , node.elements);
+			
 			/////////// Signals on interf for deeper regs  (addr, addr_valid)
 			if(node.elements>1 && allBNodes.IsUserFNode(node) && node.isInput && !node.isSpawn()) {
 				SCAIEVNode addrWrNode = allBNodes.GetAdjSCAIEVNode(node,AdjacentNode.addr );
@@ -169,24 +171,31 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				for(int stage = earliest;stage <= writebackStage;stage++ )  
 					if(this.op_stage_instr.get(node).containsKey(stage)) {
 						AddToInterface(addrWrNode, stage);
-						AddToInterface(addrWrReqNode, stage);
-					}	
+					}
+			
+				AddToInterface(addrWrNode, earliest);
+				AddToInterface(addrWrNode, writebackStage);
+				for(int currstage =earliest ; currstage<= writebackStage; currstage++) 
+					AddToInterface(addrWrReqNode, currstage);
+				
 			}
 			
 			////////// Datahazard mechanism
 			if(allBNodes.IsUserFNode(node) && node.isInput && !node.isSpawn() && node.DH ) {
 				SCAIEVNode RdNode = allBNodes.GetSCAIEVNode(allBNodes.GetNameRdNode(node));
+				SCAIEVNode reqWrNode = allBNodes.GetAdjSCAIEVNode(node,AdjacentNode.validReq );
 				
 				int earliest = this.core.GetNodes().get(RdNode).GetEarliest();
 				int writebackStage = this.core.GetNodes().get(node).GetLatest();
 				
+				for(int stage = earliest;stage <= writebackStage;stage++ )  
+					AddToInterface(reqWrNode, stage);
 				if(node.elements>1) {
 					SCAIEVNode addrNode = allBNodes.GetAdjSCAIEVNode(node,AdjacentNode.addr );
 					SCAIEVNode addrReqNode = allBNodes.GetAdjSCAIEVNode(node,AdjacentNode.addrReq );
 					SCAIEVNode addrRdNode = allBNodes.GetAdjSCAIEVNode(RdNode,AdjacentNode.addr );
 					SCAIEVNode addrRdReqNode = allBNodes.GetAdjSCAIEVNode(RdNode,AdjacentNode.addrReq );					
 					SCAIEVNode reqRdNode = allBNodes.GetAdjSCAIEVNode(RdNode,AdjacentNode.validReq );
-					SCAIEVNode reqWrNode = allBNodes.GetAdjSCAIEVNode(node,AdjacentNode.validReq );
 					String defaultDatahaz = myLanguage.CreateNodeName(allBNodes.RdStall, earliest  , "")+" = 0;\n";
 					if(!datahaz.contains(defaultDatahaz))
 						datahaz += defaultDatahaz;
@@ -195,6 +204,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 							String addrReq = myLanguage.CreateRegNodeName(addrReqNode, stage, "");
 							String addrSig = myLanguage.CreateRegNodeName(addrNode, stage, "");
 							
+							AddToInterface(addrReqNode, stage);
 							if(stage == earliest){
 								String toAddText =  myLanguage.CreateTextInterface(allBNodes.RdStall.name, stage, "", false,1 ,"reg");  // add interface for stall signal
 								if(!textInterface.contains(toAddText))
@@ -205,7 +215,8 @@ private HashSet<String> textInterface = new  HashSet<String>();
 								addrSig = myLanguage.CreateNodeName(addrNode, stage, "");
 								
 								//textLogic += myLanguage.CreateAssign(myLanguage.CreateLocalNodeName(addrReqNode, stage, ""), myLanguage.CreateNodeName(addrReqNode, stage, ""));
-							} else  { 
+							} else  {
+								textDelcare += myLanguage.CreateDeclReg(addrNode, stage, "");
 								textDelcare += myLanguage.CreateDeclReg(addrReqNode, stage, "");
 								textDelcare += myLanguage.CreateDeclSig(addrReqNode, stage, "",false);
 							System.out.println("   reqRdNode  "+reqRdNode+" reqWrNode "+reqWrNode);
@@ -216,7 +227,19 @@ private HashSet<String> textInterface = new  HashSet<String>();
 										+ myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(),stage , "")+"[19:15] & ~{"+addrRdNode.size+"{"+addrReq+"}} )"
 										+" && "+ myLanguage.CreateNodeName(reqRdNode,earliest , "")+" && "+myLanguage.CreateNodeName(reqWrNode,stage , "")+") \n"
 										+ tab+ myLanguage.CreateNodeName(allBNodes.RdStall, earliest, "")+" = 1;\n";
+								// Compute reg for addr_valid
+								textLogic += myLanguage.CreateTextRegReset(myLanguage.CreateRegNodeName(addrReqNode, stage, ""), myLanguage.CreateLocalNodeName(addrReqNode, stage-1, ""), myLanguage.CreateNodeName(allBNodes.WrStall, stage-1, ""));
+								textLogic += myLanguage.CreateTextRegReset(myLanguage.CreateRegNodeName(addrNode, stage, ""), myLanguage.CreateLocalNodeName(addrNode, stage-1, ""), myLanguage.CreateNodeName(allBNodes.WrStall, stage-1, ""));
+								if(stage==earliest+1) {
+									textLogic += myLanguage.CreateAssign(myLanguage.CreateLocalNodeName(addrNode, stage-1, ""), myLanguage.CreateNodeName(addrNode, stage-1, "")); // flush logic is within DH if-clause.  
+									textLogic += myLanguage.CreateAssign(myLanguage.CreateLocalNodeName(addrReqNode, stage-1, ""), myLanguage.CreateNodeName(addrReqNode, stage-1, "")); // flush logic is within DH if-clause.  
+								} else { 
+									textLogic += myLanguage.CreateAssign(myLanguage.CreateLocalNodeName(addrNode, stage-1, ""), myLanguage.CreateRegNodeName(addrNode, stage-1, "")); // flush logic is within DH if-clause.  
+									textLogic += myLanguage.CreateAssign(myLanguage.CreateLocalNodeName(addrReqNode, stage-1, ""), myLanguage.CreateRegNodeName(addrReqNode, stage-1, "")); // flush logic is within DH if-clause.  
+								}
+								AddToInterface(allBNodes.WrStall, stage-1);
 								AddToInterface(reqRdNode, earliest);
+								AddToInterface(BNode.RdInstr.NodeNegInput(), stage); // for dest addr in DH
 							}
 						}
 				  }	
@@ -335,7 +358,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 			String assignSig = "spawn_"+register+"_valid ? spawn_"+register+"_data : "+myLanguage.CreateLocalNodeName(regNode, writebackStage, "");
 			String addrSig ="spawn_"+register+"_valid ? spawn_"+register+"_addr : "+ myLanguage.CreateLocalNodeName(addrNode,writebackStage, "" );
 			String validSig ="("+ myLanguage.CreateNodeName(allBNodes.WrStall,  writebackStage, "") + " || !"+myLanguage.CreateNodeName(regNodeValid, writebackStage, "")+") && !(spawn_"+register+"_valid)";
-			registerinst += myLanguage.CreateTextRegReset( myLanguage.CreateRegNodeName(regNode, writebackStage+1, ""),assignSig,validSig,addrSig  );
+			registerinst += myLanguage.CreateTextRegReset( myLanguage.CreateRegNodeName(regNode, writebackStage+1, ""),assignSig,validSig,addrSig ,elements );
 		} else { 
 			declare.add(myLanguage.CreateDeclReg(regNode, writebackStage+1, ""));
 			String assignSig = "spawn_"+register+"_valid ? spawn_"+register+"_data :  "+myLanguage.CreateLocalNodeName(regNode, writebackStage, "");

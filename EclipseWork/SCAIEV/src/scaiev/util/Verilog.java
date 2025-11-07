@@ -20,6 +20,15 @@ public class Verilog extends GenerateText {
 	public String clk = "clk_i";
 	public String reset = "rst_i";
 	public BNode BNode = new BNode();
+	
+	/**
+	 * Basic Class constructor only with dictionary
+	 */
+	public Verilog() {
+		// initialize dictionary 
+		DictionaryDefinition();
+	}
+	
 	/**
 	 * Class constructor
 	 * @param toFile
@@ -490,15 +499,15 @@ public class Verilog extends GenerateText {
 		return text;
 	}
 	
-	public String CreateTextRegReset(String signalName, String signalAssign, String stall, String addrSignal) {
+	public String CreateTextRegReset(String signalName, String signalAssign, String stall, String addrSignal, int nr_elem) {
 		String text ="";
 		String stallText = "";
 		if(!stall.isEmpty())
 			stallText = "if (!("+stall+"))";
 		text += "always@(posedge "+this.clk+") begin\n"
 				+ tab+"if ("+this.reset+") begin \n"
-				+ tab.repeat(2)+"for (int i = 0 ; i< $bits("+signalName+")-1; i= i+1 )\n"
-				+ tab.repeat(3)+signalName+"[i] <= 0;\n"
+				+ tab.repeat(2)+"for (int i = 0 ; i< "+nr_elem+"-1; i= i+1 )\n"
+				+ tab.repeat(3)+signalName+"[i] <= '0;\n"
 				+ tab+"end else "+stallText+"\n"
 				+ tab.repeat(2)+signalName+"["+addrSignal+"] <= "+signalAssign+";\n"
 				+ "end;\n";
