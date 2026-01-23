@@ -228,9 +228,9 @@ public class CVA5 extends CoreBackend {
     this.ISAXes = ISAXes;
     this.op_stage_instr = op_stage_instr;
 
-    this.stage_fetch = core.GetRootStage().getChildren().get(0);
+    this.stage_fetch = core.getRootStage().getChildren().get(0);
     this.stage_fetch_interm =
-        new PipelineStage(StageKind.CoreInternal, EnumSet.of(StageTag.InOrder), "fetch_intermediate", Optional.empty(), true);
+        new PipelineStage(StageKind.CoreInternal, List.of(new PipelineStage.TagAttrPair(StageTag.InOrder, null)), "fetch_intermediate", Optional.empty(), true);
     this.stage_decode = stage_fetch.getNext().get(0);
     this.stage_fetch.addNext(stage_fetch_interm);
     stage_fetch_interm.addNext(stage_decode);
@@ -243,46 +243,46 @@ public class CVA5 extends CoreBackend {
     for (int i = 0; i < this.stages.length; ++i)
       assert (this.stages[i].getStagePos() == i);
 
-    core.GetNodes().get(BNode.WrFlush).OverrideEarliest(new ScheduleFront(new PipelineFront(List.of(stage_fetch_interm, stage_decode))));
+    core.getNodes().get(BNode.WrFlush).overrideEarliest(new ScheduleFront(new PipelineFront(List.of(stage_fetch_interm, stage_decode))));
 
     BNode.RdInstr_RS.size = 6*2;
     BNode.RdInstr_RS.elements = 2;
-    core.PutNode(BNode.RdInstr_RS, new CoreNode(stagePos_decode, 0, stagePos_decode, stagePos_issue, BNode.RdInstr_RS.name));
+    core.putNode(BNode.RdInstr_RS, new CoreNode(stagePos_decode, 0, stagePos_decode, stagePos_issue, BNode.RdInstr_RS.name));
     BNode.RdInstr_RD.size = 6;
     BNode.RdInstr_RD.elements = 1;
-    core.PutNode(BNode.RdInstr_RD, new CoreNode(stagePos_decode, 0, stagePos_decode, stagePos_issue, BNode.RdInstr_RD.name));
+    core.putNode(BNode.RdInstr_RD, new CoreNode(stagePos_decode, 0, stagePos_decode, stagePos_issue, BNode.RdInstr_RD.name));
 
     // Support for pipelined semi-coupled: Transfer handling of an instruction from the core's execution unit to SCAL.
-    core.PutNode(BNode.WrDeqInstr, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.WrDeqInstr.name));
-    core.PutNode(BNode.RdInStageID, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.RdInStageID.name));
+    core.putNode(BNode.WrDeqInstr, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.WrDeqInstr.name));
+    core.putNode(BNode.RdInStageID, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.RdInStageID.name));
     BNode.RdInStageID.size = id_space_width + 1; // ID and flag 'expects rd'
-    core.PutNode(BNode.RdInStageValid, new CoreNode(stagePos_fetch, 0, stagePos_execute, stagePos_execute + 1, BNode.RdInStageValid.name));
+    core.putNode(BNode.RdInStageValid, new CoreNode(stagePos_fetch, 0, stagePos_execute, stagePos_execute + 1, BNode.RdInStageValid.name));
     BNode.WrInStageID.size = id_space_width + 1; // ID and flag 'expects rd'
-    core.PutNode(BNode.WrInStageID, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.WrInStageID.name));
+    core.putNode(BNode.WrInStageID, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.WrInStageID.name));
 
     // Commit information: Pass instruction ID to the core,
-    ScheduleFront rootSchedFront = new ScheduleFront(new PipelineFront(core.GetRootStage()));
+    ScheduleFront rootSchedFront = new ScheduleFront(new PipelineFront(core.getRootStage()));
     BNode.RdIssueID.size = id_space_width;
     BNode.RdIssueID.elements = id_count;
-    core.PutNode(BNode.RdIssueID, new CoreNode(stagePos_issue, 0, stagePos_execute, stagePos_execute + 1, BNode.RdIssueID.name));
+    core.putNode(BNode.RdIssueID, new CoreNode(stagePos_issue, 0, stagePos_execute, stagePos_execute + 1, BNode.RdIssueID.name));
     BNode.RdIssueFlushID.size = id_space_width;
     BNode.RdIssueFlushID.elements = id_count;
-    core.PutNode(BNode.RdIssueFlushID, new CoreNode(stagePos_issue, 0, stagePos_execute, stagePos_execute + 1, BNode.RdIssueFlushID.name));
+    core.putNode(BNode.RdIssueFlushID, new CoreNode(stagePos_issue, 0, stagePos_execute, stagePos_execute + 1, BNode.RdIssueFlushID.name));
     //core.PutNode(BNode.RdIssueIDValid, new CoreNode(stagePos_issue, 0, stagePos_execute, stagePos_execute + 1, BNode.RdIssueIDValid.name));
     BNode.RdCommitID.size = id_space_width;
     BNode.RdCommitID.elements = id_count;
     BNode.RdCommitIDCount.elements = num_commit_ports;
     BNode.RdCommitIDCount.size = Log2.clog2(num_commit_ports+1);
-    core.PutNode(BNode.RdCommitID, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitID.name));
-    core.PutNode(BNode.RdCommitIDCount, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitIDCount.name));
+    core.putNode(BNode.RdCommitID, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitID.name));
+    core.putNode(BNode.RdCommitIDCount, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitIDCount.name));
     BNode.RdCommitFlushID.size = id_space_width;
     BNode.RdCommitFlushID.elements = id_count;
     BNode.RdCommitFlushIDCount.elements = num_commit_ports;
     BNode.RdCommitFlushIDCount.size = Log2.clog2(num_commit_ports+1);
     BNode.RdCommitFlushMask.size = 0; //not used
-    core.PutNode(BNode.RdCommitFlushID, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushID.name));
-    core.PutNode(BNode.RdCommitFlushIDCount, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushIDCount.name));
-    core.PutNode(BNode.RdCommitFlushMask, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushMask.name));
+    core.putNode(BNode.RdCommitFlushID, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushID.name));
+    core.putNode(BNode.RdCommitFlushIDCount, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushIDCount.name));
+    core.putNode(BNode.RdCommitFlushMask, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushMask.name));
 
     BNode.RdMem_addr.mustToCore = true;
     BNode.WrMem_addr.mustToCore = true;
@@ -330,15 +330,14 @@ public class CVA5 extends CoreBackend {
         // This adds an interface pin for RdIValid with Purpose.WIREDIN.
         CustomCoreInterface valid_from_scal_instr_interface =
             new CustomCoreInterface(signame_from_scal_rdivalid_unmasked, "wire", stage_decode, 1, false, instr_name);
-        scalAPI.AddCustomToCorePinUsing(
-            valid_from_scal_instr_interface, NodeLogicBuilder.fromFunction("unmasked RdIValid " + instr_name, registry -> {
-              var ret = new NodeLogicBlock();
-              ret.outputs.add(new NodeInstanceDesc(
-                  valid_from_scal_instr_interface.makeKey(Purpose.REGULAR),
-                  registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.WIREDIN, BNode.RdIValid, stage_decode, instr_name)),
-                  ExpressionType.AnyExpression));
-              return ret;
-            }));
+        scalAPI.AddCustomToCorePinsUsing(NodeLogicBuilder.fromFunction("unmasked RdIValid " + instr_name, registry -> {
+          var ret = new NodeLogicBlock();
+          ret.outputs.add(new NodeInstanceDesc(
+              valid_from_scal_instr_interface.makeKey(Purpose.REGULAR),
+              registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.WIREDIN, BNode.RdIValid, stage_decode, instr_name)),
+              ExpressionType.AnyExpression));
+          return ret;
+        }), valid_from_scal_instr_interface);
       }
     }
     // Request RdIValid/RdAnyValid interface pins
@@ -1214,14 +1213,13 @@ public class CVA5 extends CoreBackend {
         execute_stall_assigns += language.CreateNodeName(BNode.WrMem_validReq, stage_execute, "") + " || ";
       }
 
-      // Logic: Is any request started in a previous cycle still waiting?
-      addDeclaration("logic mem_current_request_waiting;");
-      addLogic(
-          "always @(posedge clk) begin\n\tmem_current_request_waiting <= scaiev.execute_injectLS_valid && !scaiev.injectLS_ready;\nend");
-
-      // execute_stall_assigns += "0) && (!scaiev.injectLS_ready || " + cond_injectLS_possibleSpawn + ")) || ";
-      //-> Prevent combinational loop
-      execute_stall_assigns += "0) && (mem_current_request_waiting || " + cond_injectLS_possibleSpawn + ")) || ";
+      // Note: Causes a false 'combinational loop' (across ls_inputs struct fields) according to Verilator
+      // -> Writeback unit_done affects rf.in_use, affects non-SCAIEV ls_inputs.forwarded_store
+      // -> ls_inputs.store affects LSU ready condition, thus affects scaiev_glue's execute_stall_mem
+      // -> Writeback unit_done depends on execute_stall_mem (i.e., whether scaiev_unit writes back or not)
+      // May be worth considering to a) split up ls_inputs or b) use separate ready conditions for loads and stores
+      // Will hopefully not cause issues in practice (beyond Verilator warnings)
+      execute_stall_assigns += "0) && (!scaiev.injectLS_ready || " + cond_injectLS_possibleSpawn + ")) || ";
 
       // Stall execute if it possibly wants to start a read but another read is still pending.
       // TODO (optional): May be removed to allow several pending reads, but the regular_read_pending tracker currently does not support
@@ -1564,7 +1562,7 @@ public class CVA5 extends CoreBackend {
     PutModule(pathCVA5.resolve("cva5_wrapper.sv"), "cva5_wrapper", pathCVA5.resolve("cva5_wrapper.sv"), "cva5_wrapper_verilog",
               "cva5_wrapper");
     PutModule(pathCVA5.resolve("scaiev_glue.sv"), "scaiev_glue", pathCVA5.resolve("scaiev_glue.sv"), "cva5_wrapper", "scaiev_glue");
-    PutModule(pathCVA5.resolve("scaiev_config.sv"), "scaiev_config", pathCVA5.resolve("scaiev_config.sv"), "", "scaiev_config");
+    PutModule(pathCVA5.resolve("scaiev_config.sv"), configPackage, pathCVA5.resolve("scaiev_config.sv"), "", "scaiev_config");
 
     this.configFlags.clear();
     setConfigFlag("ENABLE_SCAIEV_REGHAZARD", false);
@@ -1594,11 +1592,11 @@ public class CVA5 extends CoreBackend {
     this.PutNode("logic", "scaiev.execute_ID", "scaiev_glue", BNode.RdIssueID, stage_execute);
     this.PutNode("logic", "scaiev.issue_flushID", "scaiev_glue", BNode.RdIssueFlushID, stage_execute);
     //this.PutNode("logic", "1'b1", "scaiev_glue", BNode.RdIssueIDValid, stage_execute);
-    this.PutNode("logic", "scaiev.retire_ID", "scaiev_glue", BNode.RdCommitID, core.GetRootStage());
-    this.PutNode("logic", "scaiev.retire_suppress ? '0 : scaiev.retire_count", "scaiev_glue", BNode.RdCommitIDCount, core.GetRootStage());
-    this.PutNode("logic", "scaiev.retire_ID", "scaiev_glue", BNode.RdCommitFlushID, core.GetRootStage());
-    this.PutNode("logic", "scaiev.retire_suppress ? scaiev.retire_count : '0", "scaiev_glue", BNode.RdCommitFlushIDCount, core.GetRootStage());
-    this.PutNode("logic", "'0", "scaiev_glue", BNode.RdCommitFlushMask, core.GetRootStage());
+    this.PutNode("logic", "scaiev.retire_ID", "scaiev_glue", BNode.RdCommitID, core.getRootStage());
+    this.PutNode("logic", "scaiev.retire_suppress ? '0 : scaiev.retire_count", "scaiev_glue", BNode.RdCommitIDCount, core.getRootStage());
+    this.PutNode("logic", "scaiev.retire_ID", "scaiev_glue", BNode.RdCommitFlushID, core.getRootStage());
+    this.PutNode("logic", "scaiev.retire_suppress ? scaiev.retire_count : '0", "scaiev_glue", BNode.RdCommitFlushIDCount, core.getRootStage());
+    this.PutNode("logic", "'0", "scaiev_glue", BNode.RdCommitFlushMask, core.getRootStage());
 
     this.PutNode("logic", "scaiev.fetch_fetchID", "scaiev_glue", node_RdFetchID, stage_fetch_interm);
     this.PutNode("logic", "scaiev.fetch_fetchFlushID", "scaiev_glue", node_RdFetchPostFlushID, stage_fetch_interm);

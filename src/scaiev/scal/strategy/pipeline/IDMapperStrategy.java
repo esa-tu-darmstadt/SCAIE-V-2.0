@@ -117,13 +117,21 @@ public class IDMapperStrategy extends MultiNodeStrategy {
                                                           .filter(stage ->
                                                                   stage.getKind() == StageKind.Core
                                                                   || stage.getKind() == StageKind.CoreInternal
-                                                                  || stage.getKind() == StageKind.Sub));
+                                                                  || stage.getKind() == StageKind.Sub)
+                                                          .map(stage -> stage.getParent().orElseThrow().getKind() == StageKind.CoreMultiport
+                                                                        ? stage.getParent().get()
+                                                                        : stage)
+                                                          .distinct());
     PipelineFront retireInpipeSources = new PipelineFront(retireIDSources.stream()
                                                           .map(source -> source.getTriggerStage())
                                                           .filter(stage ->
                                                                   stage.getKind() == StageKind.Core
                                                                   || stage.getKind() == StageKind.CoreInternal
-                                                                  || stage.getKind() == StageKind.Sub));
+                                                                  || stage.getKind() == StageKind.Sub)
+                                                          .map(stage -> stage.getParent().orElseThrow().getKind() == StageKind.CoreMultiport
+                                                                        ? stage.getParent().get()
+                                                                        : stage)
+                                                          .distinct());
     if (!retireInpipeSources.asList().isEmpty()
         && assignInpipeSources.asList().stream().anyMatch(assignStage -> !retireInpipeSources.isAroundOrAfter(assignStage, false))) {
       throw new IllegalArgumentException("retireIDSources must lie after all stages in assignIDSources (if in core pipeline)");
@@ -335,13 +343,30 @@ public class IDMapperStrategy extends MultiNodeStrategy {
                  .reduce((a,b) -> a + " || " + b)
                  .orElse("1'b0");
   }
+  /**
+   * Gets the RdStall portion of the pipe condition, if needed
+   * @param registry
+   * @param requestedFor RequestedForSet to use for RdStall, RdFlush
+   * @param source
+   * @param checkFlush
+   * @return an Optional with a "(..) || (..)" expression, or an empty Optional
+   */
+  private Optional<String> getRdStallCondition(NodeRegistryRO registry, RequestedForSet requestedFor, IDSource source, boolean checkFlush) {
+    if (source.getTriggerStage().getKind() != StageKind.Root && !source.key_valid.isPresent()) {
+      String rdStall = registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdStall, source.getTriggerStage(), ""), requestedFor)
+                           .getExpressionWithParens();
+      String rdwrFlush = checkFlush ? (" || " + SCALUtil.buildCond_StageFlushing(bNodes, registry, source.getTriggerStage(), requestedFor)) : "";
+      return Optional.of(rdStall + rdwrFlush);
+    }
+    return Optional.empty();
+  }
   private String buildPipeCondition(NodeRegistryRO registry, RequestedForSet requestedFor, IDSource source,
-                                    boolean checkRelevantCond, boolean checkFlush, boolean checkWrStall) {
+                                    boolean checkRelevantCond, boolean checkFlush, boolean checkStall) {
     PipelineStage stage = source.getTriggerStage();
     String pipeCond;
     if (source.key_valid.isPresent()) {
       pipeCond = registry.lookupRequired(source.key_valid.get(), requestedFor).getExpressionWithParens();
-      if (checkWrStall)
+      if (checkStall)
         pipeCond += " && !(" + getWrStallCondition(registry, source) + ")";
     }
     else if (stage.getKind() == StageKind.Root) {
@@ -349,11 +374,13 @@ public class IDMapperStrategy extends MultiNodeStrategy {
       assert(false); //source.key_valid is supposed to be present in this case
     }
     else {
-      String wrStallCond = "";
-      if (checkWrStall)
-        wrStallCond = " && !(" + getWrStallCondition(registry, source) + ")";
-      pipeCond = "!" + registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdStall, stage, ""), requestedFor)
-                 + wrStallCond
+      String stallCond = "";
+      if (checkStall) {
+        stallCond = " && !(" + getWrStallCondition(registry, source) + ")";
+        stallCond += getRdStallCondition(registry, requestedFor, source, false).map(cond->" && !("+cond+")").orElse("");
+      }
+      pipeCond = registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdInStageValid, stage, ""), requestedFor).getExpressionWithParens()
+                 + stallCond
                  + (checkFlush
                      ? (" && " + SCALUtil.buildCond_StageNotFlushing(bNodes, registry, stage, requestedFor))
                      : "");
@@ -538,28 +565,31 @@ public class IDMapperStrategy extends MultiNodeStrategy {
       for (int iAssignSource = 0; iAssignSource < assignIDSources.size(); ++iAssignSource) {
         IDSource assignIDSource = assignIDSources.get(iAssignSource);
         PipelineStage assignIDSourceStage = assignIDSource.getTriggerStage();
-        
-        String wrstallCond = getWrStallCondition(registry, assignIDSource);
+
+        String rdstallCond = getRdStallCondition(registry, commonRequestedFor, assignIDSource, true).map(cond->" && !("+cond+")").orElse("");
+        String wrstallCond = " && !(" + getWrStallCondition(registry, assignIDSource) + ")";
 
         String pipeCondAny = buildPipeCondition(registry, commonRequestedFor, assignIDSource, false, true, false);
         String pipeCondInner = forceAlwaysAssignID
                                    ? pipeCondAny
-                                   : buildPipeCondition(registry, commonRequestedFor, assignIDSource, true, true, false);
+                                   : buildPipeCondition(registry, commonRequestedFor, assignIDSource, true, false, false);
 
         // Give the source a name, based on its stage name or index.
         String sourceName;
-        if (assignIDSourceStage.getKind() == StageKind.Core || assignIDSourceStage.getKind() == StageKind.CoreInternal)
+        if (assignIDSourceStage.getKind() == StageKind.Core || assignIDSourceStage.getKind() == StageKind.CoreInternal
+            || assignIDSourceStage.getKind() == StageKind.CoreMultiport /* multiport parent should usually not be used here */)
           sourceName = assignIDSourceStage.getName();
         else
           sourceName = Integer.toString(iAssignSource);
-        assignAnyPipeConditionExprs[iAssignSource] = pipeCondAny + String.format(" && !(%s)", wrstallCond);
+        assignAnyPipeConditionExprs[iAssignSource] = pipeCondAny + rdstallCond + wrstallCond;
         assignPipeConditionWires[iAssignSource] = String.format("innerID_%d_assignpipecond_%s", uniqueID, sourceName);
-        assignPipeConditionWires_nostall[iAssignSource] = String.format("innerID_%d_assignpipecond_prewrstall_%s", uniqueID, sourceName);
+        assignPipeConditionWires_nostall[iAssignSource] = String.format("innerID_%d_assignpipecond_prestall_%s", uniqueID, sourceName);
         logicBlock.declarations += String.format("wire %s;\n", assignPipeConditionWires[iAssignSource]);
         logicBlock.declarations += String.format("wire %s;\n", assignPipeConditionWires_nostall[iAssignSource]);
         logicBlock.logic += String.format("// Condition: is stage %s assigning a new inner ID?\n", sourceName);
         logicBlock.logic += String.format("assign %s = %s;\n", assignPipeConditionWires_nostall[iAssignSource], pipeCondInner);
-        logicBlock.logic += String.format("assign %s = %s && !(%s);\n", assignPipeConditionWires[iAssignSource], assignPipeConditionWires_nostall[iAssignSource], wrstallCond);
+        logicBlock.logic += String.format("assign %s = %s%s%s;\n", assignPipeConditionWires[iAssignSource],
+                                          assignPipeConditionWires_nostall[iAssignSource], rdstallCond, wrstallCond);
 
         // Check for buffer overflows when adding iAssignSource new elements.
         // If we have one free ID but two or more assign sources, this will simply stall the second assign source stage onwards.
@@ -696,7 +726,8 @@ public class IDMapperStrategy extends MultiNodeStrategy {
 
         // Give the source a name, based on its stage name or index.
         String sourceName;
-        if (retireIDSourceStage.getKind() == StageKind.Core || retireIDSourceStage.getKind() == StageKind.CoreInternal)
+        if (retireIDSourceStage.getKind() == StageKind.Core || retireIDSourceStage.getKind() == StageKind.CoreInternal
+            || retireIDSourceStage.getKind() == StageKind.CoreMultiport /* multiport parent should usually not be used here */)
           sourceName = retireIDSourceStage.getName();
         else
           sourceName = Integer.toString(iRetireSource);

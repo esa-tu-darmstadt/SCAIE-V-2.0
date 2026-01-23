@@ -219,6 +219,11 @@ public class NodeInstanceDesc {
     /** Value registered in the context of a stage, intended for handling shared access to a stage's resources. */
     public static final Purpose REGISTERED = new Purpose("REGISTERED", true, Optional.empty(), List.of());
 
+    /** Marker node to indicate/request presence of a SCAL->Periphery interface node, value to be ignored. */
+    public static final Purpose MARKER_TOEXTERNAL_PIN = new Purpose("HASTOEXTERNAL", true, Optional.empty(), List.of());
+    /** Marker node to indicate/request presence of a Periphery->SCAL interface node, value to be ignored. */
+    public static final Purpose MARKER_FROMEXTERNAL_PIN = new Purpose("HASFROMEXTERNAL", true, Optional.empty(), List.of());
+
     /** Marker node to indicate/request presence of a SCAL->Core interface node, value to be ignored. */
     public static final Purpose MARKER_TOCORE_PIN = new Purpose("HASTOCORE", true, Optional.empty(), List.of());
     /** Marker node to indicate/request presence of a Core->SCAL interface node, value to be ignored. */

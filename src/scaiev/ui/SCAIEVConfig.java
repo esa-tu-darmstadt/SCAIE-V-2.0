@@ -19,4 +19,10 @@ public class SCAIEVConfig {
 
   public boolean maygenerate_disaxkill = true;
   public boolean maygenerate_disaxfence = true;
+
+  /**
+   * Number of stage ports (-1: all, else min. 1) to multiplex from.
+   * Ports beyond this limit are always stalled when encountering a single-ported ISAX.
+   */
+  public int portmux_limit = -1;
 }

@@ -172,10 +172,10 @@ public class DefaultRdInstrRSRDStrategy extends MultiNodeStrategy {
           || (!nodeKey.getNode().equals(bNodes.RdInstr_RD)
               && !nodeKey.getNode().equals(bNodes.RdInstr_RS)))
         continue;
-      var rdInstrCoreNode = core.GetNodes().get(bNodes.RdInstr);
+      var rdInstrCoreNode = core.getNodes().get(bNodes.RdInstr);
       if (rdInstrCoreNode == null)
         continue;
-      PipelineFront rdInstrEarliestFront = core.TranslateStageScheduleNumber(rdInstrCoreNode.GetEarliest());
+      PipelineFront rdInstrEarliestFront = core.translateStageScheduleNumber(rdInstrCoreNode.getEarliest());
 
       if (nodeKey.getPurpose().matches(Purpose.WIREDIN_FALLBACK) && rdInstrEarliestFront.contains(nodeKey.getStage())) {
         //Implement in the stage where RdInstr first becomes available.

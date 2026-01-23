@@ -22,7 +22,6 @@ import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
 import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeInstanceDesc.ExpressionType;
-import scaiev.scal.NodeInstanceDesc.Key;
 import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
@@ -149,9 +148,9 @@ public class SpawnOutputSelectStrategy extends MultiNodeStrategy {
     }
     /**
      * To be called from within a strategy's implement method.
-     * @param spawnBaseNode the actual spawn node.
-     *                      Is often the same as this.spawnNode, but nodes in the same family (e.g., RdMem_spawn, WrMem_spawn)
-     *                      are handled by a single RequestHistoryBuilder.
+     * @param spawnNode the actual spawn node.
+     *                  Is often the same as this.spawnNode, but nodes in the same family (e.g., RdMem_spawn, WrMem_spawn)
+     *                  are handled by a single RequestHistoryBuilder.
      * @param isax the ISAX to build for
      * @param out 
      * @return
@@ -229,7 +228,7 @@ public class SpawnOutputSelectStrategy extends MultiNodeStrategy {
                                .reduce((a,b) -> a+" || "+b).orElse("1'b0");
 
       String FIFOmoduleName = registry.lookupExpressionRequired(
-          new NodeInstanceDesc.Key(Purpose.HDL_MODULE, DecoupledStandardModulesStrategy.makeFIFONode(), core.GetRootStage(), ""));
+          new NodeInstanceDesc.Key(Purpose.HDL_MODULE, DecoupledStandardModulesStrategy.makeFIFONode(), core.getRootStage(), ""));
 
       //Construct data encoding
       int fifoWidth = priorityEntryIsValidCond.size();
@@ -396,7 +395,7 @@ public class SpawnOutputSelectStrategy extends MultiNodeStrategy {
                  &&
                  bNodes.GetEquivalentNonspawnNode(nodeKey.getNode())
                      .map(nonspawnNode
-                          -> !nonspawnNode.tags.contains(NodeTypeTag.defaultNotprovidedByCore) || core.GetNodes().containsKey(nonspawnNode))
+                          -> !nonspawnNode.tags.contains(NodeTypeTag.defaultNotprovidedByCore) || core.getNodes().containsKey(nonspawnNode))
                      .orElse(false)) {
         // Create the spawn node directly from the non-spawn equivalent,
         //  e.g. RdMem -> RdMem_spawn, *_validResp -> *_spawn_validResp (if non-spawn validResp is explicitly present in the core)

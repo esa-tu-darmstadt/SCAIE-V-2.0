@@ -65,6 +65,34 @@ public class Bluespec extends GenerateText {
     return "v" + super.CreateBasicNodeName(operation, stage, instr, familyname);
   }
 
+  /** Adds a method declaration to the interface associated with the given module. */
+  public void AddPortToModuleInterface(String module, SCAIEVNode operation, PipelineStage stage, String instr) {
+    this.toFile.UpdateContent(
+        coreBackend.ModInterfFile(module), "endinterface",
+        new ToWrite("(*always_enabled*) " + CreateMethodDecl(operation, stage, instr, false) + ";\n", true, false, "interface", true));
+  }
+  /** Adds a method definition to the given module that assigns to either a local variable or the node assign target given by coreBackend.NodeAssign (if not empty). */
+  public void AddPortToModule(String module, SCAIEVNode operation, PipelineStage stage, String instr) {
+    // Connect signals to top interface. Assigns
+    String assignText = CreateMethodDecl(operation, stage, instr, false) + ";\n";
+    String assignValue = coreBackend.NodeAssign(operation, stage);
+    if (assignValue.isEmpty()) {
+      assignValue = CreateLocalNodeName(operation, stage, instr);
+      // Local signal definition
+      this.toFile.UpdateContent(coreBackend.ModFile(module), ");",
+                                new ToWrite(CreateDeclSig(operation, stage, instr), true, false, "module " + module + " "));
+    }
+    if (coreBackend.NodeIsInput(operation, stage))
+      assignText += tab + assignValue + " " + dictionary.get(DictWords.assign_eq) + " x;\n";
+    else
+      assignText += tab + "return " + assignValue + ";\n";
+    assignText += "endmethod\n";
+    // Method definition
+    this.toFile.UpdateContent(coreBackend.ModFile(module), "endmodule",
+                              new ToWrite(assignText, true, false, "module " + module + " ", true));
+  }
+  
+
   public void UpdateInterface(String top_module, SCAIEVNode operation, String instr, PipelineStage stage, boolean top_interface,
                               boolean assigReg) {
     // Update interf bottom file
@@ -81,12 +109,7 @@ public class Bluespec extends GenerateText {
       // Add interface OR local signal
       if (!current_module.contentEquals(top_module) || top_interface) { // top file should just instantiate signal in module instantiation
                                                                         // and not generate top interface if top_interface = false
-        String additional_text = "(*always_enabled*) ";
-        if (current_module.contentEquals(top_module))
-          additional_text = "(*always_enabled *)";
-        this.toFile.UpdateContent(
-            coreBackend.ModInterfFile(current_module), "endinterface",
-            new ToWrite(additional_text + CreateMethodDecl(operation, stage, instr, false) + ";\n", true, false, "interface", true));
+        AddPortToModuleInterface(current_module, operation, stage, instr);
       } else if (current_module.contentEquals(top_module)) {
         if (assigReg)
           this.toFile.UpdateContent(coreBackend.ModFile(current_module), ");",
@@ -128,24 +151,7 @@ public class Bluespec extends GenerateText {
       }
       // Assign OR Forward
       if (prev_module.contentEquals("")) { // no previous files => this is bottom file
-        // Connect signals to top interface. Assigns
-        String assignText = CreateMethodDecl(operation, stage, instr, false) + ";\n";
-        String assignValue = coreBackend.NodeAssign(operation, stage);
-        if (assignValue.isEmpty()) {
-          assignValue = CreateLocalNodeName(operation, stage, instr);
-          // Local signal definition
-          this.toFile.UpdateContent(coreBackend.ModFile(current_module), ");",
-                                    new ToWrite(CreateDeclSig(operation, stage, instr), true, false, "module " + current_module + " "));
-        }
-        if (coreBackend.NodeIsInput(operation, stage))
-          assignText += tab + assignValue + " " + dictionary.get(DictWords.assign_eq) + " x;\n";
-        else
-          assignText += tab + "return " + assignValue + ";\n";
-        assignText += "endmethod\n";
-        // Method definition
-        this.toFile.UpdateContent(coreBackend.ModFile(current_module), "endmodule",
-                                  new ToWrite(assignText, true, false, "module " + current_module + " ", true));
-
+        AddPortToModule(current_module, operation, stage, instr);
       } else if (!current_module.contentEquals(top_module) || top_interface) {
         String forwardSig =
             CreateMethodDecl(operation, stage, instr, true) + " = " + instName + ".met_" + CreateNodeName(operation, stage, instr);

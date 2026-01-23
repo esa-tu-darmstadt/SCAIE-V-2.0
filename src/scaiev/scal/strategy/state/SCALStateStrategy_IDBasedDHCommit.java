@@ -119,7 +119,7 @@ public class SCALStateStrategy_IDBasedDHCommit {
         throw new IllegalArgumentException("innerIDWidth must be at least 1");
       if (innerRetireChannels <= 0)
         throw new IllegalArgumentException("innerRetireChannels must be at least 1");
-      List<PipelineStage> assignStages = regfile.issueFront.asList();
+      List<PipelineStage> assignStages = SCALUtil.flatmapIntoPorts(regfile.issueFront.asList().stream()).toList();
       this.assignSources = IntStream.range(0, assignStages.size()).mapToObj(iAssign -> {
         var idSource = new IDMapperStrategy.IDSource(
             new NodeInstanceDesc.Key(bNodes.RdIssueID, assignStages.get(iAssign), ""),
@@ -150,7 +150,7 @@ public class SCALStateStrategy_IDBasedDHCommit {
             ? Optional.empty()
             : Optional.of(new NodeInstanceDesc.Key(bNodes.RdIssueFlushID, assignStages.get(0), "")),
           //Key to set to whether the serializedRetireSources have a discard.
-          Optional.of(new NodeInstanceDesc.Key(this.node_out_mapperIsFlushing, core.GetRootStage(), "")),
+          Optional.of(new NodeInstanceDesc.Key(this.node_out_mapperIsFlushing, core.getRootStage(), "")),
           innerIDWidth,
           assignSources,
           true, true, //May be core-specific
@@ -249,12 +249,12 @@ public class SCALStateStrategy_IDBasedDHCommit {
         }
       }
       ret.logic += String.format("always_comb begin\n%s%send\n", flushLogicInit, flushLogic);
-      ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(node_out_mapperIsFlushing, core.GetRootStage(), ""),
+      ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(node_out_mapperIsFlushing, core.getRootStage(), ""),
           isDiscarding_wireName,
           ExpressionType.WireName));
 
       //Generate issue relevance conditions for the mapper.
-      for (PipelineStage assignStage : regfile.issueFront.asList()) {
+      for (PipelineStage assignStage : SCALUtil.flatmapIntoPorts(regfile.issueFront.asList().stream()).toList()) {
         String isRelevant_wireName = String.format("regIssue_%s_isRelevant_%s", regfile.regName, assignStage.getName());
         ret.declarations += String.format("logic %s;\n", isRelevant_wireName);
         String relevantExpr = IntStream.range(0, utils.writeNodes.size())
@@ -376,9 +376,9 @@ public class SCALStateStrategy_IDBasedDHCommit {
         WriteQueueDesc queueDesc = queueDescs.get(iQueue);
         int aux = queueReadAux.get(iQueue);
 
-        var rdaddrKey = new NodeInstanceDesc.Key(Purpose.REGULAR, queueDesc.getRdAddrNode(), core.GetRootStage(), "", aux);
+        var rdaddrKey = new NodeInstanceDesc.Key(Purpose.REGULAR, queueDesc.getRdAddrNode(), core.getRootStage(), "", aux);
         logicBlock.outputs.add(new NodeInstanceDesc(rdaddrKey, forwardFromWire_queueAddr, ExpressionType.AnyExpression));
-        var rdKey = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, queueDesc.getRdNode(), core.GetRootStage(), "", aux);
+        var rdKey = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, queueDesc.getRdNode(), core.getRootStage(), "", aux);
         String queueEntry = registry.lookupExpressionRequired(rdKey);
         String queueAddrValidCond = "";
         if (queueMaxDepth > 1 && ((1 << queueAddrWidth) > queueDesc.depth)) {
@@ -467,6 +467,7 @@ public class SCALStateStrategy_IDBasedDHCommit {
     private int aux = 0;
     private List<int[]> retireAux = new ArrayList<>();
     private List<int[]> assignAux = new ArrayList<>();
+    private List<Integer> writebackAux = new ArrayList<>();
     private IDBasedDHForwardHandler readForwarder = null;
 
     /**
@@ -499,24 +500,32 @@ public class SCALStateStrategy_IDBasedDHCommit {
       return this.readForwarder;
     }
 
+    record QueueRecord(int iWriteNode, List<WritebackExpr> writebacks) {}
+    List<QueueRecord> queueRecords = new ArrayList<>();
+
     @Override
     void reset() {
       resetDirtyConds.clear();
       writeToBackingConds.clear();
+      queueRecords.clear();
     }
+
     /** Performs an additional build step after all processWritePort calls have been made. */
     @Override
     void buildPost(NodeRegistryRO registry, NodeLogicBlock logicBlock) {
+      for (var record : queueRecords)
+        processQueue(record, registry, logicBlock);
       logicBlock.addOther(this.baseLogic.build(registry));
     }
-
-    /** Processes a write port. */
-    @Override
-    void processWritePort(int iPort, WritebackExpr writeback, NodeRegistryRO registry, NodeLogicBlock logicBlock) {
+    void processQueue(QueueRecord record, NodeRegistryRO registry, NodeLogicBlock logicBlock) {
       if (this.aux == 0) {
         this.aux = registry.newUniqueAux();
       }
-      if (iPort >= queueDescs.size() || queueDescs.get(iPort) == null) {
+      while (record.writebacks.size() > writebackAux.size()) {
+        this.writebackAux.add(registry.newUniqueAux());
+      }
+
+      if (record.iWriteNode() >= queueDescs.size() || queueDescs.get(record.iWriteNode()) == null) {
         // Register the write port; Setup the write queue.
         baseLogic.assignSources.forEach(source -> {
           assert(source.key_relevant.getPurpose().matches(Purpose.REGULAR));
@@ -531,10 +540,10 @@ public class SCALStateStrategy_IDBasedDHCommit {
                                                                                         baseLogic.node_out_relevant,
                                                                                         source.key_relevant.getStage(),
                                                                                         "",
-                                                                                        iPort + 1))).toList();
+                                                                                        record.iWriteNode() + 1))).toList();
         var queue = new WriteQueueDesc(
-            regfile.regName + "_" + iPort, //-> queueName
-            iPort, //-> physicalWriteChannel
+            regfile.regName + "_" + record.iWriteNode(), //-> queueName
+            record.iWriteNode(), //-> physicalWriteChannel
             this.baseLogic.mapper.getInnerIDCount(), //-> depth
             0, 0, //-> forwardIDLen, forwardIDCount
             regfile.width, //-> regWidth
@@ -545,18 +554,18 @@ public class SCALStateStrategy_IDBasedDHCommit {
                      .mapToObj(i -> baseLogic.serializer.getSignals().getKey_isDiscard(i))
                      .toList() //-> commitIsDiscardKeys
             );
-        while (iPort >= queueDescs.size()) {
+        while (record.iWriteNode() >= queueDescs.size()) {
           queueDescs.add(null);
           assignAux.add(null);
           retireAux.add(null);
         }
-        retireAux.set(iPort, IntStream.range(0, baseLogic.serializedRetireSources.size())
+        retireAux.set(record.iWriteNode(), IntStream.range(0, baseLogic.serializedRetireSources.size())
                             .map(i->registry.newUniqueAux())
                             .toArray());
-        assignAux.set(iPort, IntStream.range(0, baseLogic.assignSources.size())
+        assignAux.set(record.iWriteNode(), IntStream.range(0, baseLogic.assignSources.size())
                              .map(i->registry.newUniqueAux())
                              .toArray());
-        queueDescs.set(iPort, queue);
+        queueDescs.set(record.iWriteNode(), queue);
         writeQueues.addWriteQueue(queue);
         int id_valid_aux = registry.newUniqueAux();
         //Provide the 'inner ID valid' logic to baseLogic.
@@ -564,38 +573,35 @@ public class SCALStateStrategy_IDBasedDHCommit {
           @Override
           public String buildIDIsValidCond(String idExpr, NodeRegistryRO registry, NodeLogicBlock logicBlock) {
             var rdaddrKey = new NodeInstanceDesc.Key(Purpose.REGULAR,
-                                                     queue.getRdAddrNode(), core.GetRootStage(), "", id_valid_aux);
+                                                     queue.getRdAddrNode(), core.getRootStage(), "", id_valid_aux);
             logicBlock.outputs.add(new NodeInstanceDesc(rdaddrKey, idExpr, ExpressionType.AnyExpression));
 
             var rdKey = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-                                                 queue.getRdNode(), core.GetRootStage(), "", id_valid_aux);
+                                                 queue.getRdNode(), core.getRootStage(), "", id_valid_aux);
             String queueEntryExpr = registry.lookupExpressionRequired(rdKey);
             return queueEntryExpr + ".valid";
           }
         });
       }
 
-      var queue = queueDescs.get(iPort);
-      int iNode = utils.writeNodes.indexOf(writeback.baseNode);
-      assert(iNode != -1);
-      // The logic below assumes that the writeback write corresponds exactly to a port.
-      assert(regfile.writeback_writes.stream().filter(write -> write.getNode().equals(writeback.baseNode)).count() == 1);
+      var queue = queueDescs.get(record.iWriteNode());
+      SCAIEVNode writeNode = utils.writeNodes.get(record.iWriteNode());
+      // The logic below assumes that the queue write corresponds exactly to a port.
+      assert(regfile.writeback_writes.stream().filter(write -> write.getNode().equals(writeNode)).count() == record.writebacks.size());
 
-      IDMapperStrategy.IDSource translatedWriteback = null;
-      boolean writebackDuringAssign = false;
-      //The 'write queue push' condition in case we have writebackDuringAssign.
-      String queuePushValidCond_concurrentWriteback = null;
+      //The 'write queue push' condition, used in case we have a writeback during an assign.
+      String[] queuePushValidConds = new String[this.baseLogic.assignSources.size()];
 
-      String issueRegAddr = utils.getWireName_WrIssue_addr(iNode);
+      String issueRegAddr = utils.getWireName_WrIssue_addr(record.iWriteNode());
       for (int i = 0; i < this.baseLogic.assignSources.size(); ++i) {
         var assignSource = this.baseLogic.assignSources.get(i);
         //Generate the per-writeback queue relevance signals.
-        String relevanceWireName = utils.getWireName_WrIssue_addr_valid_perstage(iNode, assignSource.getTriggerStage());
+        String relevanceWireName = utils.getWireName_WrIssue_addr_valid_perstage(record.iWriteNode(), assignSource.getTriggerStage());
         var specificRelevanceKey = new NodeInstanceDesc.Key(Purpose.REGULAR,
                                                             baseLogic.node_out_relevant,
                                                             assignSource.key_relevant.getStage(),
                                                             "",
-                                                            iPort + 1);
+                                                            record.iWriteNode() + 1);
         logicBlock.outputs.add(new NodeInstanceDesc(specificRelevanceKey, relevanceWireName, ExpressionType.AnyExpression_Noparen));
 
         //Generate the queue 'push' inputs to allocate a scoreboard entry.
@@ -624,7 +630,7 @@ public class SCALStateStrategy_IDBasedDHCommit {
                                                                              assignSource.node_response_stall.orElse(bNodes.WrStall),
                                                                              stage,
                                                                              "",
-                                                                             assignAux.get(iPort)[i]),
+                                                                             assignAux.get(record.iWriteNode())[i]),
                                                     "!"+readyCond+" && "+relevanceWireName,
                                                     ExpressionType.AnyExpression));
 
@@ -647,142 +653,15 @@ public class SCALStateStrategy_IDBasedDHCommit {
           this.readForwarder.processQueueWriteIssue(queue, stage, validAndNotFlush, issueRegAddr, pushedInto, registry);
         }
 
-        if (stage == writeback.stage) {
-          //Assuming no duplicate assigns per stage to the same writeback port node.
-          assert(translatedWriteback == null);
-          translatedWriteback = assignSource;
-          writebackDuringAssign = true;
-          queuePushValidCond_concurrentWriteback = validCond;
-        }
+        queuePushValidConds[i] = validCond;
       }
-      if (translatedWriteback == null) {
-        //If the writeback is not in the assign stage, add a translation.
-        var instrIDKey = new NodeInstanceDesc.Key(
-            bNodes.GetAdjSCAIEVNode(writeback.baseNode, AdjacentNode.instrID).orElseThrow(),
-            writeback.stage,
-            "");
-
-        //The ID is assumed valid if validReq || cancelReq. Build the condition for that.
-        var validOrCancelKey = new NodeInstanceDesc.Key(Purpose.REGULAR, node_writeback_id_valid, writeback.stage, "", iPort);
-        String validExpr = registry.lookupRequired(new NodeInstanceDesc.Key(
-            bNodes.GetAdjSCAIEVNode(writeback.baseNode, AdjacentNode.validReq).orElseThrow(),
-            writeback.stage,
-            "")).getExpressionWithParens();
-        var cancelInst = registry.lookupRequired(new NodeInstanceDesc.Key(
-              bNodes.GetAdjSCAIEVNode(writeback.baseNode, AdjacentNode.cancelReq).orElseThrow(),
-              writeback.stage,
-            ""));
-        String cancelExpr = (cancelInst.getExpression().startsWith(NodeRegistry.MISSING_PREFIX)) ? "1'b0" : cancelInst.getExpressionWithParens();
-        logicBlock.outputs.add(new NodeInstanceDesc(validOrCancelKey,
-                                                    "%s || %s".formatted(validExpr, cancelExpr),
-                                                    ExpressionType.AnyExpression));
-
-        translatedWriteback = this.baseLogic.mapper.addTranslatedIDSource(instrIDKey, Optional.of(validOrCancelKey));
-      }
-
-      //For now, assume there is one writeback per reg channel (per cycle).
-      var rdaddrOnWritebackKey = new NodeInstanceDesc.Key(Purpose.REGULAR, queue.getRdAddrNode(), core.GetRootStage(), "", aux);
-      var rddataOnWritebackKey = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, queue.getRdNode(), core.GetRootStage(), "", aux);
-      String rddataOnWritebackExpr = registry.lookupRequired(rddataOnWritebackKey).getExpressionWithParens();
-      String translatedIDValidExpr = registry.lookupRequired(translatedWriteback.makeKey_RdInnerIDValid()).getExpressionWithParens();
-      String translatedIDExpr = registry.lookupRequired(translatedWriteback.makeKey_RdInnerID(0,0)).getExpressionWithParens();
-      logicBlock.outputs.add(new NodeInstanceDesc(rdaddrOnWritebackKey, translatedIDExpr, ExpressionType.AnyExpression_Noparen));
-
-      //Assertions
-      if (writebackDuringAssign) {
-        logicBlock.logic += """
-            `ifndef SYNTHESIS
-            always_ff @(posedge %1$s) begin
-                if (%2$s === 1'b0 && (%4$s || %5$s) && !(%6$s)) begin
-                    if (!%7$s)
-                        $error("SCAL Custom reg %3$s: Writeback without inner ID assignment");
-                    else if (%8$s.valid)
-                        $error("SCAL Custom reg %3$s: Writeback-during-assign with already-valid scoreboard entry");
-                    else if (!(%9$s))
-                        $error("SCAL Custom reg %3$s: Writeback-during-assign without concurrent scoreboard push request");
-                end
-            end
-            `endif
-            """.formatted(language.clk, language.reset, regfile.regName, //1,2,3
-                writeback.wrValidExpr, writeback.wrCancelExpr, writeback.stallDataStageCond, //4,5,6
-                translatedIDValidExpr, //7
-                rddataOnWritebackExpr, //8
-                queuePushValidCond_concurrentWriteback //9
-                );
-      }
-      else {
-        logicBlock.logic += """
-            `ifndef SYNTHESIS
-            always_ff @(posedge %1$s) begin
-                if (%2$s === 1'b0 && (%4$s || %5$s) && !(%6$s)) begin
-                    if (!%7$s)
-                        $error("SCAL Custom reg %3$s: Writeback without inner ID assignment");
-                    else if (!%8$s.valid)
-                        $error("SCAL Custom reg %3$s: Writeback with invalid scoreboard entry");
-                    else begin
-                        %9$s
-                            $error("SCAL Custom reg %3$s: Mismatching register ID in scoreboard");
-                        if (%8$s.instrID != %10$s)
-                            $error("SCAL Custom reg %3$s: Mismatching instruction ID in scoreboard");
-                    end
-                end
-            end
-            `endif
-            """.formatted(language.clk, language.reset, regfile.regName, //1,2,3
-                writeback.wrValidExpr, writeback.wrCancelExpr, writeback.stallDataStageCond, //4,5,6
-                translatedIDValidExpr, //7
-                rddataOnWritebackExpr, //8
-                (regfile.depth > 1) ? String.format("if (%s.regID != %s)", rddataOnWritebackExpr, writeback.wrAddrExpr) : "if (1'b0)", //9
-                registry.lookupRequired(translatedWriteback.key_ID).getExpressionWithParens() //10
-                );
-      }
-
-      // Apply register write to WriteQueue/scoreboard.
-      registry.lookupRequired(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-                                                       queue.getWrRespNode(), core.GetRootStage(), "data_present", aux));
-      registry.lookupRequired(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-                                                       queue.getWrRespNode(), core.GetRootStage(), "data", aux));
-      registry.lookupRequired(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-                                                       queue.getWrRespNode(), core.GetRootStage(), "flushing", aux));
-      //- Queue write address = inner ID
-      var wraddrOnWritebackKey_data        = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-                                                                      queue.getWrAddrNode(), core.GetRootStage(), "data", aux);
-      var wraddrOnWritebackKey_datapresent = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-                                                                      queue.getWrAddrNode(), core.GetRootStage(), "data_present", aux);
-      var wraddrOnWritebackKey_flushing    = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-                                                                      queue.getWrAddrNode(), core.GetRootStage(), "flushing", aux);
-      logicBlock.outputs.add(new NodeInstanceDesc(wraddrOnWritebackKey_data, translatedIDExpr, ExpressionType.AnyExpression_Noparen));
-      logicBlock.outputs.add(new NodeInstanceDesc(wraddrOnWritebackKey_datapresent, translatedIDExpr, ExpressionType.AnyExpression_Noparen));
-      logicBlock.outputs.add(new NodeInstanceDesc(wraddrOnWritebackKey_flushing, translatedIDExpr, ExpressionType.AnyExpression_Noparen));
-      //- Queue write data.
-      var wrdataOnWritebackKey_data        = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-                                                                      queue.getWrNode(regfile.width), core.GetRootStage(), "data", aux);
-      var wrdataOnWritebackKey_datapresent = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-																	  queue.getWrNode(1), core.GetRootStage(), "data_present", aux);
-      var wrdataOnWritebackKey_flushing    = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-																	  queue.getWrNode(1), core.GetRootStage(), "flushing", aux);
-      logicBlock.outputs.add(new NodeInstanceDesc(wrdataOnWritebackKey_data, writeback.wrDataExpr, ExpressionType.AnyExpression));
-      logicBlock.outputs.add(new NodeInstanceDesc(wrdataOnWritebackKey_datapresent, "!"+writeback.wrCancelExpr, ExpressionType.AnyExpression));
-      logicBlock.outputs.add(new NodeInstanceDesc(wrdataOnWritebackKey_flushing, "1'b1", ExpressionType.AnyExpression_Noparen));
-      //- Queue write valid condition. Update data and set data_present on 'valid || cancel'; clear data_present and set flushing on cancel.
-      var wrreqOnWritebackKey_data        = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-																	 queue.getWrReqNode(), core.GetRootStage(), "data", aux);
-      var wrreqOnWritebackKey_datapresent = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-																	 queue.getWrReqNode(), core.GetRootStage(), "data_present", aux);
-      var wrreqOnWritebackKey_flushing    = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-																	 queue.getWrReqNode(), core.GetRootStage(), "flushing", aux);
-      String writebackValidOrCancelCond = String.format("(%s || %s) && !(%s)", writeback.wrValidExpr, writeback.wrCancelExpr, writeback.stallDataStageCond);
-      logicBlock.outputs.add(new NodeInstanceDesc(wrreqOnWritebackKey_data, writebackValidOrCancelCond, ExpressionType.AnyExpression));
-      logicBlock.outputs.add(new NodeInstanceDesc(wrreqOnWritebackKey_datapresent, writebackValidOrCancelCond, ExpressionType.AnyExpression));
-      String writebackCancelCond = String.format("%s && !(%s)", writeback.wrCancelExpr, writeback.stallDataStageCond, writeback.flushDataStageCond);
-      logicBlock.outputs.add(new NodeInstanceDesc(wrreqOnWritebackKey_flushing, writebackCancelCond, ExpressionType.AnyExpression));
 
       //Selection logic for the retire to apply.
-      String selectedCommitIsDiscardWire = String.format("regCommit_%s_isDiscard_%d", regfile.regName, iPort);
-      String selectedCommitScoreboardValidWire = String.format("regCommit_%s_scoreboardValid_%d", regfile.regName, iPort);
-      String selectedCommitScoreboardCancelWire = String.format("regCommit_%s_scoreboardCancel_%d", regfile.regName, iPort);
-      String selectedCommitScoreboardDataWire = String.format("regCommit_%s_scoreboardData_%d", regfile.regName, iPort);
-      String selectedCommitScoreboardRegIDWire = String.format("regCommit_%s_scoreboardRegID_%d", regfile.regName, iPort);
+      String selectedCommitIsDiscardWire = String.format("regCommit_%s_isDiscard_%d", regfile.regName, record.iWriteNode());
+      String selectedCommitScoreboardValidWire = String.format("regCommit_%s_scoreboardValid_%d", regfile.regName, record.iWriteNode());
+      String selectedCommitScoreboardCancelWire = String.format("regCommit_%s_scoreboardCancel_%d", regfile.regName, record.iWriteNode());
+      String selectedCommitScoreboardDataWire = String.format("regCommit_%s_scoreboardData_%d", regfile.regName, record.iWriteNode());
+      String selectedCommitScoreboardRegIDWire = String.format("regCommit_%s_scoreboardRegID_%d", regfile.regName, record.iWriteNode());
       logicBlock.declarations += String.format("logic %s;\n", selectedCommitIsDiscardWire);
       logicBlock.declarations += String.format("logic %s;\n", selectedCommitScoreboardValidWire);
       logicBlock.declarations += String.format("logic %s;\n", selectedCommitScoreboardCancelWire);
@@ -812,11 +691,11 @@ public class SCALStateStrategy_IDBasedDHCommit {
         String commitIDExpr = registry.lookupRequired(translatedCommit.makeKey_RdInnerID(0,0)).getExpressionWithParens();
         //ASSUMPTION: The serialized retires are not in the same cycle as the assign stage.
         var rdaddrOnCommitKey = new NodeInstanceDesc.Key(Purpose.REGULAR,
-                                                         queue.getRdAddrNode(), core.GetRootStage(), "",
-                                                         retireAux.get(iPort)[i]);
+                                                         queue.getRdAddrNode(), core.getRootStage(), "",
+                                                         retireAux.get(record.iWriteNode())[i]);
         var rddataOnCommitKey = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-                                                         queue.getRdNode(), core.GetRootStage(), "",
-                                                         retireAux.get(iPort)[i]);
+                                                         queue.getRdNode(), core.getRootStage(), "",
+                                                         retireAux.get(record.iWriteNode())[i]);
         logicBlock.outputs.add(new NodeInstanceDesc(rdaddrOnCommitKey, commitIDExpr, ExpressionType.AnyExpression));
         String scoreboardEntryExpr = registry.lookupRequired(rddataOnCommitKey).getExpressionWithParens();
         String commitWrStalledExpr;
@@ -853,13 +732,164 @@ public class SCALStateStrategy_IDBasedDHCommit {
       }
       commitCombLogic += "end\n";
       logicBlock.logic += commitCombLogic;
+
+      for (int iWriteback = 0; iWriteback < record.writebacks().size(); ++iWriteback) {
+        WritebackExpr writeback = record.writebacks().get(iWriteback);
+        int writebackAux = this.writebackAux.get(iWriteback);
+
+        // Check if there is a writeback during an assign (i.e., an issue).
+        IDMapperStrategy.IDSource translatedWriteback = null;
+        boolean writebackDuringAssign = false;
+        String queuePushValidCond_concurrentWriteback = null;
+        for (int iAssign = 0; iAssign < this.baseLogic.assignSources.size(); ++iAssign) {
+          var assignSource = this.baseLogic.assignSources.get(iAssign);
+          PipelineStage triggerStage = assignSource.getTriggerStage();
+          if (triggerStage == writeback.stage) {
+            //Assuming no duplicate assigns per stage to the same writeback port.
+            assert(translatedWriteback == null);
+            translatedWriteback = assignSource;
+            writebackDuringAssign = true;
+            queuePushValidCond_concurrentWriteback = queuePushValidConds[iAssign];
+          }
+        }
+
+        if (translatedWriteback == null) {
+          //If the writeback is not in the assign stage, add a translation.
+          var instrIDKey = new NodeInstanceDesc.Key(
+              bNodes.GetAdjSCAIEVNode(writeNode, AdjacentNode.instrID).orElseThrow(),
+              writeback.stage,
+              "");
+
+          //The ID is assumed valid if validReq || cancelReq. Build the condition for that.
+          var validOrCancelKey = new NodeInstanceDesc.Key(Purpose.REGULAR, node_writeback_id_valid, writeback.stage, "", record.iWriteNode);
+          String validExpr = registry.lookupRequired(new NodeInstanceDesc.Key(
+              bNodes.GetAdjSCAIEVNode(writeback.baseNode, AdjacentNode.validReq).orElseThrow(),
+              writeback.stage,
+              "")).getExpressionWithParens();
+          var cancelInst = registry.lookupRequired(new NodeInstanceDesc.Key(
+                bNodes.GetAdjSCAIEVNode(writeback.baseNode, AdjacentNode.cancelReq).orElseThrow(),
+                writeback.stage,
+              ""));
+          String cancelExpr = (cancelInst.getExpression().startsWith(NodeRegistry.MISSING_PREFIX)) ? "1'b0" : cancelInst.getExpressionWithParens();
+          logicBlock.outputs.add(new NodeInstanceDesc(validOrCancelKey,
+                                                      "%s || %s".formatted(validExpr, cancelExpr),
+                                                      ExpressionType.AnyExpression));
+
+          translatedWriteback = this.baseLogic.mapper.addTranslatedIDSource(instrIDKey, Optional.of(validOrCancelKey));
+        }
+
+        //For now, assume there is one writeback per reg channel (per cycle).
+        var rdaddrOnWritebackKey = new NodeInstanceDesc.Key(Purpose.REGULAR, queue.getRdAddrNode(), core.getRootStage(), "", writebackAux);
+        var rddataOnWritebackKey = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, queue.getRdNode(), core.getRootStage(), "", writebackAux);
+        String rddataOnWritebackExpr = registry.lookupRequired(rddataOnWritebackKey).getExpressionWithParens();
+        String translatedIDValidExpr = registry.lookupRequired(translatedWriteback.makeKey_RdInnerIDValid()).getExpressionWithParens();
+        String translatedIDExpr = registry.lookupRequired(translatedWriteback.makeKey_RdInnerID(0,0)).getExpressionWithParens();
+        logicBlock.outputs.add(new NodeInstanceDesc(rdaddrOnWritebackKey, translatedIDExpr, ExpressionType.AnyExpression_Noparen));
+
+        //Assertions
+        if (writebackDuringAssign) {
+          logicBlock.logic += """
+              `ifndef SYNTHESIS
+              always_ff @(posedge %1$s) begin
+                  if (%2$s === 1'b0 && (%4$s || %5$s) && !(%6$s)) begin
+                      if (!%7$s)
+                          $error("SCAL Custom reg %3$s: Writeback without inner ID assignment");
+                      else if (%8$s.valid)
+                          $error("SCAL Custom reg %3$s: Writeback-during-assign with already-valid scoreboard entry");
+                      else if (!(%9$s))
+                          $error("SCAL Custom reg %3$s: Writeback-during-assign without concurrent scoreboard push request");
+                  end
+              end
+              `endif
+              """.formatted(language.clk, language.reset, regfile.regName, //1,2,3
+                  writeback.wrValidExpr, writeback.wrCancelExpr, writeback.stallDataStageCond, //4,5,6
+                  translatedIDValidExpr, //7
+                  rddataOnWritebackExpr, //8
+                  queuePushValidCond_concurrentWriteback //9
+                  );
+        }
+        else {
+          logicBlock.logic += """
+              `ifndef SYNTHESIS
+              always_ff @(posedge %1$s) begin
+                  if (%2$s === 1'b0 && (%4$s || %5$s) && !(%6$s)) begin
+                      if (!%7$s)
+                          $error("SCAL Custom reg %3$s: Writeback without inner ID assignment");
+                      else if (!%8$s.valid)
+                          $error("SCAL Custom reg %3$s: Writeback with invalid scoreboard entry");
+                      else begin
+                          %9$s
+                              $error("SCAL Custom reg %3$s: Mismatching register ID in scoreboard");
+                          if (%8$s.instrID != %10$s)
+                              $error("SCAL Custom reg %3$s: Mismatching instruction ID in scoreboard");
+                      end
+                  end
+              end
+              `endif
+              """.formatted(language.clk, language.reset, regfile.regName, //1,2,3
+                  writeback.wrValidExpr, writeback.wrCancelExpr, writeback.stallDataStageCond, //4,5,6
+                  translatedIDValidExpr, //7
+                  rddataOnWritebackExpr, //8
+                  (regfile.depth > 1) ? String.format("if (%s.regID != %s)", rddataOnWritebackExpr, writeback.wrAddrExpr) : "if (1'b0)", //9
+                  registry.lookupRequired(translatedWriteback.key_ID).getExpressionWithParens() //10
+                  );
+        }
+
+        // Apply register write to WriteQueue/scoreboard.
+        registry.lookupRequired(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
+                                                         queue.getWrRespNode(), core.getRootStage(), "data_present", writebackAux));
+        registry.lookupRequired(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
+                                                         queue.getWrRespNode(), core.getRootStage(), "data", writebackAux));
+        registry.lookupRequired(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
+                                                         queue.getWrRespNode(), core.getRootStage(), "flushing", writebackAux));
+        //- Queue write address = inner ID
+        var wraddrOnWritebackKey_data        = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
+                                                                        queue.getWrAddrNode(), core.getRootStage(), "data", writebackAux);
+        var wraddrOnWritebackKey_datapresent = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
+                                                                        queue.getWrAddrNode(), core.getRootStage(), "data_present", writebackAux);
+        var wraddrOnWritebackKey_flushing    = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
+                                                                        queue.getWrAddrNode(), core.getRootStage(), "flushing", writebackAux);
+        logicBlock.outputs.add(new NodeInstanceDesc(wraddrOnWritebackKey_data, translatedIDExpr, ExpressionType.AnyExpression_Noparen));
+        logicBlock.outputs.add(new NodeInstanceDesc(wraddrOnWritebackKey_datapresent, translatedIDExpr, ExpressionType.AnyExpression_Noparen));
+        logicBlock.outputs.add(new NodeInstanceDesc(wraddrOnWritebackKey_flushing, translatedIDExpr, ExpressionType.AnyExpression_Noparen));
+        //- Queue write data.
+        var wrdataOnWritebackKey_data        = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
+                                                                        queue.getWrNode(regfile.width), core.getRootStage(), "data", writebackAux);
+        var wrdataOnWritebackKey_datapresent = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
+                                                                        queue.getWrNode(1), core.getRootStage(), "data_present", writebackAux);
+        var wrdataOnWritebackKey_flushing    = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
+                                                                        queue.getWrNode(1), core.getRootStage(), "flushing", writebackAux);
+        logicBlock.outputs.add(new NodeInstanceDesc(wrdataOnWritebackKey_data, writeback.wrDataExpr, ExpressionType.AnyExpression));
+        logicBlock.outputs.add(new NodeInstanceDesc(wrdataOnWritebackKey_datapresent, "!"+writeback.wrCancelExpr, ExpressionType.AnyExpression));
+        logicBlock.outputs.add(new NodeInstanceDesc(wrdataOnWritebackKey_flushing, "1'b1", ExpressionType.AnyExpression_Noparen));
+        //- Queue write valid condition. Update data and set data_present on 'valid || cancel'; clear data_present and set flushing on cancel.
+        var wrreqOnWritebackKey_data        = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
+                                                                       queue.getWrReqNode(), core.getRootStage(), "data", writebackAux);
+        var wrreqOnWritebackKey_datapresent = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
+                                                                       queue.getWrReqNode(), core.getRootStage(), "data_present", writebackAux);
+        var wrreqOnWritebackKey_flushing    = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
+                                                                       queue.getWrReqNode(), core.getRootStage(), "flushing", writebackAux);
+        String writebackValidOrCancelCond = String.format("(%s || %s) && !(%s)", writeback.wrValidExpr, writeback.wrCancelExpr, writeback.stallDataStageCond);
+        logicBlock.outputs.add(new NodeInstanceDesc(wrreqOnWritebackKey_data, writebackValidOrCancelCond, ExpressionType.AnyExpression));
+        logicBlock.outputs.add(new NodeInstanceDesc(wrreqOnWritebackKey_datapresent, writebackValidOrCancelCond, ExpressionType.AnyExpression));
+        String writebackCancelCond = String.format("%s && !(%s)", writeback.wrCancelExpr, writeback.stallDataStageCond, writeback.flushDataStageCond);
+        logicBlock.outputs.add(new NodeInstanceDesc(wrreqOnWritebackKey_flushing, writebackCancelCond, ExpressionType.AnyExpression));
+
+        if (!writeback.validRespWireName.isEmpty()) {
+          String writebackPassingCond = String.format("(%s || %s) && !(%s) && !(%s)",
+                                                      writeback.wrValidExpr, writeback.wrCancelExpr,
+                                                      writeback.stallDataStageCond, writeback.flushDataStageCond);
+          logicBlock.logic += String.format("assign %s = %s;\n", writeback.validRespWireName, writebackPassingCond);
+        }
+      }
+
       //- WriteQueue already invalidates the scoreboard entry
       //Given there is no retire stall:
       //- On retire (either way), feed the dirtyCond
       //- On retire (no discard), feed the scoreboard entries into writeCond
       //- On retire (with discard), writeCond should be false
       ResetDirtyCond dirtyCond = new ResetDirtyCond();
-      dirtyCond.baseNode = writeback.baseNode;
+      dirtyCond.baseNode = writeNode;
       dirtyCond.condExpr = selectedCommitScoreboardValidWire;
       dirtyCond.addrExpr = selectedCommitScoreboardRegIDWire;
       resetDirtyConds.add(dirtyCond);
@@ -870,14 +900,22 @@ public class SCALStateStrategy_IDBasedDHCommit {
                                          selectedCommitScoreboardCancelWire);
       writeCond.addrExpr = selectedCommitScoreboardRegIDWire;
       writeCond.dataExpr = selectedCommitScoreboardDataWire;
-      writeCond.iPort = iPort;
+      writeCond.iPort = record.iWriteNode();
       writeToBackingConds.add(writeCond);
-      if (!writeback.validRespWireName.isEmpty()) {
-        String writebackPassingCond = String.format("(%s || %s) && !(%s) && !(%s)",
-                                                    writeback.wrValidExpr, writeback.wrCancelExpr,
-                                                    writeback.stallDataStageCond, writeback.flushDataStageCond);
-        logicBlock.logic += String.format("assign %s = %s;\n", writeback.validRespWireName, writebackPassingCond);
+    }
+
+    /** Processes a write port. Note: Each write, even to the same "port node" but from a different execution unit, will have a separate call. */
+    @Override
+    void processWritePort(int iPort, WritebackExpr writeback, NodeRegistryRO registry, NodeLogicBlock logicBlock) {
+      int iNode = utils.writeNodes.indexOf(writeback.baseNode);
+      assert(iNode != -1);
+      while (iNode >= queueRecords.size())
+        queueRecords.add(null);
+      if (queueRecords.get(iNode) == null) {
+        queueRecords.set(iNode, new QueueRecord(iNode, new ArrayList<>()));
       }
+      queueRecords.get(iNode).writebacks.add(writeback);
+
     }
     @Override
     List<ResetDirtyCond> getResetDirtyConds() {

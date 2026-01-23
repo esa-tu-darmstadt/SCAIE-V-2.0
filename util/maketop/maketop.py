@@ -102,6 +102,9 @@ def generate_module_isax_mapping(netlist):
                 continue
             with open(isax_candidatepath, 'r') as candidate_file:
                 candidate_data = yaml.safe_load(candidate_file)
+                for modulename_cur in (x['module'] for x in candidate_data if 'module' in x):
+                    # if the ISAX yaml has a module name, use that instead of the file name portion
+                    modulename = modulename_cur
                 module_instr_candidates = itertools.chain.from_iterable(((instrdesc[keyname] for keyname in ['instruction','always'] if (keyname in instrdesc)) for instrdesc in candidate_data))
                 module_instructions = [instr for instr in module_instr_candidates if (instr in isaxes_without_module)]
                 for module_instr in module_instructions:
@@ -135,7 +138,7 @@ def _assign(a, b):
     return "assign %s = %s;\n" % (a, b)
 
 
-def write_top(template_file_name, out_file_name, core_pin_name_translator=None):
+def write_top(template_file_name, out_file_name, core_pin_name_translator=None, additional_wires=[], additional_in_out=[]):
     netlist = parse_netlist(dir_coresrc + "/scaiev_netlist.yaml")
     isax_modules = generate_module_isax_mapping(netlist)
     with open(template_file_name, 'r') as in_top_file, open("%s/%s" % (dir_coresrc, out_file_name), 'w') as out_top_file:
@@ -168,10 +171,14 @@ def write_top(template_file_name, out_file_name, core_pin_name_translator=None):
                         #core-*
                         elif len(net.core_module_pin) != 0:
                             out_top_file.write(line_tabs + _wiredecl(wirename, net))
+                    for wire_name, wire_width in additional_wires:
+                        out_top_file.write(line_tabs + ("wire [%d-1:0] %s;\n" % (wire_width, wire_name)))
                 case '//SCAIEV MAKETOP COREPINS':
                     for wirename, net in netlist.items():
                         if len(net.core_module_pin) != 0:
                             out_top_file.write(line_tabs + (",.%s(%s)\n" % (core_pin_name_translator(net.core_module_pin), wirename)))
+                    for pin, assignment in additional_in_out:
+                        out_top_file.write(line_tabs + (",.%s(%s)\n" % (pin, assignment)))
                 case '//SCAIEV MAKETOP ISAXWIRES':
                     # SCAL ports can have several netlist entries to support different ISAX-side port names.
                     # In such cases, the netlist key name has another identifier after a " " character (usually the ISAX name) to prevent duplicates.

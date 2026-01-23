@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.TreeMap;
 import java.util.function.Consumer;
 import org.apache.logging.log4j.LogManager;
@@ -27,6 +28,7 @@ import scaiev.scal.NodeRegistry;
 import scaiev.scal.NodeRegistryRO;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
+import scaiev.scal.strategy.pipeline.NodeRegPipelineStrategy;
 import scaiev.util.ListRemoveView;
 import scaiev.util.Verilog;
 
@@ -128,7 +130,7 @@ public class EarlyValidStrategy extends MultiNodeStrategy {
               RdIValid = "1'b0";
             else
               RdIValid = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(userValid, stage, ISAX));
-          } else if (core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdIValid).GetEarliest()).isAfter(stage, false)) {
+          } else if (core.translateStageScheduleNumber(core.getNodes().get(bNodes.RdIValid).getEarliest()).isAfter(stage, false)) {
             // For early stages where RdIValid is not available (-> usually the fetch stage), only include no-opcode/'always' ISAXes.
             continue;
           }
@@ -226,7 +228,7 @@ public class EarlyValidStrategy extends MultiNodeStrategy {
             RdIValid = "1'b0";
           else
             RdIValid = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(userValid, stage, ISAX));
-        } else if (core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdIValid).GetEarliest()).isAfter(stage, false)) {
+        } else if (core.translateStageScheduleNumber(core.getNodes().get(bNodes.RdIValid).getEarliest()).isAfter(stage, false)) {
           // For early stages where RdIValid is not available (-> usually the fetch stage), only include no-opcode/'always' ISAXes.
           continue;
         }
@@ -264,6 +266,8 @@ public class EarlyValidStrategy extends MultiNodeStrategy {
     return ret;
   }
 
+  Map<PipelineStage,NodeRegPipelineStrategy> pipeliners = new HashMap<>();
+
   protected boolean implementSingle(Consumer<NodeLogicBuilder> out, NodeInstanceDesc.Key nodeKey) {
     // Will be called on a validReq node.
     // If requested at any later stage, will produce a pipeline to the previous stage,
@@ -285,20 +289,25 @@ public class EarlyValidStrategy extends MultiNodeStrategy {
         // Since the validReq signals are combined over all ISAXes and thus, possibly, over multiple stages,
         //  the pipeline strategy is applied per stage.
         //  The resulting output of the pipeline is then taken to add on any additional validReqs.
-        var pipelineStrategy =
-            strategyBuilders.buildNodeRegPipelineStrategy(language, bNodes, new PipelineFront(nodeKey.getStage()), false, false, true,
-                                                          _nodeKey -> true, _nodeKey -> false, MultiNodeStrategy.noneStrategy,
-                                                          true);
+        var pipelineStrategy = pipeliners.get(nodeKey.getStage().getMultiportBase());
+        if (pipelineStrategy == null) {
+          pipelineStrategy = strategyBuilders.buildNodeRegPipelineStrategy(language, bNodes, 
+                                                                           new PipelineFront(nodeKey.getStage().getMultiportBase()),
+                                                                           false, false, true,
+                                                                           _nodeKey -> true, _nodeKey -> false, MultiNodeStrategy.noneStrategy,
+                                                                           true);
+          pipeliners.put(nodeKey.getStage().getMultiportBase(), pipelineStrategy);
+        }
         pipelineStrategy.implement(out, new ListRemoveView<>(List.of(nodeKey)), false);
         return true;
       }
 
       HashMap<PipelineStage, HashSet<String>> stage_lookAtISAX = new HashMap<>(op_stage_instr.get(baseNode));
-      CoreNode coreNode = core.GetNodes().get(baseNode);
+      CoreNode coreNode = core.getNodes().get(baseNode);
       if (coreNode == null)
         return false;
       PipelineFront relevantStages =
-          core.TranslateStageScheduleNumber(coreNode.GetLatest()); // new PipelineFront(op_stage_instr.get(baseNode).keySet());
+          core.translateStageScheduleNumber(coreNode.getLatest()); // new PipelineFront(op_stage_instr.get(baseNode).keySet());
 
       if (!(node_earliestStageValid.get(baseNode).isAroundOrBefore(nodeKey.getStage(), false)) ||
           !relevantStages.isAroundOrAfter(nodeKey.getStage(), false))

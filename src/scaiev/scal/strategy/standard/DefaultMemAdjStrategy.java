@@ -50,7 +50,7 @@ public class DefaultMemAdjStrategy extends MultiNodeStrategy {
     this.bNodes = bNodes;
     this.core = core;
 
-    PipelineFront minDecodeFront = core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdInstr).GetEarliest());
+    PipelineFront minDecodeFront = core.translateStageScheduleNumber(core.getNodes().get(bNodes.RdInstr).getEarliest());
     PipelineFront minDecodePipetoFront =
         new PipelineFront(minDecodeFront.asList().stream().flatMap(minDecodeStage -> minDecodeStage.getNext().stream()));
 
@@ -69,8 +69,8 @@ public class DefaultMemAdjStrategy extends MultiNodeStrategy {
   }
 
   protected Optional<MultiNodeStrategy> makePipelinedMemAddrStrategy(SCAIEVNode readDefaultAddrNode, SCAIEVNode writeDefaultAddrNode) {
-    PipelineFront minRdInstrFront = core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdInstr).GetEarliest());
-    PipelineFront minRdRS1Front = core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdRS1).GetEarliest());
+    PipelineFront minRdInstrFront = core.translateStageScheduleNumber(core.getNodes().get(bNodes.RdInstr).getEarliest());
+    PipelineFront minRdRS1Front = core.translateStageScheduleNumber(core.getNodes().get(bNodes.RdRS1).getEarliest());
     PipelineFront minAddrPipetoFront =
         new PipelineFront(minRdRS1Front.asList().stream().flatMap(minRdRS1Stage -> minRdRS1Stage.getNext().stream()));
     PipelineFront latestDefaultAddrFront = minAddrPipetoFront;
@@ -82,21 +82,21 @@ public class DefaultMemAdjStrategy extends MultiNodeStrategy {
       logger.error("The core provides only one of {}, {}.", readDefaultAddrNode.name, writeDefaultAddrNode.name);
       coreProvidesDefaultMemAddr = false;
     }
-    if (core.GetNodes().containsKey(readDefaultAddrNode)) {
-      var defaultAddrCoreNode = core.GetNodes().get(readDefaultAddrNode);
-      if (!Optional.ofNullable(core.GetNodes().get(writeDefaultAddrNode))
+    if (core.getNodes().containsKey(readDefaultAddrNode)) {
+      var defaultAddrCoreNode = core.getNodes().get(readDefaultAddrNode);
+      if (!Optional.ofNullable(core.getNodes().get(writeDefaultAddrNode))
                .map(wrDefaultAddrCoreNode
-                    -> wrDefaultAddrCoreNode.GetEarliest().equals(defaultAddrCoreNode.GetEarliest()) &&
-                           wrDefaultAddrCoreNode.GetLatest().equals(defaultAddrCoreNode.GetLatest()))
+                    -> wrDefaultAddrCoreNode.getEarliest().equals(defaultAddrCoreNode.getEarliest()) &&
+                           wrDefaultAddrCoreNode.getLatest().equals(defaultAddrCoreNode.getLatest()))
                .orElse(false)) {
         logger.error("The core does not provide {} at the same stage range as {}.", writeDefaultAddrNode, readDefaultAddrNode);
         coreProvidesDefaultMemAddr = false;
       } else {
         coreProvidesDefaultMemAddr = true;
-        PipelineFront minDefaultAddrFront = core.TranslateStageScheduleNumber(defaultAddrCoreNode.GetEarliest());
+        PipelineFront minDefaultAddrFront = core.translateStageScheduleNumber(defaultAddrCoreNode.getEarliest());
         minAddrPipetoFront =
             new PipelineFront(minDefaultAddrFront.asList().stream().flatMap(minAddrStage -> minAddrStage.getNext().stream()));
-        latestDefaultAddrFront = core.TranslateStageScheduleNumber(defaultAddrCoreNode.GetLatest());
+        latestDefaultAddrFront = core.translateStageScheduleNumber(defaultAddrCoreNode.getLatest());
       }
     }
     if (!minAddrPipetoFront.asList().isEmpty()) {

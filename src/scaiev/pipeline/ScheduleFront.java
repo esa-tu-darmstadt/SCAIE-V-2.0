@@ -7,7 +7,7 @@ import scaiev.coreconstr.Core;
 /**
  * Wrapper either around a PipelineFront or a 'stagePos' integer value.
  * Intended for use in scheduling constraints, as the final core pipeline graph may not be available at the beginning.
- * Can be resolved using {@link Core#TranslateStageScheduleNumber(ScheduleFront)}.
+ * Can be resolved using {@link Core#translateStageScheduleNumber(ScheduleFront)}.
  */
 public class ScheduleFront {
   PipelineFront asFront = null;

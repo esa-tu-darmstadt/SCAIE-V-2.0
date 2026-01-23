@@ -16,7 +16,7 @@ On top of the original 2.0 release, logic generation has seen a rework (SCAL 2.0
 ## Which cores do you support?
 We currently support
 - CVA5
-- CVA6
+- CVA6 (see configurations in Cores directory)
 - VexRiscv (https://github.com/SpinalHDL/VexRiscv)
 - ORCA (https://github.com/cahz/orca)
 - Piccolo (https://github.com/bluespec/Piccolo)
@@ -224,9 +224,8 @@ This was currently tested only by using the yaml file as input. To use this stra
 ## Can I disable some logic within SCAL for decoupled execution? 
 The SCAIE-V command line has some additional flags controlling SCAL's decoupled logic. See the `-h` option for details.
 
-## What do I have to do to support internal states? 
-This is currently supported only in yaml file (see TestMe.yaml & AutomaticDemoTest.java, which reads the yaml and starts SCAIE-V tool based on it).
-In the TestMe.yaml, define in the beginning the internal state, with its name, width and depth:
+## What do I have to do to support internal states?
+In the ISAX yaml file, define in the beginning the internal state, with its name, width and depth:
 ```
 - register: Myreg
   width: 32
@@ -316,4 +315,4 @@ Mihaela Damian, Julian Oppermann, Christoph Spang, Andreas Koch, "SCAIE-V: An Op
 for RISC-V Processors"
 
 ## Do you have further questions?
-For any questions, remarks or complaints, you can reach us at {damian,meisel}@esa.tu-darmstadt.de. :) 
+For any questions, remarks or complaints, you can reach us at {damian,meisel}@esa.tu-darmstadt.de. :)

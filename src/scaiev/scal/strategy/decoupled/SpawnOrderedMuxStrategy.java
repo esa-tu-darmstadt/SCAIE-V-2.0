@@ -31,6 +31,7 @@ import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.NodeRegistryRO;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.ui.SCAIEVConfig;
 import scaiev.util.Verilog;
@@ -392,7 +393,7 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
       clearCond += " || " + wrflushNode.get().getExpression();
 
     String FIFOmoduleName = registry.lookupExpressionRequired(
-        new NodeInstanceDesc.Key(Purpose.HDL_MODULE, DecoupledStandardModulesStrategy.makeFIFONode(), core.GetRootStage(), ""));
+        new NodeInstanceDesc.Key(Purpose.HDL_MODULE, DecoupledStandardModulesStrategy.makeFIFONode(), core.getRootStage(), ""));
     ret.logic += FIFOmoduleName + "#(" + fifoDepth + "," + (additionalIDWidth + selectWidth) + ") " + fifoName + " (\n"
                  + tab + language.clk + ",\n"
                  + tab + language.reset + ",\n"
@@ -731,20 +732,21 @@ public class SpawnOrderedMuxStrategy extends MultiNodeStrategy {
         }
         keyIter.remove();
       } else if (nodeKey.getPurpose().matches(Purpose.REGULAR) && !nodeKey.getNode().isInput /*(core -> ) SCAL -> ISAX*/) {
-        if (nodeKey.getISAX().isEmpty() && nodeKey.getNode().getAdj() == AdjacentNode.validResp &&
-            !nodeKey.getNode().equals(bNodes.WrCommit_spawn_validResp) &&
+        if (nodeKey.getISAX().isEmpty() &&
+            (nodeKey.getNode().getAdj() == AdjacentNode.validResp || nodeKey.getNode().getAdj() == AdjacentNode.cancelResp) &&
+            !nodeKey.getNode().nameParentNode.equals(bNodes.WrCommit_spawn.name) &&
             requiresCommitToCore(bNodes.GetSCAIEVNode(nodeKey.getNode().nameParentNode), nodeKey.getStage())) {
-          // Special case: Set validResp for 'commit-to-core' operations to the commit condition.
+          // Special case: Set validResp / cancelResp for 'commit-to-core' operations to the commit condition.
           if (isNew) {
             requestedForByKey.put(requestedForKey, requestedForSet);
             out.accept(
-                NodeLogicBuilder.fromFunction("SpawnOrderedMuxStrategy_buildGeneralValidResp_" + nodeKey.toString(), (registry, aux) -> {
+                NodeLogicBuilder.fromFunction("SpawnOrderedMuxStrategy_buildGeneralResp_" + nodeKey.toString(), (registry, aux) -> {
                   var ret = new NodeLogicBlock();
                   var inputNode = registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.WrCommit_spawn_validResp, nodeKey.getStage(), ""),
                                                           requestedForSet);
                   requestedForSet.addAll(inputNode.getRequestedFor(), true);
                   ret.outputs.add(new NodeInstanceDesc(NodeInstanceDesc.Key.keyWithPurpose(nodeKey, Purpose.REGULAR),
-                                                       inputNode.getExpression(), ExpressionType.AnyExpression, requestedForSet));
+                                                       inputNode.getExpression(), SCALUtil.typeOfInheritedExpression(inputNode), requestedForSet));
                   return ret;
                 }));
           }

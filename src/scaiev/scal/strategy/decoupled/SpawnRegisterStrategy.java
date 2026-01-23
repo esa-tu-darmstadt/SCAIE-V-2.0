@@ -18,6 +18,7 @@ import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.NodeRegistryRO;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.strategy.SingleNodeStrategy;
 import scaiev.util.Verilog;
 
@@ -62,12 +63,22 @@ public class SpawnRegisterStrategy extends SingleNodeStrategy {
     Optional<SCAIEVNode> validRespNode_opt = bNodes.GetAdjSCAIEVNode(parentNode, AdjacentNode.validHandshakeResp)
                                                 .or(() -> bNodes.GetAdjSCAIEVNode(parentNode, AdjacentNode.validResp));
     Optional<SCAIEVNode> cancelReqNode_opt = bNodes.GetAdjSCAIEVNode(parentNode, AdjacentNode.cancelReq);
+    Optional<SCAIEVNode> cancelRespNode_opt = bNodes.GetAdjSCAIEVNode(parentNode, AdjacentNode.cancelResp);
     String validSig =
         registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, validNode, spawnStage, ISAX));
-    if (!spawnNode.DefaultMandatoryAdjSig() && cancelReqNode_opt.isPresent()) {
+    Optional<String> cancelSig =
+        cancelReqNode_opt.map(cancelNode -> registry.lookupExpressionRequired(
+                                               new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, cancelNode, spawnStage, ISAX)));
+    if (spawnNode.getAdj() == AdjacentNode.cancelReq && cancelRespNode_opt.isPresent() && SCALUtil.hasCancelResp(parentNode, spawnStage)) {
+      // cancelReq: no need to check validReq
+      // (note: non-handshaked cancelReq will replace validSig by 1)
+      assert(cancelSig.isPresent());
+      validSig = cancelSig.get();
+    }
+    else if (!spawnNode.DefaultMandatoryAdjSig() && cancelSig.isPresent()) {
       // May still need some of the adjacent nodes for cancellation, e.g. the address of a register.
-      validSig += " || " + registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
-                                                                                      cancelReqNode_opt.get(), spawnStage, ISAX));
+      validSig += " || " + cancelSig.get();
+      //spawnNode.getAdj() == AdjacentNode.cancelReq
     }
     String validResponse = "";
     if (validRespNode_opt.isPresent()) {
@@ -91,13 +102,18 @@ public class SpawnRegisterStrategy extends SingleNodeStrategy {
     priority = " && !(" + priority + ") ";
     String fireNodeSuffix = SpawnFireStrategy.getFireNodeSuffix(parentNode);
     String elseLogic = "";
-    if (spawnNode.DefaultMandatoryAdjSig()) {
+    if (spawnNode.DefaultMandatoryAdjSig() ||
+        (spawnNode.getAdj() == AdjacentNode.cancelReq && cancelRespNode_opt.isPresent() && SCALUtil.hasCancelResp(parentNode, spawnStage))) {
       assignValue = "1";
+      String handshakeResp = validResponse;
+      if (spawnNode.getAdj() == AdjacentNode.cancelReq) {
+        handshakeResp = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(cancelRespNode_opt.get(), spawnStage, ISAX));
+      }
       String elseCond =
-          validResponse.isEmpty()
+          handshakeResp.isEmpty()
               ? (registry.lookupExpressionRequired(new NodeInstanceDesc.Key(SpawnFireStrategy.ISAX_fire2_r, spawnStage, fireNodeSuffix)) +
                  priority)
-              : validResponse;
+              : handshakeResp;
       elseLogic = language.tab.repeat(1) + "else if (" + elseCond + ")  \n" + language.tab.repeat(2) + mainSigReg + " <= 0;\n" +
                   language.tab.repeat(1) + "if (" + language.reset + ")\n" + language.tab.repeat(2) + mainSigReg + " <= 0;\n";
     } else if (spawnNode.getAdj() == AdjacentNode.cancelReq) {
@@ -106,8 +122,11 @@ public class SpawnRegisterStrategy extends SingleNodeStrategy {
     }
 
     logicBlock.logic += "always @(posedge " + language.clk + ") begin // ISAX Spawn Regs for node " + spawnNode.name + " \n" +
-                        language.tab.repeat(1) + "if (" + validSig + ") begin\n" + language.tab.repeat(2) + mainSigReg +
-                        " <= " + assignValue + ";\n" + language.tab.repeat(1) + "end\n" + elseLogic + language.tab.repeat(0) + "end\n";
+                        language.tab.repeat(1) + "if (" + validSig + ") begin\n" +
+                        language.tab.repeat(2) + mainSigReg + " <= " + assignValue + ";\n" +
+                        language.tab.repeat(1) + "end\n" +
+                        elseLogic +
+                        "end\n";
 
     if (spawnNode.size > 1)
       logicBlock.declarations += String.format("reg [%d-1:0] %s;\n", spawnNode.size, mainSigReg);

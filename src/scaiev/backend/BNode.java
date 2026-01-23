@@ -320,8 +320,13 @@ public class BNode extends FNode {
    * Only present if WrPC was used in this "instruction"-'s lifetime
    * Generated as needed by DefaultRerunStrategy.
    */
-  public SCAIEVNode RdOrigPC = new SCAIEVNode("RdOrigPC", datawidth, false) {{ validBy = AdjacentNode.validReq; }};
-  public SCAIEVNode RdOrigPC_valid = new SCAIEVNode(RdOrigPC, AdjacentNode.validReq, 1, false, false);
+  public SCAIEVNode RdOrigPC = new SCAIEVNode("RdOrigPC", datawidth, false) {{
+    validBy = AdjacentNode.validReq;
+    tags.add(NodeTypeTag.staticReadResult);
+  }};
+  public SCAIEVNode RdOrigPC_valid = new SCAIEVNode(RdOrigPC, AdjacentNode.validReq, 1, false, false) {{
+    tags.add(NodeTypeTag.staticReadResult);
+  }};
 
   //	/**
   //	 * Sets the wait count for the current instruction entering the scoreboard.
@@ -378,7 +383,7 @@ public class BNode extends FNode {
    * Should be present from the CustReg.addr_constraint stage onwards and in all stages marked Issue.
    * The core backend should set the size field to the width of the instruction ID,
    *  and the elements field to the overall number of IDs (ID space = [0, ..., elements-1]).
-   * Should be listed in the core's datasheet, or added by the backend's Prepare call using {@link scaiev.coreconstr.Core#PutNode(SCAIEVNode, scaiev.coreconstr.CoreNode)}.
+   * Should be listed in the core's datasheet, or added by the backend's Prepare call using {@link scaiev.coreconstr.Core#putNode(SCAIEVNode, scaiev.coreconstr.CoreNode)}.
    */
   public SCAIEVNode RdIssueID = new SCAIEVNode("RdIssueID", 1, false) {
     { tags.add(NodeTypeTag.staticReadResult); }
@@ -594,12 +599,9 @@ public class BNode extends FNode {
     user_BNode.add(new SCAIEVNode(WrNode_spawn, AdjacentNode.validResp, 1, false, true) {
       { oneInterfToISAX = false; }
     });
-    //	user_BNode.add(new SCAIEVNode(WrNode_spawn  , AdjacentNode.spawnAllowed, 1, false, true)  {{noInterfToISAX = false;}}); // For the
-    // moment by default always allowed for internal state. Yet, core spawnAllowed must still be checked due to stalling
-
-    // Read spawn for direct reads (no DH )
-    // SCAIEVNode  RdNode_spawn = new SCAIEVNode(RdNode ,       AdjacentNode.none		, width, false, true) {{oneInterfToISAX =
-    // true; DH = false;}}; user_BNode.add(RdNode_spawn);
+    user_BNode.add(new SCAIEVNode(WrNode_spawn, AdjacentNode.cancelResp, 1, false, true) {
+      { oneInterfToISAX = false; }
+    });
 
     refreshAllNodesSet();
   }

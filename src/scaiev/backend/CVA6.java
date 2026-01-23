@@ -2,14 +2,18 @@ package scaiev.backend;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.apache.logging.log4j.LogManager;
@@ -25,15 +29,16 @@ import scaiev.frontend.SCAIEVNode.AdjacentNode;
 import scaiev.frontend.SCAL;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
+import scaiev.pipeline.PipelineStage.StageKind;
 import scaiev.pipeline.ScheduleFront;
 import scaiev.scal.CombinedNodeLogicBuilder;
 import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeInstanceDesc.ExpressionType;
-import scaiev.scal.NodeInstanceDesc.Key;
 import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.SCALPinNet;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
 import scaiev.scal.strategy.pipeline.IDBasedPipelineStrategy;
@@ -49,12 +54,12 @@ public class CVA6 extends CoreBackend {
   // logging
   protected static final Logger logger = LogManager.getLogger();
 
-  static final Path pathCore = Path.of("CoresSrc/CVA6");
+  private Path pathCore = Path.of("CoresSrc/CVA6");
 
   public String getCorePathIn() { return pathCore.toString(); }
 
   static final Path pathcva6 = Path.of("core");
-  static final String topModule = "cva6_ariane_wrapper";
+  //static final String topModule = "cva6_ariane_wrapper";
   static final String wrapperModule = "cva6_glue_wrapper";
   static final String targetModule = "scaiev_glue";
   static final String configPackage = "scaiev_config";
@@ -76,18 +81,21 @@ public class CVA6 extends CoreBackend {
 
   private PipelineStage stage_fetch;
   private PipelineStage stage_realign;
+  private PipelineStage[] stage_realign_port;
   private PipelineStage stage_decode;
+  private PipelineStage[] stage_decode_port;
   private PipelineStage stage_issue;
+  private PipelineStage[] stage_issue_port;
   private PipelineStage stage_execute;
-  private PipelineStage stage_executeothers;
+  private PipelineStage[] stage_executeothers;
   private PipelineStage pseudostage_spawn;
   private PipelineStage[] stages;
-  private ArrayList<PipelineStage> stageList = new ArrayList<PipelineStage>();
 
   static final String[] intToStage = {"scaiev_fetch_", "scaiev_realign_", "scaiev_decode_",
                                       "scaiev_issue_", "scaiev_execute_", "scaiev_spawn_"};
 
   static final String signame_issue_stall_before_cf = "issue_stall_before_cf";
+  List<Optional<String>> signame_issueport_stall_before_cf = new ArrayList<>();
   static final String signame_execute_stall_mem = "execute_stall_mem";
 
   static final String signame_to_scal_stage_valid_all = "glueToSCAL_IValid_cond_all";
@@ -99,7 +107,7 @@ public class CVA6 extends CoreBackend {
   private Core cva6_core;
   private HashMap<String, SCAIEVInstr> ISAXes;
   private HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr;
-  private FileWriter toFile = new FileWriter(pathCore.toString());
+  private FileWriter toFile = null;
   private Verilog language = null;
 
   private HashMap<String, Boolean> configFlags = new HashMap<>();
@@ -107,18 +115,21 @@ public class CVA6 extends CoreBackend {
   private HashSet<String> addedInputs = new HashSet<String>();
   private HashSet<String> addedOutputs = new HashSet<String>();
 
-  public int log2(int n) {
-    int result = (int)(Math.log(n) / Math.log(2));
-
-    return result;
-  }
-
   private void addLogic(String text) {
     toFile.UpdateContent(this.ModFile(targetModule), "endmodule", new ToWrite(text, false, true, "", true, targetModule));
   }
 
   private void addDeclaration(String text) {
     toFile.UpdateContent(this.ModFile(targetModule), ");", new ToWrite(text, true, false, "module ", false, targetModule));
+  }
+
+  private void setConfigFlag(String name, boolean newval) { configFlags.put(name, newval); }
+
+  private void CommitConfigFlags() {
+    configFlags.forEach((String name, Boolean newval) -> {
+      toFile.ReplaceContent(this.ModFile(configPackage), "localparam " + name + " = ",
+                            new ToWrite("localparam " + name + " = " + (newval ? "1" : "0") + ";", true, false, ""));
+    });
   }
 
   private String sigor0(String sig) {
@@ -130,13 +141,44 @@ public class CVA6 extends CoreBackend {
   }
 
   private boolean ContainsOpInStage(SCAIEVNode operation, PipelineStage stage) {
-    return op_stage_instr.containsKey(operation) && op_stage_instr.get(operation).containsKey(stage) &&
-        !op_stage_instr.get(operation).get(stage).isEmpty();
+    return ContainsOpInStage(operation, stage, null, true);
   }
 
   private boolean ContainsOpInStage(SCAIEVNode operation, PipelineStage stage, String instr_name) {
-    return op_stage_instr.containsKey(operation) && op_stage_instr.get(operation).containsKey(stage) &&
-        op_stage_instr.get(operation).get(stage).contains(instr_name);
+    return ContainsOpInStage(operation, stage, instr_name, true);
+  }
+  /**
+   * Returns whether op_stage_instr contains the operation/stage/instr_name pair,
+   *  with additional consideration for stage ports.
+   * @param operation the operation
+   * @param stage the stage; if the stage is CoreMultiport and does not match directly,
+   *              its ports are checked instead as specified by all_ports
+   * @param instr_name the instruction name to look for, or null as a wildcard (i.e., at least one instance of the operation/stage)
+   * @param all_ports controls whether, looking for CoreMultiport port matches,
+   *                  all ports need to match (true) or only at least one (false)
+   * @return true iff there is a match
+   */
+  private boolean ContainsOpInStage(SCAIEVNode operation, PipelineStage stage, String instr_name, boolean all_ports) {
+    if (!op_stage_instr.containsKey(operation))
+      return false;
+    var stageMap = op_stage_instr.get(operation);
+
+    // Predicate to check for presence in a particular stage
+    Predicate<PipelineStage> pred_matchesStage = (stage_ ->
+        stageMap.containsKey(stage_) &&
+        ((instr_name == null) || stageMap.get(stage_).contains(instr_name))); //instr_name == null && !stageMap.get(stage_).isEmpty()
+
+    if (pred_matchesStage.test(stage))
+      return true; // Direct match always wins
+
+    // No direct match was found.
+    if (stage.getKind() == StageKind.CoreMultiport) {
+      // Maybe there are matches in the ports of stage?
+      if (all_ports)
+        return stage.getChildren().stream().filter(st->st.getKind() == StageKind.Core).allMatch(pred_matchesStage);
+      return stage.getChildren().stream().filter(st->st.getKind() == StageKind.Core).anyMatch(pred_matchesStage);
+    }
+    return false;
   }
 
   @FunctionalInterface
@@ -162,11 +204,24 @@ public class CVA6 extends CoreBackend {
         .flatMap(isaxEntry -> {
           String isaxName = isaxEntry.getKey();
           SCAIEVInstr isax = isaxEntry.getValue();
-          var ret = Stream.of(new NodeInstanceDesc.Key(BNode.RdIValid, stage_decode, isaxName));
-          if (isax.equals(SCAL.PredefInstr.kill.instr) || isax.HasNode(BNode.RdMem))
-            ret = Stream.concat(ret, Stream.of(new NodeInstanceDesc.Key(BNode.RdIValid, stage_issue, isaxName)));
-          if (isax.HasNode(BNode.WrPC))
+          Stream<NodeInstanceDesc.Key> ret = Stream.empty();
+          for (PipelineStage decodePort : stage_decode_port) {
+            ret = Stream.concat(ret, Stream.of(new NodeInstanceDesc.Key(BNode.RdIValid, decodePort, isaxName)));
+          }
+          for (PipelineStage issuePort : stage_issue_port) {
+            if (isax.equals(SCAL.PredefInstr.kill.instr) || isax.HasNode(BNode.RdMem) || isax.HasNode(BNode.WrMem))
+              ret = Stream.concat(ret, Stream.of(new NodeInstanceDesc.Key(BNode.RdIValid, issuePort, isaxName)));
+          }
+          if (isax.HasSchedWith(BNode.WrPC, sched -> sched.GetStartCycle() >= stagePos_execute)) {
             ret = Stream.concat(ret, Stream.of(new NodeInstanceDesc.Key(BNode.RdAnyValid.NodeNegInput(), stage_execute, isaxName)));
+          }
+          if (isax.HasSchedWith(BNode.WrPC, sched -> sched.GetStartCycle() >= stagePos_issue)) {
+            if (stage_issue_port.length > 1) {
+              // Stall later ports before PC
+              ret = Stream.concat(ret, Stream.of(stage_issue_port).map(port ->
+                      new NodeInstanceDesc.Key(BNode.RdIValid, port, isaxName)));
+            }
+          }
           if (isax.HasNode(BNode.WrRD) || (isax.HasNode(BNode.WrRD_spawn) && !isax.GetRunsAsDecoupled()))
             ret = Stream.concat(ret, Stream.of(new NodeInstanceDesc.Key(BNode.RdIValid, stage_execute, isaxName)));
           return ret;
@@ -187,6 +242,7 @@ public class CVA6 extends CoreBackend {
                                                         .filter(instr -> instr != null)
                                                         .distinct();
   }
+  /** Note: Does not consider CoreMultiport ports */
   private Stream<SCAIEVInstr> getISAXesWithOpInStage(SCAIEVNode operation, PipelineStage stage) {
     return (!op_stage_instr.containsKey(operation) || !op_stage_instr.get(operation).containsKey(stage))
         ? Stream.<SCAIEVInstr>of()
@@ -199,25 +255,43 @@ public class CVA6 extends CoreBackend {
         .orElse("1'b0");
   }
 
-  private String signame_to_scal_pipeinto_executesv1;
-  private String signame_to_scal_pipeinto_executecva;
+  private String[] signame_to_scal_decode0_pipeinto_issue;
+  private String[] signame_to_scal_decode1_pipeinto_issue;
+  private String[] signame_to_scal_issue_pipeinto_issue0;
+  private String[] signame_to_scal_pipeinto_executesv1;
+  private String[] signame_to_scal_pipeinto_executecva;
 
-  //NOTE: Values from cva6/core/include/cv64a6_imafdc_sv39_config_pkg.sv
+  //NOTE: Values from cva6/core/include/cv64a6_imac_sv39_scaiev_config_pkg.sv
   private int CVA6ConfigXlen = 64;
   private final int CVA6ConfigNrCommitPorts = 2;
   private final int CVA6ConfigNrScoreboardEntries = 8;
 
+  private final int CVA6ConfigFetchFifoDepth = 4; //ariane_pkg::FETCH_FIFO_DEPTH
+  private final boolean CVA6ConfigCompressed = true; //C extension enabled
 
-  private SCAIEVNode node_RdZOLOverride = new SCAIEVNode("RdPCOverride", 64, true) {
+
+  private SCAIEVNode node_WrZOLOverride = new SCAIEVNode("WrPCOverride", 64, true) {
     {
       validBy = AdjacentNode.validReq;
     }
   };
-  private SCAIEVNode node_RdZOLOverride_valid = new SCAIEVNode(node_RdZOLOverride, AdjacentNode.validReq, 1, true, false);
+  private SCAIEVNode node_WrZOLOverride_valid = new SCAIEVNode(node_WrZOLOverride, AdjacentNode.validReq, 1, true, false);
   //private SCAIEVNode node_RdFetchReplay = new SCAIEVNode("RdFetchReplay", 1, false);
 
-  //Strategy to pipeline RdZOLOverride and _valid from fetch to realign.
+  //Strategy to pipeline WrZOLOverride and _valid from fetch to realign.
   MultiNodeStrategy zolOverridePipelineStrategy;
+
+  /** Adds a RdPipeInto port to SCAL (must be called from Prepare), returns its CVA6-side pin name */
+  private String addPipeIntoPort(SCALBackendAPI scalAPI, PipelineStage stageFrom, PipelineStage stageTo) {
+    var interface_toscal_pipeinto_executesv1 =
+        new CustomCoreInterface(BNode.RdPipeInto.name, "wire", stageFrom, 1, true, "stage_" + stageTo.getName());
+    scalAPI.AddCustomToSCALPin(interface_toscal_pipeinto_executesv1);
+    return interface_toscal_pipeinto_executesv1.getSignalName(this.language, true);
+  }
+
+  private boolean is_old_33ab2efa_branch() {
+    return this.cva6_core.getName().contains("_33ab2efa");
+  }
 
   @Override
   public void Prepare(HashMap<String, SCAIEVInstr> ISAXes, HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
@@ -229,77 +303,99 @@ public class CVA6 extends CoreBackend {
     this.BNode.AddCoreBNode(node_RdFetchFlushCount);
     this.BNode.AddCoreBNode(node_RdFetchFlushFromID);
     this.BNode.AddCoreBNode(node_RdIQueueFlushMask);
-    this.language = new Verilog(user_BNode, toFile, this);
+    this.BNode.AddCoreBNode(node_RdRealignFullyUnaligned);
     this.cva6_core = core;
     this.ISAXes = ISAXes;
+    this.pathCore = is_old_33ab2efa_branch() ? Path.of("CoresSrc/CVA6_33ab2efa") : Path.of("CoresSrc/CVA6");
+    this.toFile = new FileWriter(pathCore.toString());
+    this.language = new Verilog(user_BNode, toFile, this);
     this.CVA6ConfigXlen = core.getTags().contains(CoreTag.RV64) ? 64 : 32;
-    this.node_RdZOLOverride.size = CVA6ConfigXlen;
-    //		if (zol != null)
-    //			ISAXes.put("ZOL", zol);
+    this.node_WrZOLOverride.size = CVA6ConfigXlen;
+    this.configFlags.clear();
     this.op_stage_instr = op_stage_instr;
 
-    this.stage_fetch = core.GetRootStage().getChildren().get(0);
+    this.stage_fetch = core.getRootStage().getChildren().get(0);
     this.stage_realign = stage_fetch.getNext().get(0);
+    if (stage_realign.getKind() == StageKind.CoreMultiport)
+      this.stage_realign_port = stage_realign.getChildren().stream().filter(st->st.getKind() == StageKind.Core).toArray(n -> new PipelineStage[n]);
+    else
+      this.stage_realign_port = new PipelineStage[] {stage_realign};
     this.stage_decode = stage_realign.getNext().get(0);
+    if (stage_decode.getKind() == StageKind.CoreMultiport)
+      this.stage_decode_port = stage_decode.getChildren().stream().filter(st->st.getKind() == StageKind.Core).toArray(n -> new PipelineStage[n]);
+    else
+      this.stage_decode_port = new PipelineStage[] {stage_decode};
 
     this.stage_issue = stage_decode.getNext().stream().filter(stage -> stage.getName().equals("issue")).findAny().orElseThrow();
+    if (stage_issue.getKind() == StageKind.CoreMultiport)
+      this.stage_issue_port = stage_issue.getChildren().stream().filter(st->st.getKind() == StageKind.Core).toArray(n -> new PipelineStage[n]);
+    else
+      this.stage_issue_port = new PipelineStage[] {stage_issue};
     this.stage_execute = stage_issue.getNext().stream().filter(stage -> stage.getName().equals("executesv1")).findAny().orElseThrow();
-    this.stage_executeothers = stage_issue.getNext().stream().filter(stage -> stage.getName().equals("executecva")).findAny().orElseThrow();
+    this.stage_executeothers = stage_issue.getNext().stream().filter(stage -> stage.getName().startsWith("executecva"))
+                                   .sorted((a,b)->a.getName().compareTo(b.getName())).toArray(n -> new PipelineStage[n]);
     this.pseudostage_spawn = stage_execute.getNext().stream().filter(stage -> stage.getName().equals("decoupled1")).findAny().orElseThrow();
     this.stages = new PipelineStage[] {stage_fetch, stage_realign, stage_decode, stage_issue, stage_execute, pseudostage_spawn};
 
-    for (int i = 0; i < this.stages.length; ++i) {
+    for (int i = 0; i < this.stages.length; ++i)
       assert (this.stages[i].getStagePos() == i);
-      stageList.add(stages[i]);
+
+    if (stage_decode.getKind() == StageKind.Core) {
+      assert(is_old_33ab2efa_branch());
+      logger.warn("Targeting an older version of the CVA6 fork that is no longer being tested. Consider switching to a configuration of CVA6_bcb0f7d.");
     }
+    else
+      assert(!is_old_33ab2efa_branch());
 
     node_RdFetchID.elements = 1 << node_RdFetchID.size;
-    node_RdIQueueID.elements = 1 << node_RdIQueueID.size;
     node_RdFetchFlushFromID.elements = 1 << node_RdFetchFlushFromID.size;
     node_RdFetchFlushCount.elements = node_RdFetchFlushFromID.elements; //Can flush all from fetch queue
+    node_RdIQueueID.size = Log2.clog2(CVA6ConfigFetchFifoDepth) + Log2.clog2(stage_issue_port.length * 32 / (CVA6ConfigCompressed ? 16 : 32));
+    node_RdIQueueID.elements = 1 << node_RdIQueueID.size;
+    node_RdIQueueFlushMask.size = node_RdIQueueID.elements;
 
     BNode.RdInstr_RS.size = 6*2;
     BNode.RdInstr_RS.elements = 2;
-    core.PutNode(BNode.RdInstr_RS, new CoreNode(stagePos_decode, 0, stagePos_decode, stagePos_issue, BNode.RdInstr_RS.name));
+    core.putNode(BNode.RdInstr_RS, new CoreNode(stagePos_decode, 0, stagePos_decode, stagePos_issue, BNode.RdInstr_RS.name));
     BNode.RdInstr_RD.size = 6;
     BNode.RdInstr_RD.elements = 1;
-    core.PutNode(BNode.RdInstr_RD, new CoreNode(stagePos_decode, 0, stagePos_decode, stagePos_issue, BNode.RdInstr_RD.name));
+    core.putNode(BNode.RdInstr_RD, new CoreNode(stagePos_decode, 0, stagePos_decode, stagePos_issue, BNode.RdInstr_RD.name));
 
-    ScheduleFront rootSchedFront = new ScheduleFront(new PipelineFront(core.GetRootStage()));
+    ScheduleFront rootSchedFront = new ScheduleFront(new PipelineFront(core.getRootStage()));
     BNode.RdInStageID.size = Log2.clog2(CVA6ConfigNrScoreboardEntries);
     BNode.WrInStageID.size = Log2.clog2(CVA6ConfigNrScoreboardEntries);
-    core.PutNode(BNode.WrDeqInstr, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.WrDeqInstr.name));
-    core.PutNode(BNode.RdInStageID, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.RdInStageID.name));
-    core.PutNode(BNode.RdInStageValid, new CoreNode(stagePos_fetch, 0, stagePos_execute, stagePos_execute + 1, BNode.RdInStageValid.name));
-    core.PutNode(BNode.WrInStageID, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.WrInStageID.name));
+    core.putNode(BNode.WrDeqInstr, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.WrDeqInstr.name));
+    core.putNode(BNode.RdInStageID, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.RdInStageID.name));
+    core.putNode(BNode.RdInStageValid, new CoreNode(stagePos_fetch, 0, stagePos_execute, stagePos_execute + 1, BNode.RdInStageValid.name));
+    core.putNode(BNode.WrInStageID, new CoreNode(stagePos_execute, 0, stagePos_execute, stagePos_execute + 1, BNode.WrInStageID.name));
 
     BNode.RdIssueID.size = Log2.clog2(CVA6ConfigNrScoreboardEntries);
     BNode.RdIssueID.elements = CVA6ConfigNrScoreboardEntries;
-    core.PutNode(BNode.RdIssueID, new CoreNode(stagePos_issue, 0, stagePos_issue, stagePos_issue + 1, BNode.RdIssueID.name));
+    core.putNode(BNode.RdIssueID, new CoreNode(stagePos_issue, 0, stagePos_issue, stagePos_issue + 1, BNode.RdIssueID.name));
     BNode.RdIssueFlushID.size = Log2.clog2(CVA6ConfigNrScoreboardEntries);
     BNode.RdIssueFlushID.elements = CVA6ConfigNrScoreboardEntries;
-    core.PutNode(BNode.RdIssueFlushID, new CoreNode(stagePos_issue, 0, stagePos_issue, stagePos_issue + 1, BNode.RdIssueFlushID.name));
+    core.putNode(BNode.RdIssueFlushID, new CoreNode(stagePos_issue, 0, stagePos_issue, stagePos_issue + 1, BNode.RdIssueFlushID.name));
 
     BNode.RdCommitID.size = Log2.clog2(CVA6ConfigNrScoreboardEntries);
     BNode.RdCommitID.elements = CVA6ConfigNrScoreboardEntries;
     BNode.RdCommitIDCount.size = Log2.clog2(CVA6ConfigNrCommitPorts+1);
     BNode.RdCommitIDCount.elements = CVA6ConfigNrCommitPorts;
-    core.PutNode(BNode.RdCommitID, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitID.name));
-    core.PutNode(BNode.RdCommitIDCount, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitIDCount.name));
+    core.putNode(BNode.RdCommitID, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitID.name));
+    core.putNode(BNode.RdCommitIDCount, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitIDCount.name));
 
     BNode.RdCommitFlushID.size = Log2.clog2(CVA6ConfigNrScoreboardEntries);
     BNode.RdCommitFlushID.elements = CVA6ConfigNrScoreboardEntries;
     BNode.RdCommitFlushIDCount.size = Log2.clog2(CVA6ConfigNrCommitPorts+1);
     BNode.RdCommitFlushIDCount.elements = CVA6ConfigNrCommitPorts;
-    core.PutNode(BNode.RdCommitFlushID, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushID.name));
-    core.PutNode(BNode.RdCommitFlushIDCount, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushIDCount.name));
+    core.putNode(BNode.RdCommitFlushID, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushID.name));
+    core.putNode(BNode.RdCommitFlushIDCount, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushIDCount.name));
 
     BNode.RdCommitFlushMask.size = 0;
 
     BNode.RdCommitFlushAll.size = 1;
     BNode.RdCommitFlushAllID.size = Log2.clog2(CVA6ConfigNrScoreboardEntries);
-    core.PutNode(BNode.RdCommitFlushAll, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushAll.name));
-    core.PutNode(BNode.RdCommitFlushAllID, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushAllID.name));
+    core.putNode(BNode.RdCommitFlushAll, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushAll.name));
+    core.putNode(BNode.RdCommitFlushAllID, new CoreNode(rootSchedFront, 0, rootSchedFront, new ScheduleFront(), BNode.RdCommitFlushAllID.name));
 
     BNode.RdMem_addr.mustToCore = true;
     BNode.WrMem_addr.mustToCore = true;
@@ -307,22 +403,36 @@ public class CVA6 extends CoreBackend {
     BNode.WrMem_instrID.mustToCore = true;
 
     // NodeRegPipelineStrategy looks for an optional RdPipeInto node with "stage_<dest stage name>" in the ISAX field.
-    var interface_toscal_pipeinto_executesv1 =
-        new CustomCoreInterface(BNode.RdPipeInto.name, "wire", stage_issue, 1, true, "stage_" + stage_execute.getName());
-    scalAPI.AddCustomToSCALPin(interface_toscal_pipeinto_executesv1);
-    this.signame_to_scal_pipeinto_executesv1 = interface_toscal_pipeinto_executesv1.getSignalName(this.language, true);
+    this.signame_to_scal_issue_pipeinto_issue0 = new String[stage_issue_port.length];
+    this.signame_to_scal_pipeinto_executesv1 = new String[stage_issue_port.length];
+    this.signame_to_scal_pipeinto_executecva = new String[stage_issue_port.length];
+    assert(stage_issue_port.length == stage_decode_port.length);
+    for (int iPort = 0; iPort < stage_issue_port.length; ++iPort) {
+      PipelineStage issuePort = stage_issue_port[iPort];
+      this.signame_to_scal_pipeinto_executesv1[iPort] = addPipeIntoPort(scalAPI, issuePort, stage_execute);
+      this.signame_to_scal_pipeinto_executecva[iPort] = addPipeIntoPort(scalAPI, issuePort, stage_executeothers[iPort]);
 
-    var interface_toscal_pipeinto_executecva =
-        new CustomCoreInterface(BNode.RdPipeInto.name, "wire", stage_issue, 1, true, "stage_" + stage_executeothers.getName());
-    scalAPI.AddCustomToSCALPin(interface_toscal_pipeinto_executecva);
-    this.signame_to_scal_pipeinto_executecva = interface_toscal_pipeinto_executecva.getSignalName(this.language, true);
+      this.signame_to_scal_issue_pipeinto_issue0[iPort] = addPipeIntoPort(scalAPI, issuePort, stage_issue_port[0]);
+    }
+    if (stage_issue_port.length > 1) {
+      assert(stage_issue_port.length == 2);
+      this.signame_to_scal_decode0_pipeinto_issue = new String[stage_issue_port.length];
+      this.signame_to_scal_decode1_pipeinto_issue = new String[stage_issue_port.length];
+      for (int iPort = 0; iPort < stage_issue_port.length; ++iPort) {
+        this.signame_to_scal_decode0_pipeinto_issue[iPort] = addPipeIntoPort(scalAPI, stage_decode_port[0], stage_issue_port[iPort]);
+        this.signame_to_scal_decode1_pipeinto_issue[iPort] = addPipeIntoPort(scalAPI, stage_decode_port[1], stage_issue_port[iPort]);
+      }
+    }
+
+    setConfigFlag("SCAIEVTargetSuperscalar", stage_issue_port.length > 1);
+    setConfigFlag("SCAIEVTargetRV64", core.getTags().contains(CoreTag.RV64));
 
     // Request RdIValid/RdAnyValid interface pins
     forEachRdValidPin((node, isax, stage) -> scalAPI.RequestToCorePin(node, stage, isax.GetName()));
     if (ContainsOpInStage(BNode.WrPC, stage_fetch)) {
       //Fetch replay logic
-      scalAPI.RequestToCorePin(BNode.RdOrigPC, stage_realign, "");
-      scalAPI.RequestToCorePin(BNode.RdOrigPC_valid, stage_realign, "");
+      scalAPI.RequestToCorePin(BNode.RdOrigPC, stage_realign_port[0], "");
+      scalAPI.RequestToCorePin(BNode.RdOrigPC_valid, stage_realign_port[0], "");
     }
 
     scalAPI.SetHasAdjSpawnAllowed(BNode.RdMem_spawn_allowed);
@@ -335,71 +445,105 @@ public class CVA6 extends CoreBackend {
 
     scalAPI.getStrategyBuilders().put(StrategyBuilders.UUID_NodeRegPipelineStrategy, args -> this.build_cva6NodeRegPipelineStrategy(args));
 
-    //Generate and pipeline RdZOLOverride and _validReq to the realign stage.
+    //Generate and pipeline WrZOLOverride and _validReq to the realign stage.
     // -> Feed the signal through SCAL for pipelining.
-    BNode.AddCoreBNode(node_RdZOLOverride);
-    BNode.AddCoreBNode(node_RdZOLOverride_valid);
+    BNode.AddCoreBNode(node_WrZOLOverride);
+    BNode.AddCoreBNode(node_WrZOLOverride_valid);
 
     //Note: Use of CVA6's language object in SCAL is not optimal.
-    var innerPipelineStrategy = scalAPI.getStrategyBuilders().buildNodeRegPipelineStrategy(language, BNode,
+    var innerPipelineStrategy = scalAPI.getStrategyBuilders().buildNodeRegPipelineStrategy(
+        language, BNode,
         new PipelineFront(stage_fetch), false, false, false,
-        _nodeKey -> _nodeKey.getNode().equals(node_RdZOLOverride) || _nodeKey.getNode().equals(node_RdZOLOverride_valid),
+        _nodeKey -> _nodeKey.getNode().equals(node_WrZOLOverride) || _nodeKey.getNode().equals(node_WrZOLOverride_valid),
         _nodeKey -> false,
         MultiNodeStrategy.noneStrategy,
         false);
     this.zolOverridePipelineStrategy = new MultiNodeStrategy() {
       @Override
-      public void implement(Consumer<NodeLogicBuilder> out, Iterable<Key> nodeKeys, boolean isLast) {
+      public void implement(Consumer<NodeLogicBuilder> out, Iterable<NodeInstanceDesc.Key> nodeKeys, boolean isLast) {
         if (isLast) //avoid processing PIPEOUT nodes before PipeoutRegularStrategy
           innerPipelineStrategy.implement(out, nodeKeys, isLast);
       }
     };
 
-    var pcoverride_from_scal_interface = new CustomCoreInterface(node_RdZOLOverride.name, "wire", stage_decode, node_RdZOLOverride.size, false, "");
+    CustomCoreInterface[] pcoverride_from_scal_interfaces =
+        Stream.of(stage_decode_port).map(port -> new CustomCoreInterface(node_WrZOLOverride.name, "wire", port, node_WrZOLOverride.size, false, ""))
+            .toArray(n->new CustomCoreInterface[n]);
     //var fetchreplay_from_core_interface = new CustomCoreInterface(node_RdFetchReplay.name, "wire", stage_fetch, node_RdFetchReplay.size, true, "");
     //var fetchreplay_from_core_key = fetchreplay_from_core_interface.makeKey(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN);
     //Strategy that requests the node in all stages
-    scalAPI.AddCustomToCorePinUsing(pcoverride_from_scal_interface, NodeLogicBuilder.fromFunction("CVA6_RdZOLOverride_export", registry -> {
+    scalAPI.AddCustomToCorePinsUsing(NodeLogicBuilder.fromFunction("CVA6_WrZOLOverride_export", registry -> {
       var ret = new NodeLogicBlock();
-      //RdZOLOverride_fetch := WrPC_fetch
-      var fetchStageKey = new NodeInstanceDesc.Key(node_RdZOLOverride, stage_fetch, "");
-      var fetchStageValidKey = new NodeInstanceDesc.Key(node_RdZOLOverride_valid, stage_fetch, "");
+      //WrZOLOverride_fetch := WrPC_fetch
+      var fetchStageKey = new NodeInstanceDesc.Key(node_WrZOLOverride, stage_fetch, "");
+      var fetchStageValidKey = new NodeInstanceDesc.Key(node_WrZOLOverride_valid, stage_fetch, "");
       var fetchStageFromInst_opt = registry.lookupOptional(new NodeInstanceDesc.Key(BNode.WrPC, stage_fetch, ""));
       var fetchStageFromInstValid_opt = registry.lookupOptional(new NodeInstanceDesc.Key(BNode.WrPC_valid, stage_fetch, ""));
-      String realignStageExpr = "%d'd0".formatted(node_RdZOLOverride.size);
+      String[] decodeStageExprs = new String[stage_decode_port.length];
       if (fetchStageFromInst_opt.isPresent() && fetchStageFromInstValid_opt.isPresent()) {
         String wrpcExpr = fetchStageFromInst_opt.get().getExpression();
         int wrpcInSize = fetchStageFromInst_opt.get().getKey().getNode().size;
-        if (wrpcInSize < node_RdZOLOverride.size)
-          wrpcExpr = "{%d'd0,%s}".formatted(node_RdZOLOverride.size - wrpcInSize, wrpcExpr);
+        if (wrpcInSize < node_WrZOLOverride.size)
+          wrpcExpr = "{%d'd0,%s}".formatted(node_WrZOLOverride.size - wrpcInSize, wrpcExpr);
         ret.outputs.add(new NodeInstanceDesc(fetchStageKey, wrpcExpr, ExpressionType.AnyExpression));
         ret.outputs.add(new NodeInstanceDesc(fetchStageValidKey, fetchStageFromInstValid_opt.get().getExpression(), ExpressionType.AnyExpression));
-        realignStageExpr = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.PIPEDIN, node_RdZOLOverride, stage_decode, ""));
+        // Stall conditions for all realign ports (except the last)
+        List<String> realignStallExprs = Stream.of(stage_realign_port).limit(stage_realign_port.length-1)
+                                             .map(port->SCALUtil.buildCond_StageStalling(BNode, registry, port, false))
+                                             .toList();
+        // Only pass on WrZOLOverride_valid for the first non-stalling realign port.
+        for (int iPort = 1; iPort < stage_realign_port.length; ++iPort) {
+          // -> Override the PIPEDIN WrZOLOverride with a REGULAR that masks it.
+          var realignValidMaskedKey = new NodeInstanceDesc.Key(Purpose.REGULAR, node_WrZOLOverride_valid, stage_realign_port[iPort], "");
+          String realignValidMaskedWire = realignValidMaskedKey.toString(false) + "_s";
+          ret.declarations += "logic %s;\n".formatted(realignValidMaskedWire);
+          NodeInstanceDesc realignValidPipedin = registry.lookupRequired(NodeInstanceDesc.Key.keyWithPurpose(realignValidMaskedKey, Purpose.PIPEDIN));
+          ret.logic += "assign %s = %s && %s;\n".formatted(
+                         realignValidMaskedWire,
+                         realignValidPipedin.getExpressionWithParens(),
+                         realignStallExprs.stream().limit(iPort).reduce((a,b)->a+" && "+b).orElseThrow());
+          ret.outputs.add(new NodeInstanceDesc(realignValidMaskedKey, realignValidMaskedWire, ExpressionType.WireName));
+        }
+        // Request the pipelined WrZOLOverride in each decode port.
+        for (int iPort = 0; iPort < stage_decode_port.length; ++iPort) {
+          decodeStageExprs[iPort] = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.PIPEDIN, node_WrZOLOverride,
+                                                                                               stage_decode_port[iPort], ""));
+        }
       }
       else {
-        //No WrPC -> don't pipeline, assign zero-defaults directly in decode
-        realignStageExpr = "%d'd0".formatted(node_RdZOLOverride.size);
-        ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.WIREDIN, node_RdZOLOverride_valid, stage_decode, ""),
-                                             "1'b0", ExpressionType.AnyExpression_Noparen));
+        // No WrPC -> don't pipeline, assign zero-defaults directly in decode
+        for (int iPort = 0; iPort < stage_decode_port.length; ++iPort) {
+          decodeStageExprs[iPort] = "%d'd0".formatted(node_WrZOLOverride.size);
+          ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.WIREDIN, node_WrZOLOverride_valid, stage_decode_port[iPort], ""),
+                                               "1'b0", ExpressionType.AnyExpression_Noparen));
+        }
       }
-      var exportKey = pcoverride_from_scal_interface.makeKey(Purpose.WIREOUT);
-      ret.outputs.add(new NodeInstanceDesc(exportKey, realignStageExpr, ExpressionType.AnyExpression));
+      for (int iPort = 0; iPort < stage_decode_port.length; ++iPort) {
+        // Provide WIREOUT nodes for each pin.
+        var interfacePin = pcoverride_from_scal_interfaces[iPort];
+        var exportKey = interfacePin.makeKey(Purpose.WIREOUT);
+        ret.outputs.add(new NodeInstanceDesc(exportKey, decodeStageExprs[iPort], ExpressionType.AnyExpression));
+      }
       return ret;
-    }));
-    var pcoverridevalid_from_scal_interface = new CustomCoreInterface(node_RdZOLOverride_valid.name, "wire", stage_decode, 1, false, "");
-    scalAPI.AddCustomToCorePinUsing(pcoverridevalid_from_scal_interface, NodeLogicBuilder.fromFunction("CVA6_RdZOLOverride_validReq_export", registry -> {
+    }), pcoverride_from_scal_interfaces);
+    CustomCoreInterface[] pcoverridevalid_from_scal_interfaces =
+        Stream.of(stage_decode_port).map(port -> new CustomCoreInterface(node_WrZOLOverride_valid.name, "wire", port, 1, false, ""))
+            .toArray(n->new CustomCoreInterface[n]);
+    scalAPI.AddCustomToCorePinsUsing(NodeLogicBuilder.fromFunction("CVA6_WrZOLOverride_validReq_export", registry -> {
       var ret = new NodeLogicBlock();
-      String realignStageExpr = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.match_WIREDIN_OR_PIPEDIN,
-                                                                                           node_RdZOLOverride_valid, stage_decode, ""));
-      var exportKey = pcoverridevalid_from_scal_interface.makeKey(Purpose.WIREOUT);
-      ret.outputs.add(new NodeInstanceDesc(exportKey, realignStageExpr, ExpressionType.AnyExpression));
+      for (int iPort = 0; iPort < stage_decode_port.length; ++iPort) {
+        String decodeStageExpr = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.match_WIREDIN_OR_PIPEDIN,
+                                                                                            node_WrZOLOverride_valid, stage_decode_port[iPort], ""));
+        var exportKey = pcoverridevalid_from_scal_interfaces[iPort].makeKey(Purpose.WIREOUT);
+        ret.outputs.add(new NodeInstanceDesc(exportKey, decodeStageExpr, ExpressionType.AnyExpression));
+      }
       return ret;
-    }));
+    }), pcoverridevalid_from_scal_interfaces);
     scal = ((SCAL)scalAPI);
   }
 
   private SCAIEVNode node_RdFetchID = new SCAIEVNode("RdCVA6FetchID", 2, false) {
-    { tags.add(NodeTypeTag.staticReadResult); }
+    { tags.add(NodeTypeTag.staticReadResult); tags.add(NodeTypeTag.sharedAcrossPorts); }
   };
   // private SCAIEVNode node_RdFetchPostFlushID = new SCAIEVNode("RdCVA6FetchPostFlushID", 4, false);
   //scaiev_fetch_reqID_flushFrom, scaiev_fetch_reqID_flushCount
@@ -410,6 +554,8 @@ public class CVA6 extends CoreBackend {
     { tags.add(NodeTypeTag.staticReadResult); }
   };
   private SCAIEVNode node_RdIQueueFlushMask = new SCAIEVNode("RdCVA6IQueueFlushMask", 8, false); //(scaiev_decode_isFlushing | scaiev_decode_flush)
+  /** Indicates whether the realign stage has no new full instructions due to misalignment (i.e., got half of a non-compr. instr) */
+  private SCAIEVNode node_RdRealignFullyUnaligned = new SCAIEVNode("RdRealignFullyUnaligned", 1, false);
 
   private List<MultiNodeStrategy> idbasedPipelineSubstrategies = new ArrayList<>();
   @SuppressWarnings("unchecked")
@@ -428,33 +574,87 @@ public class CVA6 extends CoreBackend {
       private IDBasedPipelineStrategy makeFetchRealignPipeStrategy() {
         return new IDBasedPipelineStrategy(language, bNodes, node_RdFetchID, new NodeInstanceDesc.Key(node_RdFetchID, stage_realign, ""),
                                            node_RdFetchID.size, new PipelineFront(stage_fetch), true, true,
-                                           new PipelineFront(stage_realign),
+                                           new PipelineFront(Stream.of(stage_realign_port)),
                                            List.of(new IDRetireSerializerStrategy.IDAndCountRetireSource(
                                                        new NodeInstanceDesc.Key(node_RdFetchFlushFromID, stage_fetch, ""),
                                                        new NodeInstanceDesc.Key(node_RdFetchFlushCount, stage_fetch, ""), true)),
-                                           key -> key.getStage().equals(stage_realign));
+                                           key -> key.getStage().getMultiportBase().equals(stage_realign));
       }
       private IDBasedPipelineStrategy makeRealignDecodePipeStrategy() {
-        // Note: The ID space is non-continuous (two parallel FIFOs)
-        return new IDBasedPipelineStrategy(language, bNodes, node_RdIQueueID, new NodeInstanceDesc.Key(node_RdIQueueID, stage_decode, ""),
-                                           node_RdIQueueID.size, new PipelineFront(stage_realign), true, true,
-                                           new PipelineFront(stage_decode),
+        // Note: The ID space is non-continuous (1-4 parallel FIFOs)
+        return new IDBasedPipelineStrategy(language, bNodes, node_RdIQueueID, new NodeInstanceDesc.Key(node_RdIQueueID, stage_decode_port[0], ""),
+                                           node_RdIQueueID.size, new PipelineFront(Stream.of(stage_realign_port)), true, true,
+                                           new PipelineFront(Stream.of(stage_decode_port)),
                                            List.of(new IDRetireSerializerStrategy.BitmaskRetireSource(
                                                        new NodeInstanceDesc.Key(node_RdIQueueFlushMask, stage_realign, ""), true)),
-                                           key -> key.getStage().equals(stage_decode));
+                                           key -> key.getStage().getMultiportBase().equals(stage_decode));
+      }
+      private static final Purpose LosingOpAssertPurpose = new Purpose("ASSERT_losingOperation_CVA6", true, Optional.empty(), List.of());
+
+      @Override
+      public void implement(Consumer<NodeLogicBuilder> out, Iterable<NodeInstanceDesc.Key> nodeKeys, boolean isLast) {
+        super.implement(out, nodeKeys, isLast);
+        Iterator<NodeInstanceDesc.Key> nodeKeyIter = nodeKeys.iterator();
+        while (nodeKeyIter.hasNext()) {
+          var nodeKey = nodeKeyIter.next();
+          if (nodeKey.getPurpose().matches(LosingOpAssertPurpose)) {
+            // Print a simulation warning if we're losing an operation.
+            // Relevant for ZOL if the loop body starts with a non-compressed but misaligned instruction
+            //                  (-> pc[2:0]==6 for 8-byte fetch, pc[1:0]==2 for 4-byte fetch)
+            assert(nodeKey.getNode().getAdj().isValidMarker() || nodeKey.getNode().getAdj() == AdjacentNode.cancelReq);
+            assert(nodeKey.getStage().getMultiportBase().equals(stage_realign));
+            out.accept(NodeLogicBuilder.fromFunction("CVA6_IDBasedPipelineStrategy-fetch-to-decode_misalignLossAssert("+nodeKey.toString()+")", registry -> {
+              var ret = new NodeLogicBlock();
+              var pipelinedNode_opt = registry.lookupOptional(NodeInstanceDesc.Key.keyWithPurpose(nodeKey, Purpose.PIPEDIN));
+              if (pipelinedNode_opt.isPresent()) {
+                String unalignedExpr = registry.lookupRequired(new NodeInstanceDesc.Key(node_RdRealignFullyUnaligned, stage_realign, "")).getExpressionWithParens();
+                //Note: `language` is from NodeRegPipelineStrategy
+                ret.logic += """
+                    `ifndef SYNTHESIS
+                    always_ff @(posedge %1$s) begin
+                        if (!%2$s) begin
+                            if (%3$s && %4$s) begin
+                                // Happens if a ZOL (fetch-stage WrPC and state update) jumps to a fully misaligned instruction
+                                $display("ERROR: Losing %5$s operation pipelined into realign stage because it is tied to a fully misaligned instruction");
+                            end
+                        end
+                    end
+                    `endif
+                    """.formatted(language.clk, language.reset,
+                                  pipelinedNode_opt.get().getExpressionWithParens(), unalignedExpr,
+                                  nodeKey.getNode().name);
+              }
+              ret.outputs.add(new NodeInstanceDesc(nodeKey, "1", ExpressionType.AnyExpression));
+              return ret;
+            }));
+            nodeKeyIter.remove();
+          }
+        }
       }
 
       @Override
       protected NodeLogicBuilder makePipelineBuilder_single(NodeInstanceDesc.Key nodeKey, ImplementedKeyInfo implementation) {
+        List<NodeLogicBuilder> subBuilders = new ArrayList<>();
         IDBasedPipelineStrategy strategy = null;
-        if (nodeKey.getStage().equals(stage_realign)) {
+        if (nodeKey.getStage().getMultiportBase().equals(stage_realign)) {
           // Always use the full width (the fetch ID space has node_RdFetchID.size == 2 -> 4 elements in buffer)
           if (fetchRealignPipeFullWidth == null) {
             fetchRealignPipeFullWidth = makeFetchRealignPipeStrategy();
             idbasedPipelineSubstrategies.add(fetchRealignPipeFullWidth);
           }
           strategy = fetchRealignPipeFullWidth;
-        } else if (nodeKey.getStage().equals(stage_decode)) {
+          if (nodeKey.getNode().getAdj().isValidMarker() || nodeKey.getNode().getAdj() == AdjacentNode.cancelReq) {
+            // Defer assertion to separate implement call, since we can't (always) get the PIPEDIN result from within the CombinedNodeLogicBuilder.
+            subBuilders.add(NodeLogicBuilder.fromFunction("CVA6_IDBasedPipelineStrategy-request_assert("+nodeKey.toString()+")", registry -> {
+              var ret = new NodeLogicBlock();
+              registry.lookupRequired(NodeInstanceDesc.Key.keyWithPurpose(nodeKey, LosingOpAssertPurpose));
+              return ret;
+            }));
+            // Potential improvement would be to store the match_REGULAR_... operation in a register
+            //  for the next realign input with the rest of the instruction.
+            // To save on complexity here, we simply assume the test program is built with correct alignment.
+          }
+        } else if (nodeKey.getStage().getMultiportBase().equals(stage_decode)) {
           //.. the full width hurts a bit more here (node_RdIQueueID.size == 3 -> 8 elements),
           //   but stalling realign is not supported in the core fork.
           //   -> Stalling realign would require replaying the fetch (-> essentially a flush).
@@ -466,7 +666,6 @@ public class CVA6 extends CoreBackend {
         } else
           return super.makePipelineBuilder_single(nodeKey, implementation);
 
-        List<NodeLogicBuilder> subBuilders = new ArrayList<>();
         List<NodeInstanceDesc.Key> nodeKeys = new ArrayList<>();
         nodeKeys.add(NodeInstanceDesc.Key.keyWithPurpose(nodeKey, IDBasedPipelineStrategy.purpose_ReadFromIDBasedPipeline));
         strategy.addKeyImplementation(nodeKey, implementation);
@@ -504,8 +703,10 @@ public class CVA6 extends CoreBackend {
           SCAIEVNode node = nodeKey.getNode();
           //Check for the special CVA6->SCAL nodes, create a builder that triggers interface generation.
           if (nodeKey.getStage().equals(stage_fetch) && (node.equals(node_RdFetchID) || node.equals(node_RdFetchFlushFromID) || node.equals(node_RdFetchFlushCount))
-              || nodeKey.getStage().equals(stage_realign) && (node.equals(node_RdFetchID) || node.equals(node_RdIQueueID) || node.equals(node_RdIQueueFlushMask))
-              || nodeKey.getStage().equals(stage_decode) && node.equals(node_RdIQueueID)) {
+              || nodeKey.getStage().equals(stage_realign) && (node.equals(node_RdFetchID) || node.equals(node_RdIQueueFlushMask))
+              || nodeKey.getStage().getMultiportBase().equals(stage_realign) && node.equals(node_RdIQueueID)
+              || nodeKey.getStage().getMultiportBase().equals(stage_realign) && node.equals(node_RdRealignFullyUnaligned)
+              || nodeKey.getStage().getMultiportBase().equals(stage_decode) && node.equals(node_RdIQueueID)) {
             if (implemented.add(new ImplementedNodeStage(node, nodeKey.getStage()))) {
               out.accept(makeInterfaceRequestBuilder(nodeKey));
             }
@@ -545,6 +746,8 @@ public class CVA6 extends CoreBackend {
 
     IntegrateISAX_MiscPipeline();
 
+    CommitConfigFlags();
+
     language.FinalizeInterfaces();
     toFile.WriteFiles(language.GetDictModule(), language.GetDictEndModule(), out_path);
 
@@ -552,23 +755,50 @@ public class CVA6 extends CoreBackend {
   }
 
   private void IntegrateISAX_Defaults() {
-    for (int i = stagePos_fetch; i <= stagePos_execute; i++) {
-      if (ContainsOpInStage(BNode.RdInStageValid, stages[i])) {
-        String validCond = "1'b1"; // TODO: Fix this!
-        if (i == stagePos_issue)
-          validCond = "scaiev_issue_isValid";
-        if (i == stagePos_execute)
-          validCond = "scaiev_execute_isValid";
-        addLogic("assign %s = %s;".formatted(language.CreateNodeName(BNode.RdInStageValid, stages[i], ""), validCond));
+    for (int i_ = stagePos_fetch; i_ <= stagePos_execute; i_++) {
+      final int i = i_;
+      SCALUtil.flatmapIntoPorts(Stream.of(stages[i])).forEach(portStage -> {
+        if (ContainsOpInStage(BNode.RdInStageValid, portStage)) {
+          String validCond = "1'b1"; // TODO: Fix this!
+          if (i == stagePos_issue)
+            validCond = "scaiev_issue_isValid" + portElementAccessor(portStage);
+          if (i == stagePos_execute)
+            validCond = "scaiev_execute_isValid" + portElementAccessor(portStage);
+          addLogic("assign %s = %s;".formatted(language.CreateNodeName(BNode.RdInStageValid, portStage, ""), validCond));
+        }
+      });
+    }
+
+    signame_issueport_stall_before_cf.clear();
+    if (ContainsOpInStage(BNode.WrPC, stage_execute) || ContainsOpInStage(BNode.WrPC, stage_issue, null, false)) {
+      // WrPC: If an instruction with WrPC is being issued, stall later ports immediately.
+      for (int iPort = 0; iPort < stage_issue_port.length; ++iPort) {
+        signame_issueport_stall_before_cf.add((iPort > 0) ? Optional.of("issueport_%d_stall_before_cf".formatted(iPort)) : Optional.empty());
+        if (signame_issueport_stall_before_cf.get(iPort).isPresent())
+          addDeclaration("logic %s;".formatted(signame_issueport_stall_before_cf.get(iPort).get()));
       }
     }
   }
 
   private void IntegrateISAX_MiscPipeline() {
-    addLogic(String.format("assign %s = scaiev_issue_pipeinto_scaievfu;", this.signame_to_scal_pipeinto_executesv1));
-    addLogic(String.format("assign %s = !scaiev_issue_pipeinto_scaievfu;", this.signame_to_scal_pipeinto_executecva));
-    ;
+    //RdPipeInto
+    if (stage_issue_port.length > 1) {
+      assert(stage_issue_port.length == stage_decode_port.length);
+      for (int iPort = 0; iPort < stage_issue_port.length; ++iPort)
+        addLogic(String.format("assign %s = scaiev_id_pipeinto.decode0_issue[%d];", this.signame_to_scal_decode0_pipeinto_issue[iPort], iPort));
+      addLogic(String.format("assign %s = 1'b0;", this.signame_to_scal_decode1_pipeinto_issue[0]));
+      addLogic(String.format("assign %s = scaiev_id_pipeinto.decode1_issue1;", this.signame_to_scal_decode1_pipeinto_issue[1]));
 
+      addLogic(String.format("assign %s = scaiev_id_pipeinto.issue1_issue0;", this.signame_to_scal_issue_pipeinto_issue0[1]));
+    }
+    for (int iPort = 0; iPort < stage_issue_port.length; ++iPort) {
+      PipelineStage issuePort = stage_issue_port[iPort];
+      String suffix = portElementAccessor(issuePort);
+      addLogic(String.format("assign %s = scaiev_issue_pipeinto_scaievfu%s;", this.signame_to_scal_pipeinto_executesv1[iPort], suffix));
+      addLogic(String.format("assign %s = !scaiev_issue_pipeinto_scaievfu%s;", this.signame_to_scal_pipeinto_executecva[iPort], suffix));
+    }
+
+    //Execute: WrDeqInstr, WrInStageID
     if (ContainsOpInStage(BNode.WrDeqInstr, stage_execute)) {
       String wrDeq_node = language.CreateNodeName(BNode.WrDeqInstr, stage_execute, "");
       addLogic(String.format("assign scaiev_execute_semicoupled_deq = %s;", wrDeq_node));
@@ -638,8 +868,20 @@ public class CVA6 extends CoreBackend {
 
     forEachRdValidPin((node, isax, stage) -> language.UpdateInterface(topModule, node.NodeNegInput(), isax.GetName(), stage, true, false));
 
-    language.UpdateInterface(topModule, BNode.RdPipeInto, "stage_" + stage_execute.getName(), stage_issue, true, false);
-    language.UpdateInterface(topModule, BNode.RdPipeInto, "stage_" + stage_executeothers.getName(), stage_issue, true, false);
+    for (int iIssuePort = 0; iIssuePort < stage_issue_port.length; ++iIssuePort) {
+      PipelineStage issuePort = stage_issue_port[iIssuePort];
+      language.UpdateInterface(topModule, BNode.RdPipeInto, "stage_" + stage_execute.getName(), issuePort, true, false);
+      language.UpdateInterface(topModule, BNode.RdPipeInto, "stage_" + stage_executeothers[iIssuePort].getName(), issuePort, true, false);
+      if (iIssuePort > 0)
+        language.UpdateInterface(topModule, BNode.RdPipeInto, "stage_" + stage_issue_port[0].getName(), issuePort, true, false);
+    }
+
+    if (stage_decode_port.length > 1) {
+      language.UpdateInterface(topModule, BNode.RdPipeInto, "stage_" + stage_issue_port[0].getName(), stage_decode_port[0], true, false);
+      language.UpdateInterface(topModule, BNode.RdPipeInto, "stage_" + stage_issue_port[1].getName(), stage_decode_port[0], true, false);
+      language.UpdateInterface(topModule, BNode.RdPipeInto, "stage_" + stage_issue_port[0].getName(), stage_decode_port[1], true, false);
+      language.UpdateInterface(topModule, BNode.RdPipeInto, "stage_" + stage_issue_port[1].getName(), stage_decode_port[1], true, false);
+    }
   }
 
   private void IntegrateISAX_Encoding() {
@@ -654,70 +896,129 @@ public class CVA6 extends CoreBackend {
     List<String> allISAXes_RdMem = getISAXesWithOpInAnyStage(BNode.RdMem).filter(instr -> !instr.HasNoOp()).map(instr -> instr.GetName()).toList();
     List<String> allISAXes_WrMem = getISAXesWithOpInAnyStage(BNode.WrMem).filter(instr -> !instr.HasNoOp()).map(instr -> instr.GetName()).toList();
 
-    addLogic("assign scaiev_decode_isSCAIEV = " + makeIValidExpression(allISAXes, stage_decode) + ";");
-    addLogic("assign scaiev_decode_isSCAIEV_hasRS1 = " + makeIValidExpression(allISAXes_RS1, stage_decode) + ";");
-    addLogic("assign scaiev_decode_isSCAIEV_hasRS2 = " + makeIValidExpression(allISAXes_RS2, stage_decode) + ";");
-    addLogic("assign scaiev_decode_isSCAIEV_hasRD = " + makeIValidExpression(allISAXes_RD, stage_decode) + ";");
-    addLogic("assign scaiev_decode_isSCAIEV_hasRD_decoupled = " + makeIValidExpression(allISAXes_RDdec, stage_decode) + ";");
-    addLogic("assign scaiev_decode_isLoad = " + makeIValidExpression(allISAXes_RdMem, stage_decode) + ";");
-    addLogic("assign scaiev_decode_isStore = " + makeIValidExpression(allISAXes_WrMem, stage_decode) + ";");
-    this.PutNode("logic", "{!scaiev_decode_decInstr.rd_fpr, scaiev_decode_decInstr.rd}", "scaiev_glue", BNode.RdInstr_RD, stage_decode);
-    this.PutNode("logic", "{!scaiev_decode_decInstr.rd_fpr, scaiev_decode_decInstr.rd}", "scaiev_glue", BNode.RdInstr_RS, stage_decode);
-    if (ContainsOpInStage(BNode.RdInstr_RD, stage_decode)) {
-      String rdInstr_RD_expr = "!scaiev_decode_decInstr.rd_fpr, scaiev_decode_decInstr.rd";
-      addLogic("assign %s = {%s};".formatted(language.CreateNodeName(BNode.RdInstr_RD, stage_decode, ""), rdInstr_RD_expr));
-    }
-    if (ContainsOpInStage(BNode.RdInstr_RS, stage_decode)) {
-      String rdInstr_RS_expr = "!scaiev_decode_decInstr.rs2_fpr, scaiev_decode_decInstr.rs2"
-                               + ", !scaiev_decode_decInstr.rs1_fpr, scaiev_decode_decInstr.rs1";
-      addLogic("assign %s = {%s};".formatted(language.CreateNodeName(BNode.RdInstr_RS, stage_decode, ""), rdInstr_RS_expr));
+    for (PipelineStage decodePort : stage_decode_port) {
+      String wireSuffix = portElementAccessor(decodePort);
+      addLogic("assign scaiev_decode_isSCAIEV%s = %s;".formatted(wireSuffix, makeIValidExpression(allISAXes, decodePort)));
+      addLogic("assign scaiev_decode_isSCAIEV_hasRS1%s = %s;".formatted(wireSuffix, makeIValidExpression(allISAXes_RS1, decodePort)));
+      addLogic("assign scaiev_decode_isSCAIEV_hasRS2%s = %s;".formatted(wireSuffix, makeIValidExpression(allISAXes_RS2, decodePort)));
+      addLogic("assign scaiev_decode_isSCAIEV_hasRD%s = %s;".formatted(wireSuffix, makeIValidExpression(allISAXes_RD, decodePort)));
+      addLogic("assign scaiev_decode_isSCAIEV_hasRD_decoupled%s = %s;".formatted(wireSuffix, makeIValidExpression(allISAXes_RDdec, decodePort)));
+      addLogic("assign scaiev_decode_isLoad%s = %s;".formatted(wireSuffix, makeIValidExpression(allISAXes_RdMem, decodePort) ));
+      addLogic("assign scaiev_decode_isStore%s = %s;".formatted(wireSuffix, makeIValidExpression(allISAXes_WrMem, decodePort)));
+      this.PutNode("logic", "{!scaiev_decode_decInstr%1$s.rd_fpr, scaiev_decode_decInstr%1$s.rd}".formatted(wireSuffix),
+                   "scaiev_glue", BNode.RdInstr_RD, decodePort);
+      this.PutNode("logic", "{!scaiev_decode_decInstr%1$s.rd_fpr, scaiev_decode_decInstr%1$s.rd}".formatted(wireSuffix),
+                   "scaiev_glue", BNode.RdInstr_RS, decodePort);
+      if (ContainsOpInStage(BNode.RdInstr_RD, decodePort)) {
+        String rdInstr_RD_expr = "!scaiev_decode_decInstr%1$s.rd_fpr, scaiev_decode_decInstr%1$s.rd".formatted(wireSuffix);
+        addLogic("assign %s = {%s};".formatted(language.CreateNodeName(BNode.RdInstr_RD, decodePort, ""), rdInstr_RD_expr));
+      }
+      if (ContainsOpInStage(BNode.RdInstr_RS, decodePort)) {
+        String rdInstr_RS_expr = "!scaiev_decode_decInstr%1$s.rs2_fpr, scaiev_decode_decInstr%1$s.rs2".formatted(wireSuffix)
+                                 + ", !scaiev_decode_decInstr%1$s.rs1_fpr, scaiev_decode_decInstr%1$s.rs1".formatted(wireSuffix);
+        addLogic("assign %s = {%s};".formatted(language.CreateNodeName(BNode.RdInstr_RS, decodePort, ""), rdInstr_RS_expr));
+      }
     }
   }
 
   private void IntegrateISAX_RdRD() {}
 
+  /**
+   * Produces a [%d] expression for port stages, or an empty string otherwise.
+   * @param portStage the port (or non-port) stage
+   * @return an expression string
+   */
+  private String portElementAccessor(PipelineStage portStage) {
+    if (portStage.getMultiportBase() != portStage) {
+      int portIndex = portStage.getMultiportBase().getChildren().indexOf(portStage);
+      assert(portIndex >= 0);
+      return "[%d]".formatted(portIndex);
+    }
+    return "";
+  }
+
+  /**
+   * Adds the assign logic for plain core->SCAL read output nodes that are per port (e.g. BNode.RdRS1).
+   * @param operation the read node
+   * @param operationGlueName the corresponding name in the scaiev_glue CVA6 interface
+   * @param perPort indicates if the node is per-port (e.g. RdRS1) or shared (e.g. RdFlush)
+   */
+  private void assignReadToSCAL(SCAIEVNode operation, String operationGlueName, boolean perPort) {
+    if (op_stage_instr.keySet().contains(operation)) {
+      for (PipelineStage stage : op_stage_instr.get(operation).keySet()) {
+        String scalPinName = language.CreateNodeName(operation, stage, "");
+
+        assert(stage.getMultiportBase().getStagePos() < intToStage.length);
+        String glueStagePrefix = intToStage[stage.getMultiportBase().getStagePos()];
+        String portIndexSuffix = "";
+
+        //Assert: Shared nodes should not be requested in a port stage.
+        assert(perPort || stage.getMultiportBase() == stage);
+
+        //If it's a port stage, get the value for the corresponding port index.
+        portIndexSuffix = portElementAccessor(stage);
+        
+        addLogic("assign %s = %s%s%s;".formatted(scalPinName, glueStagePrefix, operationGlueName, portIndexSuffix));
+      }
+    }
+  }
+
   private void IntegrateISAX_RdRS() {
-    if (op_stage_instr.keySet().contains(BNode.RdRS1)) {
-      for (PipelineStage i : op_stage_instr.get(BNode.RdRS1).keySet()) {
-        addLogic("assign RdRS1_" + i.getStagePos() + "_o = " + intToStage[i.getStagePos()] + "rdRS1;");
-      }
-    }
-    if (op_stage_instr.keySet().contains(BNode.RdRS2)) {
-      for (PipelineStage i : op_stage_instr.get(BNode.RdRS2).keySet()) {
-        addLogic("assign RdRS2_" + i.getStagePos() + "_o = " + intToStage[i.getStagePos()] + "rdRS2;");
-      }
-    }
+    assignReadToSCAL(BNode.RdRS1, "rdRS1", true);
+    assignReadToSCAL(BNode.RdRS2, "rdRS2", true);
   }
 
   private void IntegrateISAX_RdInstr() {
-    if (op_stage_instr.keySet().contains(BNode.RdInstr)) {
-      for (PipelineStage i : op_stage_instr.get(BNode.RdInstr).keySet()) {
-        addLogic("assign RdInstr_" + i.getStagePos() + "_o = " + intToStage[i.getStagePos()] + "rdInstr;");
-      }
-    }
+    assignReadToSCAL(BNode.RdInstr, "rdInstr", true);
   }
 
   private void IntegrateISAX_RdFlush() {
-    if (op_stage_instr.keySet().contains(BNode.RdFlush)) {
-      for (PipelineStage i : op_stage_instr.get(BNode.RdFlush).keySet()) {
-        addLogic("assign RdFlush_" + i.getStagePos() + "_o = " + intToStage[i.getStagePos()] + "isFlushing;");
+    assignReadToSCAL(BNode.RdFlush, "isFlushing", false);
+  }
+
+  /**
+   * Retrieves the additional stall conditions by this backend that should also be visible on RdStall.
+   * @param portStage
+   * @return a stream of stall conditions
+   */
+  private Stream<String> getAddedStallsFor(PipelineStage portStage) {
+    Stream<String> additionalStalls = Stream.empty();
+    if (portStage == stage_execute)
+      additionalStalls = Stream.concat(additionalStalls, Stream.of(signame_execute_stall_mem));
+    if (portStage.getMultiportBase() == stage_issue) {
+      additionalStalls = Stream.concat(additionalStalls, Stream.of(signame_issue_stall_before_cf));
+
+      int portIdx = Arrays.asList(stage_issue_port).indexOf(portStage);
+      assert(portIdx != -1);
+      if (signame_issueport_stall_before_cf.size() > portIdx &&
+          signame_issueport_stall_before_cf.get(portIdx).isPresent())
+        additionalStalls = Stream.concat(additionalStalls, Stream.of(signame_issueport_stall_before_cf.get(portIdx).get()));
+    }
+    if (portStage.getMultiportBase() == stage_decode) {
+      int portIdx = Arrays.asList(stage_decode_port).indexOf(portStage);
+      assert(portIdx != -1);
+      if (portIdx > 0) {
+        // Stall on ZOLOverride on anything but the first decode port.
+        additionalStalls = Stream.concat(additionalStalls, Stream.of(language.CreateNodeName(node_WrZOLOverride_valid, portStage, "")));
       }
     }
+    return additionalStalls;
+    //return additionalStalls.reduce((a,b)->a+" || "+b).orElse("1'b0");
   }
 
   private void IntegrateISAX_RdStall() {
     if (op_stage_instr.keySet().contains(BNode.RdStall)) {
-      for (PipelineStage i : op_stage_instr.get(BNode.RdStall).keySet()) {
-        String isStalling = intToStage[i.getStagePos()] + "isStalling";
-        if (i == stage_execute) {
-          addLogic("assign %s = %s || %s;".formatted(language.CreateNodeName(BNode.RdStall, i, ""), signame_execute_stall_mem, isStalling));
-        }
-        else if (i == stage_issue) {
-          addLogic("assign %s = %s || %s;".formatted(language.CreateNodeName(BNode.RdStall, i, ""), signame_issue_stall_before_cf, isStalling));
-        }
-        else {
-          addLogic("assign %s = %s;".formatted(language.CreateNodeName(BNode.RdStall, i, ""), isStalling));
-        }
+      for (PipelineStage stage : op_stage_instr.get(BNode.RdStall).keySet()) {
+        //Check expected multi-port stages
+        assert(stage.getMultiportBase() == stage_decode
+            || stage.getMultiportBase() == stage_issue
+            || stage.getMultiportBase() == stage_realign
+            || stage.getMultiportBase() == stage);
+
+        Stream<String> rdStallConds = Stream.of(intToStage[stage.getMultiportBase().getStagePos()] + "isStalling" + portElementAccessor(stage));
+        rdStallConds = Stream.concat(rdStallConds, getAddedStallsFor(stage));
+        String rdStallCond = rdStallConds.reduce((a,b)->a+" || "+b).orElse("1'b0");
+        addLogic("assign %s = %s;".formatted(language.CreateNodeName(BNode.RdStall, stage, ""), rdStallCond));
       }
     }
   }
@@ -727,17 +1028,15 @@ public class CVA6 extends CoreBackend {
     // Also stall issue in case of injected loads/stores and decoupled WrRD
     // conflicts.
     for (int stagePos = stagePos_fetch; stagePos <= stagePos_execute; stagePos++) {
-      PipelineStage stage = stages[stagePos];
-      String stallLogic = "";
-      if (ContainsOpInStage(BNode.WrStall, stage))
-        stallLogic += language.CreateNodeName(BNode.WrStall, stage, "") + " || ";
-      if (stage == stage_execute)
-        stallLogic += signame_execute_stall_mem + " || ";
-      if (stage == stage_issue)
-        stallLogic += signame_issue_stall_before_cf + " || ";
-      stallLogic += "0";
-      if (stage == stage_fetch || stage == stage_issue || stage == stage_execute)
-        addLogic("assign " + intToStage[stagePos] + "stall = " + stallLogic + ";\n");
+      for (PipelineStage stage : SCALUtil.flatmapIntoPorts(Stream.of(stages[stagePos])).toList()) {
+        Stream<String> wrStallConds = Stream.empty();
+        if (ContainsOpInStage(BNode.WrStall, stage))
+          wrStallConds = Stream.concat(wrStallConds, Stream.of(language.CreateNodeName(BNode.WrStall, stage, "")));
+        wrStallConds = Stream.concat(wrStallConds, getAddedStallsFor(stage));
+        String wrStallCond = wrStallConds.reduce((a,b)->a+" || "+b).orElse("1'b0");
+        if (stage.getMultiportBase() == stage_fetch || stage.getMultiportBase() == stage_decode || stage.getMultiportBase() == stage_issue || stage == stage_execute)
+          addLogic("assign %sstall%s = %s;".formatted(intToStage[stagePos], portElementAccessor(stage), wrStallCond));
+      }
     }
   }
 
@@ -763,10 +1062,12 @@ public class CVA6 extends CoreBackend {
 
     if (!RdInStageID_4_o.equals("0"))
       addLogic("assign RdInStageID_4_o = scaiev_execute_trans_id_o;");
-    if (ContainsOpInStage(BNode.RdIssueID, stage_issue))
-      addLogic("assign %s = scaiev_issue_trans_id_o;".formatted(language.CreateNodeName(BNode.RdIssueID, stage_issue, "")));
-    if (ContainsOpInStage(BNode.RdIssueFlushID, stage_issue))
-      addLogic("assign %s = '0;".formatted(language.CreateNodeName(BNode.RdIssueFlushID, stage_issue, "")));
+    for (PipelineStage issuePort : stage_issue_port) {
+      if (ContainsOpInStage(BNode.RdIssueID, issuePort))
+        addLogic("assign %s = scaiev_issue_trans_id_o%s;".formatted(language.CreateNodeName(BNode.RdIssueID, issuePort, ""), portElementAccessor(issuePort)));
+      if (ContainsOpInStage(BNode.RdIssueFlushID, issuePort))
+        addLogic("assign %s = '0;".formatted(language.CreateNodeName(BNode.RdIssueFlushID, issuePort, "")));
+    }
     // addLogic("assign scaiev_execute_trans_id_i = "+WrInStageID_validReq_4_i+" ? "+WrInStageID_4_i+" : scaiev_execute_trans_id_o;");
     if (!WrInStageID_validResp_4_o.equals("0"))
       addLogic("assign WrInStageID_validResp_4_o = 1'b1;");
@@ -789,7 +1090,7 @@ public class CVA6 extends CoreBackend {
       addLogic("assign scaiev_writeback_spawn_data = '0;");
     }
 
-    if (ContainsOpInStage(BNode.RdCommitIDCount, core.GetRootStage())) {
+    if (ContainsOpInStage(BNode.RdCommitIDCount, core.getRootStage())) {
       addDeclaration("logic [$clog2(CVA6Cfg.NrCommitPorts+1)-1:0] commit_trans_id_count;");
       addLogic("""
           always_comb begin
@@ -799,7 +1100,7 @@ public class CVA6 extends CoreBackend {
           end
           """);
       //Assign to interface
-      addLogic("assign %s = commit_trans_id_count;".formatted(language.CreateNodeName(BNode.RdCommitIDCount, core.GetRootStage(), "")));
+      addLogic("assign %s = commit_trans_id_count;".formatted(language.CreateNodeName(BNode.RdCommitIDCount, core.getRootStage(), "")));
       //Assertion logic
       addLogic("""
           `ifndef SYNTHESIS
@@ -823,9 +1124,9 @@ public class CVA6 extends CoreBackend {
           `endif
           """.formatted(language.clk, language.reset));
     }
-    if (ContainsOpInStage(BNode.RdCommitID, core.GetRootStage()))
-      addLogic("assign %s = scaiev_commit_trans_id[0];".formatted(language.CreateNodeName(BNode.RdCommitID, core.GetRootStage(), "")));
-    if (ContainsOpInStage(BNode.RdCommitFlushID, core.GetRootStage()) || ContainsOpInStage(BNode.RdCommitFlushIDCount, core.GetRootStage())) {
+    if (ContainsOpInStage(BNode.RdCommitID, core.getRootStage()))
+      addLogic("assign %s = scaiev_commit_trans_id[0];".formatted(language.CreateNodeName(BNode.RdCommitID, core.getRootStage(), "")));
+    if (ContainsOpInStage(BNode.RdCommitFlushID, core.getRootStage()) || ContainsOpInStage(BNode.RdCommitFlushIDCount, core.getRootStage())) {
       addDeclaration("logic [$clog2(CVA6Cfg.NrCommitPorts+1)-1:0] commit_flush_id_count;");
       addDeclaration("logic [CVA6Cfg.TRANS_ID_BITS-1:0] commit_flush_id;");
       addLogic("""
@@ -838,15 +1139,15 @@ public class CVA6 extends CoreBackend {
                   commit_flush_id = (scaiev_commit_trans_id_valid[i] && scaiev_commit_drop[i]) ? scaiev_commit_trans_id[i] : commit_flush_id;
           end
           """);
-      if (ContainsOpInStage(BNode.RdCommitFlushIDCount, core.GetRootStage()))
-        addLogic("assign %s = commit_flush_id_count;".formatted(language.CreateNodeName(BNode.RdCommitFlushIDCount, core.GetRootStage(), "")));
-      if (ContainsOpInStage(BNode.RdCommitFlushID, core.GetRootStage()))
-        addLogic("assign %s = commit_flush_id;".formatted(language.CreateNodeName(BNode.RdCommitFlushID, core.GetRootStage(), "")));
+      if (ContainsOpInStage(BNode.RdCommitFlushIDCount, core.getRootStage()))
+        addLogic("assign %s = commit_flush_id_count;".formatted(language.CreateNodeName(BNode.RdCommitFlushIDCount, core.getRootStage(), "")));
+      if (ContainsOpInStage(BNode.RdCommitFlushID, core.getRootStage()))
+        addLogic("assign %s = commit_flush_id;".formatted(language.CreateNodeName(BNode.RdCommitFlushID, core.getRootStage(), "")));
     }
-    if (ContainsOpInStage(BNode.RdCommitFlushAll, core.GetRootStage()))
-      addLogic("assign %s = scaiev_scoreboard_isFlushing;".formatted(language.CreateNodeName(BNode.RdCommitFlushAll, core.GetRootStage(), "")));
-    if (ContainsOpInStage(BNode.RdCommitFlushAllID, core.GetRootStage()))
-      addLogic("assign %s = '0;".formatted(language.CreateNodeName(BNode.RdCommitFlushAllID, core.GetRootStage(), "")));
+    if (ContainsOpInStage(BNode.RdCommitFlushAll, core.getRootStage()))
+      addLogic("assign %s = scaiev_scoreboard_isFlushing;".formatted(language.CreateNodeName(BNode.RdCommitFlushAll, core.getRootStage(), "")));
+    if (ContainsOpInStage(BNode.RdCommitFlushAllID, core.getRootStage()))
+      addLogic("assign %s = '0;".formatted(language.CreateNodeName(BNode.RdCommitFlushAllID, core.getRootStage(), "")));
 
     String anyWritebackExpr = makeIValidExpression(getISAXesWithOpInStage(BNode.WrRD, stage_execute)
                                                        .filter(instr -> !instr.HasNoOp())
@@ -857,6 +1158,7 @@ public class CVA6 extends CoreBackend {
   }
 
   private void IntegrateISAX_Branch() {
+    //OUTDATED (does not support superscalar yet)
     ArrayList<String> statement_lines = new ArrayList<>();
     HashSet<String> allISAXes_Branch = new HashSet<String>();
     allISAXes_Branch.addAll(op_stage_instr.getOrDefault(BNode.BranchTaken, new HashMap<>()).getOrDefault(stage_execute, new HashSet<>()));
@@ -907,6 +1209,7 @@ public class CVA6 extends CoreBackend {
   }
 
   private void IntegrateISAX_Jump() {
+    //OUTDATED (does not support superscalar yet)
     ArrayList<String> statement_lines = new ArrayList<>();
     if (ContainsOpInStage(BNode.WrJump, stage_execute) || ContainsOpInStage(BNode.WrJump, pseudostage_spawn)) {
 
@@ -970,17 +1273,25 @@ public class CVA6 extends CoreBackend {
 
   private void IntegrateISAX_Mem() {
     addDeclaration("logic " + signame_execute_stall_mem + ";");
+    if (is_old_33ab2efa_branch())
+      addDeclaration("logic scaiev_execute_wrMem_suppress_wb; //missing from 33ab2efa CVA6 branch");
+
+    //scaiev_issue_mem_stall: For now, only [0] needs to be set even in superscalar.
+    // -> ISAXes with RdMem/WrMem are officially assigned the LOAD or STORE fu (and there is only one LSU port),
+    //    so the core will already prevent port 1 from launching a LSU op at the same time as a L/S ISAX on port 0.
+    // -> scaiev_issue_mem_stall[0] also affects the second port.
 
     String memRequestLogic = """
         always_comb begin
             scaiev_execute_memAddr_valid = 1'b0;
             scaiev_execute_memAddr = 0;
             scaiev_execute_memSize = 0;
+            scaiev_execute_wrMem_suppress_wb = 1'b0;
             scaiev_execute_mem_has_trans_id = 1'b1;
             scaiev_execute_rdMem_valid = 1'b0;
             scaiev_execute_wrMem_valid = 1'b0;
             scaiev_execute_wrMem = 0;
-            scaiev_issue_mem_stall = 1'b0;
+            scaiev_issue_mem_stall = '0;
         """;
     if (ContainsOpInStage(BNode.RdMem_spawn, pseudostage_spawn) || ContainsOpInStage(BNode.WrMem_spawn, pseudostage_spawn)) {
       memRequestLogic += """
@@ -1013,7 +1324,7 @@ public class CVA6 extends CoreBackend {
           .orElse("0");
       // Assert scaiev_issue_mem_stall during (Rd|Wr)Mem_spawn_validReq
       // -> only need to stall if scaiev_execute_lsuvalid
-      memRequestLogic += "    if (scaiev_execute_lsuvalid && (%s)) scaiev_issue_mem_stall = 1'b1;\n".formatted(spawnMemRequestCond);
+      memRequestLogic += "    if (scaiev_execute_lsuvalid && (%s)) scaiev_issue_mem_stall[0] = 1'b1;\n".formatted(spawnMemRequestCond);
 
       // Deassert spawnAllowed while |lsu_valid_i in ex_stage or !scaiev_execute_mem_ready
       String rd_spawn_allowed = language.CreateNodeName(BNode.RdMem_spawn_allowed, pseudostage_spawn, "");
@@ -1032,6 +1343,41 @@ public class CVA6 extends CoreBackend {
 
     if (ContainsOpInStage(BNode.RdMem, stage_execute) || ContainsOpInStage(BNode.WrMem, stage_execute)) {
       String RdMem_validReq_4_i = sigor0("RdMem_validReq_4_i");
+      String WrMem_validReq_4_i = sigor0("WrMem_validReq_4_i");
+      if (ContainsOpInStage(BNode.WrMem, stage_execute)) {
+        // Track if this is the first write of the instruction.
+        // Assumes that only one WrMem instruction is in execute at a time.
+        addDeclaration("logic write_mem_firstshot;");
+        addDeclaration("logic write_mem_firstshot_reg;");
+        addDeclaration("logic write_mem_potential_new_reg;");
+        //addDeclaration("logic write_mem_isax_has_wrRD;");
+        //Condition: is a new ISAX with WrMem moving from Issue (any port) to executesv1?
+        String cond_potential_new_wrmemisax_issue = IntStream.range(0, stage_issue_port.length)
+            .mapToObj(iPort -> {
+              String anyRdmemIssue = makeIValidExpression(getISAXesWithOpInStage(BNode.WrMem, stage_execute)
+                  .filter(instr -> !instr.HasNoOp())
+                  .map(instr -> instr.GetName())
+                  .toList(), stage_issue_port[iPort]);
+              return "(%s) && %s".formatted(anyRdmemIssue, signame_to_scal_pipeinto_executesv1[iPort]);
+            }).reduce((a,b)->"%s || %s".formatted(a,b)).orElse("1'b0");
+        addLogic("always_ff @(posedge clk) write_mem_potential_new_reg <= %s;".formatted(cond_potential_new_wrmemisax_issue));
+        addLogic("assign write_mem_firstshot = write_mem_firstshot_reg || (scaiev_execute_isNew && write_mem_potential_new_reg);");
+        addLogic("""
+            always_ff @(posedge clk) begin
+                if (rst) begin
+                    write_mem_firstshot_reg <= 1'b0;
+                end
+                else begin
+                    if (scaiev_execute_isNew && write_mem_potential_new_reg) begin
+                        write_mem_firstshot_reg <= 1'b1;
+                    end
+                    if (%1$s) begin
+                        write_mem_firstshot_reg <= 1'b0;
+                    end
+                end
+            end
+            """.formatted(WrMem_validReq_4_i));
+      }
       if (ContainsOpInStage(BNode.RdMem, stage_execute)) {
         assert (!RdMem_validReq_4_i.equals("0"));
         addDeclaration("reg read_mem_pending_reg;");
@@ -1055,19 +1401,26 @@ public class CVA6 extends CoreBackend {
                   end
               end
             """.formatted(RdMem_validReq_4_i, spawnMemRequestCond));
-        String anyRdmemIssue = makeIValidExpression(getISAXesWithOpInStage(BNode.RdMem, stage_execute)
-                                                        .filter(instr -> !instr.HasNoOp())
-                                                        .map(instr -> instr.GetName())
-                                                        .toList(), stage_issue);
-        addLogic("always_ff @(posedge clk) read_mem_potential_new_reg <= (%s) && %s;".formatted(anyRdmemIssue, signame_to_scal_pipeinto_executesv1));
+        //Condition: is a new ISAX with RdMem moving from Issue (any port) to executesv1?
+        String cond_potential_new_rdmemisax_issue = IntStream.range(0, stage_issue_port.length)
+            .mapToObj(iPort -> {
+              String anyRdmemIssue = makeIValidExpression(getISAXesWithOpInStage(BNode.RdMem, stage_execute)
+                  .filter(instr -> !instr.HasNoOp())
+                  .map(instr -> instr.GetName())
+                  .toList(), stage_issue_port[iPort]);
+              return "(%s) && %s".formatted(anyRdmemIssue, signame_to_scal_pipeinto_executesv1[iPort]);
+            }).reduce((a,b)->"%s || %s".formatted(a,b)).orElse("1'b0");
+        addLogic("always_ff @(posedge clk) read_mem_potential_new_reg <= %s;".formatted(cond_potential_new_rdmemisax_issue));
         addLogic("assign " + signame_execute_stall_mem + " = "
                  + "read_mem_pending_reg && !(scaiev_execute_rdMem_result_valid && scaiev_execute_rdMem_result_has_trans_id)"
                  + "|| read_mem_potential_new_reg && scaiev_execute_isNew && " + RdMem_validReq_4_i + ";\n");
       } else {
         addLogic("assign " + signame_execute_stall_mem + " = 1'b0;\n");
       }
-      memRequestLogic += "    if (read_mem_potential_new_reg && scaiev_execute_isNew && !%s || read_mem_waiting_reg) scaiev_issue_mem_stall = 1'b1;\n"
-                         .formatted(RdMem_validReq_4_i);
+      memRequestLogic += """
+                  if (read_mem_potential_new_reg && scaiev_execute_isNew && !%s || read_mem_waiting_reg)
+                      scaiev_issue_mem_stall[0] = 1'b1;
+              """.formatted(RdMem_validReq_4_i);
 
       String RdMem_addr_valid_4_i = sigor0("RdMem_addr_valid_4_i");
       String RdMem_addr_4_i = sigor0("RdMem_addr_4_i");
@@ -1084,7 +1437,6 @@ public class CVA6 extends CoreBackend {
       }
       String RdMem_size_4_i = sigor0("RdMem_size_4_i");
 
-      String WrMem_validReq_4_i = sigor0("WrMem_validReq_4_i");
       String WrMem_validResp_4_o = sigor0("WrMem_validResp_4_o");
       if (!WrMem_validResp_4_o.equals("0")) {
         assert(ContainsOpInStage(BNode.WrMem_validResp, stage_execute));
@@ -1113,7 +1465,25 @@ public class CVA6 extends CoreBackend {
       memRequestLogic += "    scaiev_execute_memAddr_valid = %s && !read_mem_pending_reg || %s;\n".formatted(RdMem_addr_valid_4_i, WrMem_addr_valid_4_i);
       memRequestLogic += "    scaiev_execute_memAddr = %s ? %s : %s;\n".formatted(RdMem_addr_valid_4_i, RdMem_addr_4_i, WrMem_addr_4_i);
       memRequestLogic += "    scaiev_execute_memSize = %s ? %s : %s;\n".formatted(RdMem_validReq_4_i, RdMem_size_4_i, WrMem_size_4_i);
-      memRequestLogic += "    scaiev_execute_mem_has_trans_id = 1'b1;\n";
+      if (ContainsOpInStage(BNode.WrMem, stage_execute)) {
+        // //For WrMem: set scaiev_execute_wrMem_suppress_wb for writes of an ISAX with WrRD
+        //memRequestLogic += "    scaiev_execute_wrMem_suppress_wb = write_mem_isax_has_wrRD;";
+        //For WrMem: Always suppress the writeback to avoid overwriting ISAX results.
+        // FIXME: If an ISAX has many WrMems before its writeback/commit, the store queue will fill up
+        //        The core implementation should add a 'light commit' mechanism
+        //         that lets the instruction pass the store queue as soon as it's next to be committed
+        //         without actually committing until the ISAX is actually done.
+        //        -> This solution would rid the need for has_trans_id=0 in the coupled case
+        memRequestLogic += "    scaiev_execute_wrMem_suppress_wb = 1'b1;";
+        // For WrMem: clear scaiev_execute_mem_has_trans_id for subsequent requests of any ISAX
+        //  NOTE: The first request MUST have scaiev_execute_mem_has_trans_id set!
+        //   This is so the store queue can wait for instruction commit. If this is not set,
+        //    a) the store queue will run into issues, since it sees an unexpected commit
+        //    b) the store will run through regardless of prior instruction exception/mispredict
+        memRequestLogic += "    scaiev_execute_mem_has_trans_id = !%s || write_mem_firstshot;\n".formatted(WrMem_validReq_4_i);
+      }
+      else
+        memRequestLogic += "    scaiev_execute_mem_has_trans_id = 1'b1;\n";
       memRequestLogic += "    scaiev_execute_mem_trans_id = %s ? %s : %s;\n".formatted(RdMem_validReq_4_i, RdMem_instrID_4_i, WrMem_instrID_4_i);
       if (ContainsOpInStage(BNode.RdMem, stage_execute))
         memRequestLogic += "    scaiev_execute_rdMem_valid = %s && !read_mem_pending_reg;\n".formatted(RdMem_validReq_4_i);
@@ -1172,14 +1542,42 @@ public class CVA6 extends CoreBackend {
     ArrayList<String> statement_lines = new ArrayList<>();
     boolean has_previous_case = false;
     addDeclaration("logic " + signame_issue_stall_before_cf + ";");
+
+    if (ContainsOpInStage(BNode.WrPC, stage_issue, null, false) || ContainsOpInStage(BNode.WrPC, stage_execute)) {
+      // Stall all ports after a to-be-issued WrPC ISAX.
+      for (int iPortToStall = 1; iPortToStall < stage_issue_port.length; ++iPortToStall) {
+        assert(signame_issueport_stall_before_cf.size() > iPortToStall &&
+               signame_issueport_stall_before_cf.get(iPortToStall).isPresent());
+        String ivalid_expr = "";
+        for (int iPort = 0; iPort < iPortToStall; ++iPort) {
+          PipelineStage portStage = stage_issue_port[iPort];
+          Stream<SCAIEVInstr> instrStream = Stream.concat(
+              getISAXesWithOpInStage(BNode.WrPC, stage_execute),
+              getISAXesWithOpInStage(BNode.WrPC, portStage)).distinct();
+          ivalid_expr += (ivalid_expr.isEmpty() ? "" : " || ") +
+              "(" +
+              instrStream
+                  .filter(isax -> !isax.HasNoOp())
+                  .distinct()
+                  .map(isax -> language.CreateNodeName(BNode.RdIValid.NodeNegInput(), portStage, isax.GetName()))
+                  .reduce((a, b) -> a + " || " + b)
+                  .orElse("1'b0") +
+              ")";
+        }
+        if (ivalid_expr.isEmpty())
+          ivalid_expr = "1'b0";
+        addLogic("assign %s = %s;".formatted(signame_issueport_stall_before_cf.get(iPortToStall).get(), ivalid_expr));
+      }
+    }
+
     statement_lines.add("always_comb begin");
     addLogic("assign scaiev_fetch_ignoreReplay = 0;"); //not needed
     if (ContainsOpInStage(BNode.WrPC, stage_fetch)) {
       //Apply the original PC in the next cycle and hold until the fetch runs through.
       //-> The cycle delay gives SCAL time to flush its logic.
       //-> The hold (until !stall) ensures RdPC remains stable, as SCAL samples at !stall.
-      String origPCValid = language.CreateNodeName(BNode.RdOrigPC_valid.NodeNegInput(), stage_realign, "");
-      String origPC = language.CreateNodeName(BNode.RdOrigPC.NodeNegInput(), stage_realign, "");
+      String origPCValid = language.CreateNodeName(BNode.RdOrigPC_valid.NodeNegInput(), stage_realign_port[0], "");
+      String origPC = language.CreateNodeName(BNode.RdOrigPC.NodeNegInput(), stage_realign_port[0], "");
       //addLogic("assign scaiev_fetch_ignoreReplay = %s;".formatted(origPCValid)); //not needed
       addDeclaration("logic scaiev_fetch_isReplaying_r;");
       addDeclaration("logic [%d-1:0] scaiev_fetch_isReplaying_origPC_r;".formatted(BNode.RdOrigPC.size));
@@ -1204,39 +1602,51 @@ public class CVA6 extends CoreBackend {
     }
     for (int stagePos = stagePos_execute; stagePos >= stagePos_fetch; --stagePos) {
       PipelineStage stage = stages[stagePos];
-      if (!ContainsOpInStage(BNode.WrPC, stage)) {
+      if (!ContainsOpInStage(BNode.WrPC, stage, null, false)) {
         if (stagePos == stagePos_execute)
           addLogic("assign " + signame_issue_stall_before_cf + " = 0;");
         continue;
       }
-      String valid_node = language.CreateNodeName(BNode.WrPC_valid, stage, "");
-      String pc_node = language.CreateNodeName(BNode.WrPC, stage, "");
-
-      String ivalid_expr = "(" +
-                          getISAXesWithOpInStage(BNode.WrPC, stage)
-                              .filter(isax -> !isax.HasNoOp())
-                              .map(isax -> language.CreateNodeName(stage == stage_execute ? BNode.RdAnyValid : BNode.RdIValid,
-                                                                   stage, isax.GetName()))
-                              .reduce((a, b) -> a + " || " + b)
-                              .orElse("1'b0") +
-                          ")";
-      if (stagePos == stagePos_execute) {
-        // Stall issue if Execute has a control flow ISAX that isn't finishing.
-        addLogic("assign " + signame_issue_stall_before_cf + " = (scaiev_execute_isStalling || scaiev_execute_stall) && " + ivalid_expr +
-                 ";");
+      List<PipelineStage> portStages = SCALUtil.flatmapAddPortsBefore(Stream.of(stage)).toList();
+      for (int iPort = portStages.size() - 1; iPort >= 0; --iPort) {
+        PipelineStage portStage = portStages.get(iPort);
+        if (!ContainsOpInStage(BNode.WrPC, portStage))
+          continue;
+        String valid_node = language.CreateNodeName(BNode.WrPC_valid, portStage, "");
+        String pc_node = language.CreateNodeName(BNode.WrPC, portStage, "");
+  
+        if (portStage.getKind() != StageKind.CoreMultiport) {
+          String ivalid_expr = "(" +
+                              getISAXesWithOpInStage(BNode.WrPC, portStage)
+                                  .filter(isax -> !isax.HasNoOp())
+                                  .map(isax -> language.CreateNodeName(stage == stage_execute ?
+                                                                           BNode.RdAnyValid :
+                                                                           BNode.RdIValid.NodeNegInput(),
+                                                                       portStage, isax.GetName()))
+                                  .reduce((a, b) -> a + " || " + b)
+                                  .orElse("1'b0") +
+                              ")";
+          if (stagePos == stagePos_execute) {
+            assert(stage == portStage);
+            // Stall issue if Execute has a control flow ISAX that isn't finishing.
+            addLogic("assign " + signame_issue_stall_before_cf + " = (scaiev_execute_isStalling || scaiev_execute_stall) && " + ivalid_expr +
+                     ";");
+          }
+          if (stagePos == stagePos_fetch) {
+            assert(stage == portStage);
+            //fetch_wrPC also updates the next PC register
+            //-> Ignore WrPC_fetch if the fetch stage is stalling,
+            //   so the next PC register remains intact
+            valid_node = valid_node + " && !scaiev_fetch_isStalling && !scaiev_fetch_stall";
+          }
+        }
+  
+        statement_lines.add(tab + (has_previous_case ? "else if" : "if") + " (" + valid_node + ") begin");
+        statement_lines.add(tab + tab + "scaiev_fetch_wrPCValid = 1'b1;");
+        statement_lines.add(tab + tab + "scaiev_fetch_wrPC = " + pc_node + ";");
+        statement_lines.add(tab + "end");
+        has_previous_case = true;
       }
-      if (stagePos == stagePos_fetch) {
-        //fetch_wrPC also updates the next PC register
-        //-> Ignore WrPC_fetch if the fetch stage is stalling,
-        //   so the next PC register remains intact
-        valid_node = valid_node + " && !scaiev_fetch_isStalling && !scaiev_fetch_stall";
-      }
-
-      statement_lines.add(tab + (has_previous_case ? "else if" : "if") + " (" + valid_node + ") begin");
-      statement_lines.add(tab + tab + "scaiev_fetch_wrPCValid = 1'b1;");
-      statement_lines.add(tab + tab + "scaiev_fetch_wrPC = " + pc_node + ";");
-      statement_lines.add(tab + "end");
-      has_previous_case = true;
     }
     if (has_previous_case)
       statement_lines.add(tab + "else begin");
@@ -1250,31 +1660,38 @@ public class CVA6 extends CoreBackend {
     addLogic(String.join("\n", statement_lines));
     
     addLogic("assign scaiev_decode_pcOverride = %s;\n"
-        .formatted(language.CreateNodeName(node_RdZOLOverride, stage_decode, "")));
+        .formatted(language.CreateNodeName(node_WrZOLOverride, stage_decode_port[0], "")));
     addLogic("assign scaiev_decode_pcOverride_valid = %s;\n"
-        .formatted(language.CreateNodeName(node_RdZOLOverride_valid, stage_decode, "")));
+        .formatted(language.CreateNodeName(node_WrZOLOverride_valid, stage_decode_port[0], "")));
   }
 
   private void Configcva6() {
     this.PopulateNodesMap();
-    PutModule(pathcva6.resolve("cva6_ariane_wrapper.sv"), "cva6_ariane_wrapper", pathcva6.resolve("cva6_ariane_wrapper.sv"), "",
-              "cva6_ariane_wrapper");
+    //PutModule(pathcva6.resolve("cva6_ariane_wrapper.sv"), "cva6_ariane_wrapper", pathcva6.resolve("cva6_ariane_wrapper.sv"), "",
+    //          "cva6_ariane_wrapper");
     PutModule(pathcva6.resolve("cva6_glue_wrapper.sv"), "cva6_glue_wrapper", pathcva6.resolve("cva6_glue_wrapper.sv"),
-              "cva6_ariane_wrapper", "cva6_glue_wrapper");
+              "", "cva6_glue_wrapper");
     PutModule(pathcva6.resolve("cva6.sv"), "cva6", pathcva6.resolve("cva6.sv"), "cva6_glue_wrapper", "cva6");
     PutModule(pathcva6.resolve("scaiev_glue.sv"), "scaiev_glue", pathcva6.resolve("scaiev_glue.sv"), "cva6_glue_wrapper", "scaiev_glue");
+    PutModule(pathcva6.resolve("scaiev_config.sv"), configPackage, pathcva6.resolve("scaiev_config.sv"), "", "scaiev_config");
 
-    this.configFlags.clear();
+    assert(stage_decode_port.length == stage_issue_port.length);
 
     this.PutNode("logic", "", "scaiev_glue", BNode.WrPC, stage_fetch);
     this.PutNode("logic", "", "scaiev_glue", BNode.WrPC_valid, stage_fetch);
     this.PutNode("logic", "", "scaiev_glue", BNode.WrPC, stage_issue);
     this.PutNode("logic", "", "scaiev_glue", BNode.WrPC_valid, stage_issue);
+    for (int iPort = 0; iPort < stage_issue_port.length; ++iPort) {
+      this.PutNode("logic", "", "scaiev_glue", BNode.WrPC, stage_issue_port[iPort]);
+      this.PutNode("logic", "", "scaiev_glue", BNode.WrPC_valid, stage_issue_port[iPort]);
+    }
     this.PutNode("logic", "", "scaiev_glue", BNode.WrPC, stage_execute);
     this.PutNode("logic", "", "scaiev_glue", BNode.WrPC_valid, stage_execute);
 
-    this.PutNode("wire", "", "scaiev_glue", node_RdZOLOverride, stage_decode);
-    this.PutNode("wire", "", "scaiev_glue", node_RdZOLOverride_valid, stage_decode);
+    for (int iPort = 0; iPort < stage_decode_port.length; ++iPort) {
+      this.PutNode("wire", "", "scaiev_glue", node_WrZOLOverride, stage_decode_port[iPort]);
+      this.PutNode("wire", "", "scaiev_glue", node_WrZOLOverride_valid, stage_decode_port[iPort]);
+    }
 
     if (ContainsOpInStage(BNode.WrPC, stage_fetch)) {
       this.PutNode("logic", "(scaiev_fetch_isReplaying_r && %s) ? %s : scaiev_fetch_PC"
@@ -1284,61 +1701,86 @@ public class CVA6 extends CoreBackend {
     else {
       this.PutNode("logic", "scaiev_fetch_PC", "scaiev_glue", BNode.RdPC, stage_fetch);
     }
-    this.PutNode("logic", "scaiev_realign_PC", "scaiev_glue", BNode.RdPC, stage_realign);
-    this.PutNode("logic", "scaiev_issue_PC", "scaiev_glue", BNode.RdPC, stage_issue);
+    for (int iPort = 0; iPort < stage_realign_port.length; ++iPort)
+      this.PutNode("logic", "scaiev_realign_PC" + portElementAccessor(stage_realign_port[iPort]), "scaiev_glue", BNode.RdPC, stage_realign_port[iPort]);
+    for (int iPort = 0; iPort < stage_issue_port.length; ++iPort)
+      this.PutNode("logic", "scaiev_issue_PC" + portElementAccessor(stage_issue_port[iPort]), "scaiev_glue", BNode.RdPC, stage_issue_port[iPort]);
     this.PutNode("logic", "scaiev_execute_PC", "scaiev_glue", BNode.RdPC, stage_execute);
 
     this.PutNode("logic", "scaiev_fetch_reqID", "scaiev_glue", node_RdFetchID, stage_fetch);
     this.PutNode("logic", "scaiev_realign_reqID", "scaiev_glue", node_RdFetchID, stage_realign);
     this.PutNode("logic", "scaiev_fetch_reqID_flushFrom", "scaiev_glue", node_RdFetchFlushFromID, stage_fetch);
     this.PutNode("logic", "scaiev_fetch_reqID_flushCount", "scaiev_glue", node_RdFetchFlushCount, stage_fetch);
-    this.PutNode("logic", "scaiev_realign_instrqueueID", "scaiev_glue", node_RdIQueueID, stage_realign);
+    for (int iPort = 0; iPort < stage_realign_port.length; ++iPort) {
+      this.PutNode("logic", "scaiev_realign_instrqueueID" + portElementAccessor(stage_realign_port[iPort]),
+                   "scaiev_glue", node_RdIQueueID, stage_realign_port[iPort]);
+    }
+    this.PutNode("logic", "scaiev_realign_fully_unaligned", "scaiev_glue", node_RdRealignFullyUnaligned, stage_realign);
     this.PutNode("logic", "{%d{scaiev_decode_isFlushing | scaiev_decode_flush}}".formatted(node_RdIQueueFlushMask.size), "scaiev_glue", node_RdIQueueFlushMask, stage_realign);
-    this.PutNode("logic", "scaiev_decode_instrqueueID", "scaiev_glue", node_RdIQueueID, stage_decode);
+    for (int iPort = 0; iPort < stage_decode_port.length; ++iPort) {
+      this.PutNode("logic", "scaiev_decode_instrqueueID" + portElementAccessor(stage_decode_port[iPort]),
+                   "scaiev_glue", node_RdIQueueID, stage_decode_port[iPort]);
+    }
 
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdCommitIDCount, core.GetRootStage());
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdCommitID, core.GetRootStage());
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdCommitFlushIDCount, core.GetRootStage());
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdCommitFlushID, core.GetRootStage());
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdCommitFlushAll, core.GetRootStage());
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdCommitFlushAllID, core.GetRootStage());
+    this.PutNode("logic", "", "scaiev_glue", BNode.RdCommitIDCount, core.getRootStage());
+    this.PutNode("logic", "", "scaiev_glue", BNode.RdCommitID, core.getRootStage());
+    this.PutNode("logic", "", "scaiev_glue", BNode.RdCommitFlushIDCount, core.getRootStage());
+    this.PutNode("logic", "", "scaiev_glue", BNode.RdCommitFlushID, core.getRootStage());
+    this.PutNode("logic", "", "scaiev_glue", BNode.RdCommitFlushAll, core.getRootStage());
+    this.PutNode("logic", "", "scaiev_glue", BNode.RdCommitFlushAllID, core.getRootStage());
 
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdInstr_RS, stage_decode);
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdInstr_RD, stage_decode);
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdInstr, stage_decode);
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdInstr, stage_issue);
+    for (int iPort = 0; iPort < stage_decode_port.length; ++iPort) {
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdInstr_RS, stage_decode_port[iPort]);
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdInstr_RD, stage_decode_port[iPort]);
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdInstr, stage_decode_port[iPort]);
+    }
+    for (int iPort = 0; iPort < stage_issue_port.length; ++iPort)
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdInstr, stage_issue_port[iPort]);
     this.PutNode("logic", "", "scaiev_glue", BNode.RdInstr, stage_execute);
 
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdIValid, stage_decode);
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdIValid, stage_issue);
+    for (int iPort = 0; iPort < stage_decode_port.length; ++iPort)
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdIValid, stage_decode_port[iPort]);
+    for (int iPort = 0; iPort < stage_issue_port.length; ++iPort)
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdIValid, stage_issue_port[iPort]);
     this.PutNode("logic", "", "scaiev_glue", BNode.RdIValid, stage_execute);
     this.PutNode("logic", "", "scaiev_glue", BNode.RdAnyValid, stage_execute);
 
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdOrigPC, stage_realign);
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdOrigPC_valid, stage_realign);
+    this.PutNode("logic", "", "scaiev_glue", BNode.RdOrigPC, stage_realign_port[0]);
+    this.PutNode("logic", "", "scaiev_glue", BNode.RdOrigPC_valid, stage_realign_port[0]);
 
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdRS1, stage_issue);
+    for (int iPort = 0; iPort < stage_issue_port.length; ++iPort)
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdRS1, stage_issue_port[iPort]);
     this.PutNode("logic", "", "scaiev_glue", BNode.RdRS1, stage_execute);
 
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdRS2, stage_issue);
+    for (int iPort = 0; iPort < stage_issue_port.length; ++iPort)
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdRS2, stage_issue_port[iPort]);
     this.PutNode("logic", "", "scaiev_glue", BNode.RdRS2, stage_execute);
 
     this.PutNode("logic", "", "scaiev_glue", BNode.RdInStageValid, stage_fetch);
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdInStageValid, stage_realign);
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdInStageValid, stage_decode);
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdInStageValid, stage_issue);
+    for (int iPort = 0; iPort < stage_realign_port.length; ++iPort)
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdInStageValid, stage_realign_port[iPort]);
+    for (int iPort = 0; iPort < stage_decode_port.length; ++iPort)
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdInStageValid, stage_decode_port[iPort]);
+    for (int iPort = 0; iPort < stage_issue_port.length; ++iPort)
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdInStageValid, stage_issue_port[iPort]);
     this.PutNode("logic", "", "scaiev_glue", BNode.RdInStageValid, stage_execute);
 
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdIssueID, stage_issue);
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdIssueFlushID, stage_issue);
+    for (int iPort = 0; iPort < stage_issue_port.length; ++iPort) {
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdIssueID, stage_issue_port[iPort]);
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdIssueFlushID, stage_issue_port[iPort]);
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdPipeInto, stage_issue_port[iPort]);
+    }
+    if (stage_decode_port.length > 1) {
+      for (int iPort = 0; iPort < stage_decode_port.length; ++iPort) {
+        this.PutNode("logic", "", "scaiev_glue", BNode.RdPipeInto, stage_decode_port[iPort]);
+      }
+    }
 
     this.PutNode("logic", "", "scaiev_glue", BNode.RdInStageID, stage_execute);
     this.PutNode("logic", "", "scaiev_glue", BNode.WrDeqInstr, stage_execute);
     this.PutNode("logic", "", "scaiev_glue", BNode.WrInStageID, stage_execute);
     this.PutNode("logic", "", "scaiev_glue", BNode.WrInStageID_valid, stage_execute);
     this.PutNode("logic", "", "scaiev_glue", BNode.WrInStageID_validResp, stage_execute);
-
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdPipeInto, stage_issue);
 
     this.PutNode("logic", "", "scaiev_glue", BNode.RdMem, stage_execute);
     // this.PutNode("logic", "", "scaiev_glue", BNode.RdMem_validResp,stage_execute);
@@ -1357,15 +1799,21 @@ public class CVA6 extends CoreBackend {
     this.PutNode("logic", "", "scaiev_glue", BNode.WrMem_addr_valid, stage_execute);
 
     this.PutNode("logic", "", "scaiev_glue", BNode.RdStall, stage_fetch);
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdStall, stage_realign);
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdStall, stage_decode);
-    this.PutNode("logic", "", "scaiev_glue", BNode.RdStall, stage_issue);
+    for (int iPort = 0; iPort < stage_realign_port.length; ++iPort)
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdStall, stage_realign_port[iPort]);
+    //this.PutNode("logic", "", "scaiev_glue", BNode.RdStall, stage_realign);
+    for (int iPort = 0; iPort < stage_decode_port.length; ++iPort)
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdStall, stage_decode_port[iPort]);
+    for (int iPort = 0; iPort < stage_issue_port.length; ++iPort)
+      this.PutNode("logic", "", "scaiev_glue", BNode.RdStall, stage_issue_port[iPort]);
     this.PutNode("logic", "", "scaiev_glue", BNode.RdStall, stage_execute);
 
     this.PutNode("logic", "", "scaiev_glue", BNode.WrStall, stage_fetch);
-    this.PutNode("logic", "", "scaiev_glue", BNode.WrStall, stage_realign);
-    this.PutNode("logic", "", "scaiev_glue", BNode.WrStall, stage_decode);
-    this.PutNode("logic", "", "scaiev_glue", BNode.WrStall, stage_issue);
+    //this.PutNode("logic", "", "scaiev_glue", BNode.WrStall, stage_realign);
+    for (int iPort = 0; iPort < stage_decode_port.length; ++iPort)
+      this.PutNode("logic", "", "scaiev_glue", BNode.WrStall, stage_decode_port[iPort]);
+    for (int iPort = 0; iPort < stage_issue_port.length; ++iPort)
+      this.PutNode("logic", "", "scaiev_glue", BNode.WrStall, stage_issue_port[iPort]);
     this.PutNode("logic", "", "scaiev_glue", BNode.WrStall, stage_execute);
 
     this.PutNode("logic", "", "scaiev_glue", BNode.RdFlush, stage_fetch);

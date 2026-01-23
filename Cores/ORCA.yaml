@@ -42,7 +42,9 @@ operations:
   latency: 1
   costly: 5
 - operation: RdPC
+  earliest: 0
   latency: 0
+  latest: 3
   costly: 3
 - operation: WrPC
   latency: 1

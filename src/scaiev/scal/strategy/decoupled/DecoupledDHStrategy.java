@@ -12,6 +12,7 @@ import java.util.stream.Stream;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+
 import scaiev.backend.BNode;
 import scaiev.coreconstr.Core;
 import scaiev.frontend.SCAIEVInstr;
@@ -247,16 +248,20 @@ public class DecoupledDHStrategy extends MultiNodeStrategy {
    * @param existingPinKeys a set tracking the RdIValid (or other) keys already added as module interface pins
    * @param instantiationBuilder StringBuilder for additional module instantiation lines, each entry should adhere to ",\n.&lt;name&gt;(&lt;value&gt;)"
    * @param interfaceBuilder StringBuilder for additional module interface lines, each entry should start with ",\n    " and end without comma
+   * @param priorStartSpawnDescs descriptions for startSpawnStages that concurrently start a spawn and should take precedence;
+   *                             these are needed for RAW DH in multi-Issue (e.g. decoupled ISAX immediately followed by computation using the result)
    * @return an object containing the 'is ISAX' condition and the read/write descriptors ({@link DHSourceEntry}) 
    */
   @SuppressWarnings("unused")
   private StartSpawnStage_DHDesc DHModule_StagePortion(NodeLogicBlock logicBlock, NodeRegistryRO registry, int aux, SCAIEVNode spawnNode,
                                                         PipelineStage startSpawnStage,
                                                         HashSet<NodeInstanceDesc.Key> existingPinKeys,
-                                                        StringBuilder instantiationBuilder, StringBuilder interfaceBuilder) {
+                                                        StringBuilder instantiationBuilder, StringBuilder interfaceBuilder,
+                                                        List<StartSpawnStage_DHDesc> priorStartSpawnDescs) {
     SCAIEVNode node = bNodes.GetSCAIEVNode(spawnNode.nameParentNode);
     var ret = new StartSpawnStage_DHDesc(startSpawnStage);
 
+    //Generate and assign startSpawnStage RdFlush, RdStall ports for the DH module
     String rdFlushModPortName = "RdFlush_%s_i".formatted(startSpawnStage.getName());
     if (existingPinKeys.add(new NodeInstanceDesc.Key(bNodes.RdFlush, startSpawnStage, ""))) {
       String flushCond = SCALUtil.buildCond_StageFlushing(bNodes, registry, startSpawnStage);
@@ -274,6 +279,7 @@ public class DecoupledDHStrategy extends MultiNodeStrategy {
     }
     ret.stageStallingCond = rdStallModPortName;
 
+    //Generate the WrStall port (and node assignment) for the DH module
     String wrStallModPortName = "WrStall_%s_o".formatted(startSpawnStage.getName());
     var wrStallKey = new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrStall, startSpawnStage, "", aux);
     if (existingPinKeys.add(wrStallKey)) {
@@ -376,25 +382,53 @@ public class DecoupledDHStrategy extends MultiNodeStrategy {
     }
     ret.isaxStartSpawnCond = RdIValid_ISAX_startSpawn;
 
+    var concurrentUtil = new Object() {
+      /**
+       * Produces a Stream of concurrent write DHSourceEntries that take precedence over the current object.
+       * The validConds in the returned DHSourceEntries are &amp;&amp; expressions without parens.
+       */
+      Stream<DHSourceEntry> getConcurrentWrites() {
+        return priorStartSpawnDescs.stream().flatMap(priorDesc ->
+                   priorDesc.dhSource_write.stream().map(sourceWrite ->
+                       // Create new DHSourceEntries that include the startSpawn condition
+                       //   (-> limit the scope of the concurrent DH check to R/W after spawn)
+                       new DHSourceEntry("%s && %s".formatted(sourceWrite.validCond(), priorDesc.isaxStartSpawnCond), sourceWrite.addrExpr())));
+      }
+      /**
+       * Stream of conflict conditions (WAW or RAW) against concurrent writes that take precedence
+       * @param curRWEntry the DHSourceEntry (read or write) to check against preceding writes
+       */
+      Stream<String> getConcurrentConflictConds(DHSourceEntry curRWEntry) {
+        return getConcurrentWrites().map(earlierWrite ->
+                   "%s && %s && %s == %s".formatted(
+                       earlierWrite.validCond(), curRWEntry.validCond(),
+                       earlierWrite.addrExpr(), curRWEntry.addrExpr()));
+      }
+    };
+
     String sizeZero = "";
+    //RAW condition
     String logic_RdReadDH = "";
     String readDHWire = "data_hazard_read_%s".formatted(startSpawnStage.getName());
     ret.addtoModuleDecl += "wire %s;\n".formatted(readDHWire);
-    ret.addtoModuleLogic += "assign %s = %s;\n"
-                            .formatted(readDHWire,
-                                       ret.dhSource_read.stream().map(dhReadEntry -> "rd_table_mem[%s] && %s"
-                                                                          .formatted(dhReadEntry.addrExpr, dhReadEntry.validCond))
-                                                        .reduce((a,b)->a+" || "+b)
-                                                        .orElse("1'b0"));
+    ret.addtoModuleLogic += "assign %s = %s;\n".formatted(
+                                readDHWire,
+                                ret.dhSource_read.stream().flatMap(dhReadEntry ->
+                                    Stream.concat(Stream.of("rd_table_mem[%s] && %s".formatted(dhReadEntry.addrExpr, dhReadEntry.validCond)),
+                                                  concurrentUtil.getConcurrentConflictConds(dhReadEntry)))
+                                .reduce((a,b)->a+" || "+b)
+                                .orElse("1'b0"));
+    //WAW condition
     String logic_RdWriteDH = "";
     String writeDHWire = "data_hazard_write_%s".formatted(startSpawnStage.getName());
     ret.addtoModuleDecl += "wire %s;\n".formatted(writeDHWire);
-    ret.addtoModuleLogic += "assign %s = %s;\n"
-                            .formatted(writeDHWire,
-                                       ret.dhSource_write.stream().map(dhWriteEntry -> "rd_table_mem[%s] && %s"
-                                                                           .formatted(dhWriteEntry.addrExpr, dhWriteEntry.validCond))
-                                                         .reduce((a,b)->a+" || "+b)
-                                                         .orElse("1'b0"));
+    ret.addtoModuleLogic += "assign %s = %s;\n".formatted(
+                                writeDHWire,
+                                ret.dhSource_write.stream().flatMap(dhWriteEntry ->
+                                    Stream.concat(Stream.of("rd_table_mem[%s] && %s".formatted(dhWriteEntry.addrExpr, dhWriteEntry.validCond)),
+                                                  concurrentUtil.getConcurrentConflictConds(dhWriteEntry)))
+                                .reduce((a,b)->a+" || "+b)
+                                .orElse("1'b0"));
     ret.readDHWire = readDHWire;
     ret.writeDHWire = writeDHWire;
     return ret;
@@ -415,11 +449,13 @@ public class DecoupledDHStrategy extends MultiNodeStrategy {
     StringBuilder instantiationBuilder = new StringBuilder();
     StringBuilder interfaceBuilder = new StringBuilder();
 
-    List<StartSpawnStage_DHDesc> startSpawnDHDescs =
-        startSpawnStagesList.stream()
-                            .map(startSpawnStage -> DHModule_StagePortion(logicBlock, registry, aux, spawnNode, startSpawnStage,
-                                                                          existingPinKeys, instantiationBuilder, interfaceBuilder))
-                            .toList();
+    List<StartSpawnStage_DHDesc> startSpawnDHDescs = new ArrayList<>(startSpawnStagesList.size());
+    for (PipelineStage startSpawnStage : startSpawnStagesList) {
+      // Blindly assuming stages are ordered by precedence / program order (e.g. Issue port 0, then Issue port 1)
+      startSpawnDHDescs.add(DHModule_StagePortion(logicBlock, registry, aux, spawnNode, startSpawnStage,
+                                                  existingPinKeys, instantiationBuilder, interfaceBuilder,
+                                                  startSpawnDHDescs));
+    }
     assert(!startSpawnDHDescs.isEmpty());
 
     int regAddrWidth = startSpawnDHDescs.get(0).regAddrWidth;
@@ -435,16 +471,16 @@ public class DecoupledDHStrategy extends MultiNodeStrategy {
     String returnStr = "";
     //Note: For now, wait until we get the cancellation of the decoupled op, rather than directly process the core's retires.
     //PipelineFront issueFront = new PipelineFront(issueStages);
-    PipelineFront rdflushLatestFront = core.GetNodes().containsKey(bNodes.RdFlush)
-                                           ? core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdFlush).GetLatest())
+    PipelineFront rdflushLatestFront = core.getNodes().containsKey(bNodes.RdFlush)
+                                           ? core.translateStageScheduleNumber(core.getNodes().get(bNodes.RdFlush).getLatest())
                                            : new PipelineFront();
     //PipelineFront latestObserveFlushesFront = issueStages.isEmpty() ? rdflushLatestFront : issueFront;
     PipelineFront latestObserveFlushesFront = rdflushLatestFront;
-    var startSpawnStagesFront = new PipelineFront(startSpawnStagesList);
-    List<PipelineStage> flushableStages = startSpawnStagesFront
+    var startSpawnStagesFront = new PipelineFront(startSpawnStagesList.stream().map(startSpawnStage -> startSpawnStage.getMultiportBase()).distinct());
+    List<PipelineStage> flushableStages = SCALUtil.flatmapIntoPorts(startSpawnStagesFront
                                               .streamNext_bfs(stage -> latestObserveFlushesFront.isAroundOrAfter(stage, false))
                                               .filter(stage -> !startSpawnStagesFront.contains(stage) && latestObserveFlushesFront.isAroundOrAfter(stage, false))
-                                              .filter(stage -> !stage.getTags().contains(StageTag.NoISAX))
+                                              .filter(stage -> !stage.getTags().contains(StageTag.NoISAX)))
                                               .toList();
     boolean later_flushes = !flushableStages.isEmpty();
 
@@ -471,7 +507,8 @@ public class DecoupledDHStrategy extends MultiNodeStrategy {
         //Create a pipeliner for the nodes (to be called by the DecoupledDHStrategy implement method).
         MultiNodeStrategy pipeliner = strategyBuilders.buildNodeRegPipelineStrategy(
                                            language, bNodes,
-                                           new PipelineFront(startSpawnStagesList.stream().flatMap(stage->stage.getNext().stream())),
+                                           new PipelineFront(SCALUtil.mapIntoMultiportBase(startSpawnStagesList.stream())
+                                                                     .distinct().flatMap(stage->stage.getNext().stream())),
                                            false, false, false,
                                            keyPipe -> keyPipe.getISAX().isEmpty() && keyPipe.getAux() == 0
                                                       && (keyPipe.getNode().equals(addrNode) || keyPipe.getNode().equals(validNode)),
@@ -571,7 +608,7 @@ public class DecoupledDHStrategy extends MultiNodeStrategy {
         + " parameter RD_W_P = " + regAddrWidth + ",\n"
         + " parameter INSTR_W_P = 32,\n"
         + " parameter START_STAGE = " + startSpawnStagesList.get(0).getStagePos() + ",\n"
-        + " parameter WB_STAGE = " + (latestObserveFlushesFront.asList().get(0).getStagePos()) + "\n"
+        + " parameter WB_STAGE = " + (latestObserveFlushesFront.asList().get(0).getMultiportBase().getStagePos()) + "\n"
         + "\n"
         + ")(\n"
         + "    input clk_i,\n"
@@ -667,23 +704,21 @@ public class DecoupledDHStrategy extends MultiNodeStrategy {
       return;
     }
 
-    if (startSpawnStagesList.size() > 1) {
-      logger.warn("DecoupledDHStrategy AddDHModule: Only looking at one of the 'start spawn' stages.");
-    }
-    PipelineStage startSpawnStage = startSpawnStagesList.get(0);
-    PipelineFront startSpawnStageFront = new PipelineFront(startSpawnStage);
+    PipelineFront startSpawnStageFront = new PipelineFront(SCALUtil.flatmapIntoPorts(startSpawnStagesList.stream()));
+
     if (spawnStage.streamPrev_bfs(prevStage -> startSpawnStageFront.isBefore(prevStage, false))
             .filter(prevStage -> startSpawnStageFront.isBefore(prevStage, false))
             .anyMatch(stage_ -> !stage_.getContinuous())) {
       logger.warn("DecoupledDHStrategy AddDHModule: Not all stages between 'spawn' ({}) and 'start spawn' ({}) are continuous, breaking "
                       + "assumptions of built-in data hazard tracking.",
-                  spawnStage.getName(), startSpawnStage.getName());
+                  spawnStage.getName(),
+                  startSpawnStageFront.asList().stream().map(stage->stage.getName()).reduce((a,b)->a+", "+b).orElse(""));
     }
 
     String moduleInstanceName = "spawndatah_" + spawnNode + "_inst";
     logicBlock.outputs.add(new NodeInstanceDesc(markerKey, moduleInstanceName, ExpressionType.WireName));
 
-    String dhAdditionalInstantiation = DHModule(logicBlock, registry, aux, spawnNode, startSpawnStagesList);
+    String dhAdditionalInstantiation = DHModule(logicBlock, registry, aux, spawnNode, startSpawnStageFront.asList());
 
     /// ADD DH Mechanism
     // Differentiate between Wr Regfile and user nodes or address signals

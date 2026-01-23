@@ -51,6 +51,9 @@ public class FNode {
   public SCAIEVNode RdPC = new SCAIEVNode("RdPC", datawidth, false) {
     { tags.add(NodeTypeTag.staticReadResult); }
   };
+  public SCAIEVNode RdNextPC = new SCAIEVNode("RdNextPC", 32, false) {{
+    tags.add(NodeTypeTag.staticReadResult);
+  }};
   /** obsolete */
   public SCAIEVNode RdImm = new SCAIEVNode("RdImm", datawidth, true) {
     { tags.add(NodeTypeTag.staticReadResult); }
@@ -123,6 +126,7 @@ public class FNode {
     RdImm.size = bitness;
     RdMem.size = bitness;
     RdPC.size = bitness;
+    RdNextPC.size = bitness;
     RdRS1.size = bitness;
     RdRS2.size = bitness;
     RdRD.size = bitness;
@@ -149,6 +153,7 @@ public class FNode {
     allFrontendNodes.add(RdMem);
     allFrontendNodes.add(WrPC);
     allFrontendNodes.add(RdPC);
+    allFrontendNodes.add(RdNextPC);
     allFrontendNodes.add(RdRS1);
     allFrontendNodes.add(RdRS2);
     allFrontendNodes.add(RdRD);

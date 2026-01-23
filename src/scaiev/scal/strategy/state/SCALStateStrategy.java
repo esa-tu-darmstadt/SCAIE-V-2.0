@@ -122,6 +122,9 @@ public class SCALStateStrategy extends MultiNodeStrategy {
     public String getWireName_dhInIssueStage(int iRead, PipelineStage issueStage) {
       return String.format("dhRd%s_%s_%d", regfile.regName, issueStage.getName(), iRead);
     }
+    public String getWireName_AnyWrIssue(PipelineStage issueStage) {
+      return String.format("wrReg_%s_issue_any_valid_%s", regfile.regName, issueStage.getName());
+    }
 
     public String getWireName_WrIssue_addr_valid(int iPort) {
       return String.format("wrReg_%s_%d_issue_addr_valid", regfile.regName, iPort);
@@ -140,15 +143,20 @@ public class SCALStateStrategy extends MultiNodeStrategy {
      */
     abstract void reset();
 
-    /** Processes a write port. Adds assign logic for 'validRespWireName'. */
+    /**
+     * Processes a writeback node / stage.
+     * Note: Each write, even to the same node but from a different stage (e.g., execution units), will have a separate call.
+     * Adds assign logic for 'validRespWireName'.
+     */
     abstract void processWritePort(int iPort, WritebackExpr writeback, NodeRegistryRO registry, NodeLogicBlock logicBlock);
-    /** All 'reset dirty' conditions from the processWritePort calls since the last reset. */
-    abstract List<ResetDirtyCond> getResetDirtyConds();
-    /** All writeback conditions from the processWritePort calls since the last reset. */
-    abstract List<WriteToBackingCond> getWriteToBackingConds();
 
     /** Performs an additional build step after all processWritePort calls have been made. */
     void buildPost(NodeRegistryRO registry, NodeLogicBlock logicBlock) {}
+
+    /** All 'reset dirty' conditions since the last reset. Called after buildPost. */
+    abstract List<ResetDirtyCond> getResetDirtyConds();
+    /** All writeback conditions since the last reset. Called after buildPost. */
+    abstract List<WriteToBackingCond> getWriteToBackingConds();
 
     /** Implements any inner strategies */
     void implementInner(Consumer<NodeLogicBuilder> out, Iterable<NodeInstanceDesc.Key> nodeKeys, boolean isLast) {}
@@ -416,7 +424,8 @@ public class SCALStateStrategy extends MultiNodeStrategy {
     //For now: Use only one type per register file.
     CommitHandler useForAll = null;
     if (regfile.useScoreboard) {
-      IDRetireSerializerStrategy serializer = constructOrReuseRetireSerializer(regfile.issueFront.asList());
+      List<PipelineStage> issueStages_expanded = SCALUtil.flatmapIntoPorts(regfile.issueFront.asList().stream()).distinct().toList();
+      IDRetireSerializerStrategy serializer = constructOrReuseRetireSerializer(issueStages_expanded);
       DH_IDMapping idMapping = new DH_IDMapping(core, language, bNodes, serializer,
           2, 1, 2, //TODO: make configurable
                    // innerIDWidth must be min. 2 for now (-> 3 scoreboard entries)
@@ -453,9 +462,19 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       assert (ret.width == width);
       assert (ret.depth == depth);
     }
-    HashSet<PipelineStage> issueFrontStages =
-        Stream.concat(ret.issueFront.asList().stream(), issueFront.asList().stream()).collect(Collectors.toCollection(HashSet::new));
-    ret.issueFront = new PipelineFront(issueFrontStages);
+    // Combine existing with new elements
+    ret.issueFront = new PipelineFront(Stream.concat(ret.issueFront.asList().stream(), issueFront.asList().stream()).sorted(
+        (stA, stB) -> {
+          //Sort the stages so earlier ports (handling earlier instructions at any point) are listed first.
+          if (stA.getMultiportBase() != stB.getMultiportBase())
+            return stA.getName().compareTo(stB.getName());
+          if (stA == stB)
+            return 0;
+          assert(stA.getMultiportBase().getKind() == StageKind.CoreMultiport);
+          var children = stA.getMultiportBase().getChildren();
+          assert(children.contains(stA) && children.contains(stB));
+          return Integer.compare(children.indexOf(stA), children.indexOf(stB));
+        }).distinct());
     ret.earlyReadsUnmapped = Stream.concat(ret.earlyReadsUnmapped.stream(), reads.stream())
                          .filter(readKey -> issueFront.isAfter(readKey.getStage(), false))
                          .distinct()
@@ -515,7 +534,7 @@ public class SCALStateStrategy extends MultiNodeStrategy {
     ret.declarations += String.format("reg [%d-1:0] %s;\n", elements, dirtyRegName);
 
     String regfileModuleName = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(
-        Purpose.MARKER_CUSTOM_REG, elements > 1 ? RegfileModuleNode : RegfileModuleSingleregNode, core.GetRootStage(), ""));
+        Purpose.MARKER_CUSTOM_REG, elements > 1 ? RegfileModuleNode : RegfileModuleSingleregNode, core.getRootStage(), ""));
 
     for (int i = 0; i < rSignals.length; i++) {
       if (rSignalsize[i] == 0)
@@ -556,7 +575,7 @@ public class SCALStateStrategy extends MultiNodeStrategy {
         // Comma-separated port signal names from 0..gSignalcount[i]
 
         var context_switching = registry.lookupExpressionRequired(
-            new NodeInstanceDesc.Key(Purpose.MARKER_INTERNALIMPL_PIN, SCALStateContextStrategy.isaxctx_node, core.GetRootStage(), ""));
+            new NodeInstanceDesc.Key(Purpose.MARKER_INTERNALIMPL_PIN, SCALStateContextStrategy.isaxctx_node, core.getRootStage(), ""));
 
         ret.logic += IntStream.range(0, gSignalcount[i]).mapToObj(j -> context_switching).reduce((a, b) -> a + "," + b).orElse("");
         ret.logic += "}),\n";
@@ -571,6 +590,7 @@ public class SCALStateStrategy extends MultiNodeStrategy {
     setupCommitAndForwardHandlers(regfile);
 
     List<PipelineStage> issueStages = regfile.issueFront.asList();
+    List<PipelineStage> issueStages_expanded = SCALUtil.flatmapIntoPorts(issueStages.stream()).toList();
     ReadreqExpr[] issueReadForwardRequest = new ReadreqExpr[regfile.issue_reads.size()];
     ForwardToWires[] issueReadForwardToWires = new ForwardToWires[regfile.issue_reads.size()];
     for (int iRead = 0; iRead < regfile.issue_reads.size(); ++iRead) {
@@ -590,15 +610,15 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       ////The result will be pipelined if needed.
       //boolean specificIssueStageOnly = regfile.issueFront.contains(requestedReadKey.getStage());
 
-      for (PipelineStage issueStage : issueStages) {
+      for (PipelineStage issueStage : issueStages_expanded) {
         //if (specificIssueStageOnly && issueStage != requestedReadKey.getStage())
         //  continue;
         String wireName_dhInAddrStage = utils.getWireName_dhInIssueStage(iRead, issueStage);
         ret.declarations += String.format("logic %s;\n", wireName_dhInAddrStage);
         String wireName_dhInAddrStage_preforward = wireName_dhInAddrStage + "_preforward";
         ret.declarations += String.format("logic %s;\n", wireName_dhInAddrStage_preforward);
-        // add a WrFlush signal (equal to the wrPC_valid signal) as an output with aux != 0
-        // StallFlushDeqStrategy will collect this flush signal
+        // add a WrStall (equal to the wrPC_valid signal) as an output with aux != 0
+        // StallFlushDeqStrategy will collect this stall signal
         ret.outputs.add(
             new NodeInstanceDesc(new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.REGULAR, bNodes.WrStall, issueStage, "", auxRead),
                                  wireName_dhInAddrStage, ExpressionType.WireName));
@@ -606,8 +626,7 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       }
 
       NodeInstanceDesc.Key nodeKey_readInFirstIssueStage =
-          new NodeInstanceDesc.Key(Purpose.REGULAR, readGroupEntry.readKey().getNode(),
-                                  regfile.issueFront.asList().get(0), readGroupEntry.readKey().getISAX());
+          new NodeInstanceDesc.Key(Purpose.REGULAR, readGroupEntry.readKey().getNode(), issueStages_expanded.get(0), readGroupEntry.readKey().getISAX());
       String wireName_readInIssueStage = nodeKey_readInFirstIssueStage.toString(false) + "_s";
       ret.declarations += String.format("logic [%d-1:0] %s;\n", regfile.width, wireName_readInIssueStage);
       ret.outputs.add(new NodeInstanceDesc(nodeKey_readInFirstIssueStage, wireName_readInIssueStage, ExpressionType.WireName));
@@ -618,7 +637,7 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       //Bitmap wire specifying if the selected read is from stage I but stalls due to DH.
       // -> is also 0 for stalls from resource conflicts.
       String wireName_readIsPrimaryDH = makeRegModuleSignalName(regfile.regName, "primaryDH", iRead); //(not a regfile module pin)
-      ret.declarations += String.format("logic [%d-1:0] %s;\n", issueStages.size(), wireName_readIsPrimaryDH);
+      ret.declarations += String.format("logic [%d-1:0] %s;\n", issueStages_expanded.size(), wireName_readIsPrimaryDH);
 
       String readLogic = "";
       readLogic += "always_comb begin\n";
@@ -627,14 +646,14 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       readLogic += tab + String.format("%s = 0;\n", makeRegModuleSignalName(regfile.regName, rSignal_re, iRead));
       if (elements > 1)
         readLogic += tab + tab + String.format("%s = 'x;\n", makeRegModuleSignalName(regfile.regName, rSignal_raddr, iRead));
-      for (PipelineStage issueStage : regfile.issueFront.asList())
+      for (PipelineStage issueStage : issueStages_expanded)
         readLogic += tab + String.format("%s_preforward = 0;\n", utils.getWireName_dhInIssueStage(iRead, issueStage));
       readLogic += tab + String.format("%s = '0;\n", wireName_readIsPrimaryDH);
 
-      String[] stageReadAddrExpr = new String[issueStages.size()];
+      String[] stageReadAddrExpr = new String[issueStages_expanded.size()];
       //The read port can be used from several issue stages (only one at a time).
-      for (int iIssueStage = 0; iIssueStage < issueStages.size(); ++iIssueStage) {
-        PipelineStage issueStage = issueStages.get(iIssueStage);
+      for (int iIssueStage = 0; iIssueStage < issueStages_expanded.size(); ++iIssueStage) {
+        PipelineStage issueStage = issueStages_expanded.get(iIssueStage);
         //if (specificIssueStageOnly && issueStage != requestedReadKey.getStage())
         //  continue;
 
@@ -661,8 +680,6 @@ public class SCALStateStrategy extends MultiNodeStrategy {
             issueStage,
             readGroupEntry.readKey().getISAX()));
 
-        //TODO: Detect hazards with regfile writes from another issue stage.
-
         readLogic += tab + "if (" + rdRegAddrValidExpr + ") begin\n";
         readLogic += tab + tab + "if (!" + makeRegModuleSignalName(regfile.regName, rSignal_re, iRead) + ") begin\n";
         readLogic += tab + tab + tab + String.format("%s = 1;\n", makeRegModuleSignalName(regfile.regName, rSignal_re, iRead));
@@ -687,8 +704,9 @@ public class SCALStateStrategy extends MultiNodeStrategy {
               %s = %s;
               %s
           """.formatted(wireName_readInIssueStage, wireName_readInIssueStage_preforward,
-                        issueStages.stream().map(issueStage -> "%1$s = %1$s_preforward;\n"
-                                                               .formatted(utils.getWireName_dhInIssueStage(iRead_, issueStage)))
+                        issueStages_expanded.stream().map(issueStage ->
+                                                              "%1$s = %1$s_preforward;\n"
+                                                              .formatted(utils.getWireName_dhInIssueStage(iRead_, issueStage)))
                                             .reduce((a,b)->a+b).orElseThrow());
 
       if (!readGroupEntry.disableForwarding) {
@@ -710,14 +728,25 @@ public class SCALStateStrategy extends MultiNodeStrategy {
                     %3$s = %2$s;%4$s
                 end
             """.formatted(wireName_forwardValid, wireName_forwardData, wireName_readInIssueStage,
-                          IntStream.range(0,issueStages.size()).mapToObj(iStage->
+                          IntStream.range(0,issueStages_expanded.size()).mapToObj(iStage->
                             "\n"+tab+tab+"if (%s[%d]) %s = 1'b0;".formatted(
                               wireName_readIsPrimaryDH, iStage,
-                              utils.getWireName_dhInIssueStage(iRead_, issueStages.get(iStage)))
+                              utils.getWireName_dhInIssueStage(iRead_, issueStages_expanded.get(iStage)))
                           ).reduce((a,b)->a+b).orElse(""));
       }
-      for (int iIssueStage = 0; iIssueStage < issueStages.size(); ++iIssueStage) {
-        PipelineStage issueStage = issueStages.get(iIssueStage);
+      for (int iIssueStage = 0; iIssueStage < issueStages_expanded.size(); ++iIssueStage) {
+        PipelineStage issueStage = issueStages_expanded.get(iIssueStage);
+        if (iIssueStage > 0) {
+          // If there is a parallel write in an earlier Issue stage / port, set the DH flag.
+          if (!issueStage.getTags().contains(StageTag.InOrder)) {
+            // The InOrder assumption is also used in the logic that sets getWireName_AnyWrIssue
+            logger.warn("SCALStateStrategy: Parallel DH detection assumes {} ports to be InOrder (flag missing for {})",
+                        issueStage.getMultiportBase().getName(), issueStage.getName());
+          }
+          readLogic += tab+"if (%s) %s = 1'b1;\n".formatted(
+                               utils.getWireName_AnyWrIssue(issueStages_expanded.get(iIssueStage-1)),
+                               utils.getWireName_dhInIssueStage(iRead_, issueStage));
+        }
 
         // Forward early write -> read from current instruction.
         //  -> Early writes wander through the pipeline alongside an instruction.
@@ -822,6 +851,7 @@ public class SCALStateStrategy extends MultiNodeStrategy {
 
     //Apply the commit handlers.
     for (CommitHandler commitHandler : regfile.unique_commit_handlers) {
+      commitHandler.buildPost(registry, ret);
       for (var writeToCond : commitHandler.getWriteToBackingConds()) {
         int iPort = writeToCond.iPort;
         String wrDataLines = "";
@@ -841,7 +871,6 @@ public class SCALStateStrategy extends MultiNodeStrategy {
         wrDataLines += "end\n";
         ret.logic += wrDataLines;
       }
-      commitHandler.buildPost(registry, ret);
     }
 
     //Apply read forwards (if any).
@@ -876,6 +905,14 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       ret.logic += forwardToLogic;
     }
 
+    // Prepare logic for 'any write-issue up until issueStage/port X'.
+    String anyWrIssueLogic = "always_comb begin\n";
+    for (PipelineStage issueStage : issueStages_expanded) {
+      String anyWrIssueWire = utils.getWireName_AnyWrIssue(issueStage);
+      ret.declarations += "logic %s;\n".formatted(anyWrIssueWire);
+      anyWrIssueLogic += tab + "%s = 1'b0;\n".formatted(anyWrIssueWire);
+    }
+
     // Write issue logic
     for (int iWriteNode = 0; iWriteNode < utils.writeNodes.size(); ++iWriteNode) {
       if (auxWrites.size() <= iWriteNode)
@@ -896,14 +933,14 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       // Check if there is a write during the issue stage.
       // -> Only the targeted issue stage will need the associated logic.
       int[] tmp_writeInIssuePorts =
-          IntStream.of(writePorts).filter(iPort -> regfile.issueFront.contains(regfile.writeback_writes.get(iPort).getStage())).toArray();
+          IntStream.of(writePorts).filter(iPort -> regfile.issueFront.isAround(regfile.writeback_writes.get(iPort).getStage())).toArray();
       Optional<NodeInstanceDesc.Key> specificIssueKey_opt =
           tmp_writeInIssuePorts.length == 1 ? Optional.of(regfile.writeback_writes.get(tmp_writeInIssuePorts[0])) : Optional.empty();
       String isNotAnImmediateWriteCond = "1";
       if (specificIssueKey_opt.isPresent()
-          && (specificIssueKey_opt.get().getStage().getTags().contains(StageTag.Commit)
-             || specificIssueKey_opt.get().getStage().getNext().stream().allMatch(successor -> successor.getContinuous()
-                                                                                               && successor.getTags().contains(StageTag.Commit)))) {
+          && (specificIssueKey_opt.get().getStage().getMultiportBase().getTags().contains(StageTag.Commit)
+             || specificIssueKey_opt.get().getStage().getMultiportBase().getNext().stream().allMatch(
+                 successor -> successor.getContinuous() && successor.getTags().contains(StageTag.Commit)))) {
         // -> Limit 'write in issue' if we know it also commits in the stage.
         //TODO: ResetDirtyCond entries should be applied after emitting the 'dirty <= 1' logic. 
         isNotAnImmediateWriteCond =
@@ -920,21 +957,39 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       }
 
       String addrValidWire = utils.getWireName_WrIssue_addr_valid(iWriteNode);
-      String addrWire = utils.getWireName_WrIssue_addr(iWriteNode);
-      String wrIssueAddrLines = "always_comb begin\n";
       ret.declarations += String.format("logic %s;\n", addrValidWire);
+      String addrWire = utils.getWireName_WrIssue_addr(iWriteNode);
       if (elements > 1)
         ret.declarations += String.format("logic [%d-1:0] %s;\n", addrSize, addrWire);
-      wrIssueAddrLines += tab + String.format("%s = 0;\n", addrValidWire);
+      for (int iIssueStage = 0; iIssueStage < issueStages_expanded.size(); ++iIssueStage) {
+        ret.declarations += String.format("logic %s_interm%d;\n", addrValidWire, iIssueStage);
+        if (elements > 1)
+          ret.declarations += String.format("logic [%d-1:0] %s_interm%d;\n", addrSize, addrValidWire, iIssueStage);
+      }
+      ret.logic += "assign %1$s = %1$s_interm%2$d;\n".formatted(addrValidWire, issueStages_expanded.size()-1);
       if (elements > 1)
-        wrIssueAddrLines += tab + String.format("%s = 'x;\n", addrWire);
+        ret.logic += "assign %1$s = %1$s_interm%2$d;\n".formatted(addrWire, issueStages_expanded.size()-1);
 
-      boolean nextIsElseif = false;
-      for (PipelineStage issueStage : regfile.issueFront.asList()) {
+      for (int iIssueStage = 0; iIssueStage < issueStages_expanded.size(); ++iIssueStage) {
+        String wrIssueAddrLines = "always_comb begin\n";
+        if (iIssueStage == 0) {
+          wrIssueAddrLines += tab + "%s_interm0 = 1'b0;\n".formatted(addrValidWire);
+          if (elements > 1)
+            wrIssueAddrLines += tab + String.format("%s_interm0 = 'x;\n", addrWire);
+        }
+        else {
+          wrIssueAddrLines += tab + "%1$s_interm%2$d = %1$s_interm%3$d;\n".formatted(addrValidWire, iIssueStage, iIssueStage - 1);
+          if (elements > 1)
+            wrIssueAddrLines += tab + "%1$s_interm%2$d = %1$s_interm%3$d;\n".formatted(addrWire, iIssueStage, iIssueStage - 1);
+        }
+
+        PipelineStage issueStage = issueStages_expanded.get(iIssueStage);
         String addrValid_perstage_wire = utils.getWireName_WrIssue_addr_valid_perstage(iWriteNode, issueStage);
         ret.declarations += String.format("logic %s;\n", addrValid_perstage_wire);
 
         if (specificIssueKey_opt.isPresent() && issueStage != specificIssueKey_opt.get().getStage()) {
+          wrIssueAddrLines += "end\n";
+          ret.logic += wrIssueAddrLines;
           ret.logic += String.format("assign %s = 0;\n", addrValid_perstage_wire);
           continue;
         }
@@ -948,6 +1003,15 @@ public class SCALStateStrategy extends MultiNodeStrategy {
                                 : "0";
         String wrAddrValidExpr = registry.lookupExpressionRequired(
             new NodeInstanceDesc.Key(bNodes.GetAdjSCAIEVNode(nonspawnWriteNode, AdjacentNode.addrReq).orElseThrow(), issueStage, nodeISAX));
+        // Mark this and all following issue stages as writing to the regfile.
+        // (used for RAW hazard detection if following issue stages wants to read)
+        // Note: Does not indicate a true hazard as-is if the regfile has multiple registers (need to check addresses).
+        anyWrIssueLogic += """
+                    if (%s) begin
+                    %send
+                """.formatted(wrAddrValidExpr,
+                              issueStages_expanded.stream().skip(iIssueStage)
+                                  .map(st->tab+"%s = 1'b1;\n".formatted(utils.getWireName_AnyWrIssue(st))).reduce((a,b)->a+b).get());
 
         ret.logic += String.format("assign %s = %s;\n", addrValid_perstage_wire, wrAddrValidExpr);
 
@@ -955,25 +1019,30 @@ public class SCALStateStrategy extends MultiNodeStrategy {
         {
           // Stall the address stage if a new write has an address marked dirty, or if it conflicts with a parallel issue.
           ret.declarations += String.format("logic %s;\n", wireName_dhInAddrStage);
-          wrIssueAddrLines += tab + String.format("%s = %s && %s%s[%s]%s;\n",
-                                                  wireName_dhInAddrStage,
-                                                  wrAddrValidExpr,
-                                                  nextIsElseif ? "(" : "",
-                                                  dirtyRegName, wrAddrExpr,
-                                                  nextIsElseif ? " || %s)".formatted(addrValidWire) : "");
+          ret.logic += String.format("assign %s = %s && %s%s[%s]%s;\n",
+                                     wireName_dhInAddrStage,
+                                     wrAddrValidExpr,
+                                     (iIssueStage > 0) ? "(" : "",
+                                     dirtyRegName, wrAddrExpr,
+                                     (iIssueStage > 0) ? " || %s_interm%d)".formatted(addrValidWire, iIssueStage - 1) : "");
           ret.outputs.add(
               new NodeInstanceDesc(new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.REGULAR, bNodes.WrStall, issueStage, "", auxWrite),
                                    wireName_dhInAddrStage, ExpressionType.WireName));
           registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.WrStall, issueStage, ""));
         }
 
-        wrIssueAddrLines += tab + String.format("if (!%s && %s && !(%s) && !(%s)) begin\n",
-                                                addrValidWire, wrAddrValidExpr, stallAddrStageCond, flushAddrStageCond);
-        wrIssueAddrLines += tab + tab + String.format("%s = 1;\n", addrValidWire);
+        wrIssueAddrLines += tab + String.format("if (%s%s && !(%s) && !(%s)) begin\n",
+                                                (iIssueStage > 0) ? "!%s_interm%d && ".formatted(addrValidWire, iIssueStage-1) : "",
+                                                wrAddrValidExpr,
+                                                stallAddrStageCond,
+                                                flushAddrStageCond);
+        wrIssueAddrLines += tab + tab + String.format("%s_interm%d = 1'b1;\n", addrValidWire, iIssueStage);
         if (elements > 1)
           wrIssueAddrLines += tab + tab + String.format("%s = %s;\n", addrWire, wrAddrExpr);
         wrIssueAddrLines += tab + "end\n";
-        nextIsElseif = true;
+
+        wrIssueAddrLines += "end\n";
+        ret.logic += wrIssueAddrLines;
       }
 
       wrDirtyLines += tab + tab + String.format("if (%s) begin\n", addrValidWire);
@@ -983,10 +1052,10 @@ public class SCALStateStrategy extends MultiNodeStrategy {
         wrDirtyLines += tab + tab + tab + String.format("%s <= %s;\n", dirtyRegName, isNotAnImmediateWriteCond);
       wrDirtyLines += earlyrw.earlyDirtyFFSetLogic(registry, regfile, commitWriteNode, addrWire, tab + tab + tab);
       wrDirtyLines += tab + tab + "end\n";
-
-      wrIssueAddrLines += "end\n";
-      ret.logic += wrIssueAddrLines;
     }
+
+    anyWrIssueLogic += "end\n";
+    ret.logic += anyWrIssueLogic;
 
     for (CommitHandler commitHandler : regfile.unique_commit_handlers) {
       for (var resetDirtyCond : commitHandler.getResetDirtyConds()) {
@@ -1080,11 +1149,18 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       if (regfile == null)
         return false;
       boolean implementWithPipeliner = false;
-      if (!regfile.issueFront.isAroundOrAfter(nodeKey.getStage(), false) && !nodeKey.getNode().isSpawn() && isLast) {
+      if (bNodes.getPortName(nodeKey.getNode()).isEmpty() && nodeKey.getISAX().isEmpty()) {
+        // Don't pipeline any register node without a port name and not associated with an ISAX
+        // -> such nodes should only exist as semi-coupled WrCUSTOMREG results
+      }
+      else if (nodeKey.getNode().getAdj() == AdjacentNode.instrID) {
+        // Don't pipeline instrID adjacents, always implement it from RdIssueID
+      }
+      else if (!regfile.issueFront.isAroundOrAfter(nodeKey.getStage(), false) && !nodeKey.getNode().isSpawn() && isLast) {
         // Pipeline the read data or read/write address
         implementWithPipeliner = true;
       }
-      if (nodeKey.getNode().name.startsWith(BNode.wrPrefix) // && regfile.commitFront.isAroundOrAfter(nodeKey.getStage(), false)
+      else if (nodeKey.getNode().name.startsWith(BNode.wrPrefix) // && regfile.commitFront.isAroundOrAfter(nodeKey.getStage(), false)
           && regfile.earlyWrites.stream().anyMatch(
                  earlyWriteKey
                  -> earlyWriteKey.getNode().equals(baseNode) &&
@@ -1098,10 +1174,10 @@ public class SCALStateStrategy extends MultiNodeStrategy {
       }
       if (implementWithPipeliner) {
         boolean resetToZero = nodeKey.getNode().isValidNode() || nodeKey.getNode().getAdj() == AdjacentNode.cancelReq;
-        var pipelinerMapKey = new PipelineStrategyKey(nodeKey.getStage(), resetToZero);
+        var pipelinerMapKey = new PipelineStrategyKey(nodeKey.getStage().getMultiportBase(), resetToZero);
         MultiNodeStrategy pipelineStrategy = pipelineStrategyByPipetoStage.get(pipelinerMapKey);
         if (pipelineStrategy == null && nodeKey.getPurpose().matches(Purpose.PIPEDIN)) { //Create a new one
-          var pipeliner = strategyBuilders.buildNodeRegPipelineStrategy(language, bNodes, new PipelineFront(nodeKey.getStage()),
+          var pipeliner = strategyBuilders.buildNodeRegPipelineStrategy(language, bNodes, new PipelineFront(nodeKey.getStage().getMultiportBase()),
                                                                         false, false, pipelinerMapKey.resetToZero,
                                                                         _nodeKey -> true, _nodeKey -> false, MultiNodeStrategy.noneStrategy,
                                                                         false);
@@ -1121,57 +1197,107 @@ public class SCALStateStrategy extends MultiNodeStrategy {
 
     // From the present CustomReg_addr nodes, select those within the allowed bounds (constrained by RdInstr availability and
     // CustReg_addr_constraint).
-    PipelineFront rdInstrFront = core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdInstr).GetEarliest());
+    PipelineFront rdInstrFront = core.translateStageScheduleNumber(core.getNodes().get(bNodes.RdInstr).getEarliest());
     var addrPipelineFrontStream =
-        op_stage_instr.getOrDefault(addrNode, new HashMap<>()).keySet().stream().filter(stage -> rdInstrFront.isAroundOrBefore(stage, false));
-    var coreNode_CustRegAddr = core.GetNodes().get(bNodes.CustReg_addr_constraint);
+        op_stage_instr.getOrDefault(addrNode, new HashMap<>()).keySet().stream()
+            .filter(stage -> stage.getKind() != StageKind.ISAXMux && rdInstrFront.isAroundOrBefore(stage, false));
+    var coreNode_CustRegAddr = core.getNodes().get(bNodes.CustReg_addr_constraint);
     if (coreNode_CustRegAddr != null) {
-      PipelineFront regAddrEarlyFront = core.TranslateStageScheduleNumber(coreNode_CustRegAddr.GetEarliest());
-      PipelineFront regAddrLateFront = core.TranslateStageScheduleNumber(coreNode_CustRegAddr.GetLatest());
+      PipelineFront regAddrEarlyFront = core.translateStageScheduleNumber(coreNode_CustRegAddr.getEarliest());
+      PipelineFront regAddrLateFront = core.translateStageScheduleNumber(coreNode_CustRegAddr.getLatest());
       addrPipelineFrontStream = addrPipelineFrontStream.filter(
           stage -> regAddrEarlyFront.isAroundOrBefore(stage, false) && regAddrLateFront.isAroundOrAfter(stage, false));
     }
     final PipelineFront addrPipelineFront = new PipelineFront(addrPipelineFrontStream);
+    final PipelineFront addrPipelineFrontBase = new PipelineFront(addrPipelineFront.asList().stream()
+                                                                      .flatMap(st->Stream.of(st, st.getMultiportBase())).distinct());
 
     if (nodeKey.getPurpose().matches(Purpose.MARKER_CUSTOM_REG)) {
-      if (addrPipelineFront.asList().isEmpty()) {
+      if (addrPipelineFrontBase.asList().isEmpty()) {
         logger.error("Custom registers: Found no address/issue stage for {}", baseNode.name);
         return true;
       }
-      PipelineFront commitFront = new PipelineFront(core.GetRootStage().getAllChildren().filter(
-          stage -> stage.getTags().contains(StageTag.Commit) && addrPipelineFront.isAroundOrBefore(stage, false)));
+      PipelineFront commitFront = new PipelineFront(core.getRootStage().getAllChildren().filter(
+          stage -> stage.getTags().contains(StageTag.Commit) && addrPipelineFrontBase.isAroundOrBefore(stage, false)));
       if (commitFront.asList().isEmpty()) {
-        var coreNode = core.GetNodes().get(bNodes.WrCustReg_data_constraint);
+        var coreNode = core.getNodes().get(bNodes.WrCustReg_data_constraint);
         if (coreNode == null) {
-          logger.error("Custom registers: Found no viable writeback stage constraint for core {}", core.GetName());
+          logger.error("Custom registers: Found no viable writeback stage constraint for core {}", core.getName());
           return true;
         }
-        PipelineFront earliestFront = core.TranslateStageScheduleNumber(coreNode.GetEarliest());
-        PipelineFront latestFront = core.TranslateStageScheduleNumber(coreNode.GetLatest());
-        commitFront = new PipelineFront(core.GetRootStage().getAllChildren().filter(
+        PipelineFront earliestFront = core.translateStageScheduleNumber(coreNode.getEarliest());
+        PipelineFront latestFront = core.translateStageScheduleNumber(coreNode.getLatest());
+        if (coreNode.getLatest().tryGetAsFront().isEmpty() && latestFront.asList().size() > 0
+            && latestFront.asList().stream().allMatch(st->st.getTags().contains(StageTag.Execute))) {
+          // Make sure we also list any CoreInternal stages.
+          latestFront = new PipelineFront(core.getRootStage().getChildrenByStagePos(coreNode.getLatest().asInt())
+                                              .filter(st -> st.getTags().contains(StageTag.Execute)));
+        }
+        PipelineFront latestFront_ = latestFront;
+        commitFront = new PipelineFront(core.getRootStage().getAllChildren().filter(
                                         stage -> earliestFront.isAroundOrBefore(stage, false)
-                                                 && (latestFront.isAroundOrAfter(stage, false)
+                                                 && (latestFront_.isAroundOrAfter(stage, false)
                                                      || stage.getKind() == StageKind.Decoupled)
-                                                 && addrPipelineFront.isAroundOrBefore(stage, false)));
+                                                 && addrPipelineFrontBase.isAroundOrBefore(stage, false)));
       }
+      commitFront = new PipelineFront(SCALUtil.flatmapIntoPorts(commitFront.asList().stream()));
       if (commitFront.asList().isEmpty()) {
         logger.error("Custom registers: Found no writeback stages for {}", baseNode.name);
         return true;
       }
       boolean isRead = nodeKey.getNode().name.startsWith("Rd");
-      List<NodeInstanceDesc.Key> opKeys = op_stage_instr.getOrDefault(nodeKey.getNode(), new HashMap<>())
-                                              .entrySet()
-                                              .stream()
-                                              .flatMap(stage_instr
-                                                       -> stage_instr.getValue().stream().map(
-                                                           isax -> new NodeInstanceDesc.Key(nodeKey.getNode(), stage_instr.getKey(), isax)))
-                                              .toList();
+      List<NodeInstanceDesc.Key> opKeys =
+          op_stage_instr.getOrDefault(nodeKey.getNode(), new HashMap<>())
+              .entrySet()
+              .stream()
+              .flatMap(stage_instr -> {
+                if (stage_instr.getKey().getKind() == StageKind.ISAXMux) {
+                  // Replicate an ISAX request node across all ports.
+                  // -> The node can be used in any port stage, depending on the presence of an ISAX instruction.
+                  // -> Note: Actually, the ISAX can only be handled in one port stage at a time.
+                  //          For now, even if this is the only ISAX with this node,
+                  //           one regfile port will be instantiated per port stage.
+                  return Stream.concat(Stream.of(stage_instr),
+                      SCALUtil.flatmapIntoPorts(Stream.of(stage_instr.getKey().getMultiportBase()))
+                              .map(stage -> Map.entry(stage, stage_instr.getValue())));
+                }
+                return Stream.of(stage_instr);
+              })
+              .flatMap(stage_instr -> {
+                PipelineStage stage = stage_instr.getKey();
+                if (nodeKey.getNode().isSpawn() &&
+                    stage.getKind() != StageKind.Decoupled) {
+                  // Filter out semi-coupled spawn (already handled as pipeline-coupled op)
+                  return Stream.empty();
+                }
+                if (isRead && stage.getKind() == StageKind.Sub) {
+                  // Translate reads required in sub-pipeline stages to the parent stage
+                  // -> Read before entering the sub-pipeline, then pipeline the result
+                  stage = stage.getParent().orElseThrow();
+                }
+                final PipelineStage stage_ = stage;
+                var ret = stage_instr.getValue().stream().map(
+                           isax -> new NodeInstanceDesc.Key(nodeKey.getNode(), stage_, isax));
+                if (stage.getKind() == StageKind.Core
+                    && stage.getMultiportBase().getKind() == StageKind.CoreMultiport
+                    && op_stage_instr.get(nodeKey.getNode()).containsKey(
+                        stage.getMultiportBase().getChildren().stream()
+                            .filter(st->st.getKind()==StageKind.ISAXMux)
+                            .findAny().orElse(null))) {
+                  // For now: If there is a neighbouring ISAXMux stage with this operation,
+                  //  ignore all non-ISAX keys.
+                  // -> The previous flatMap call already replicated those across ports.
+                  ret = ret.filter(k->!k.getISAX().isEmpty());
+                }
+                return ret;
+              })
+              .toList();
       RegfileInfo regfile = configureRegfile(regName, addrPipelineFront, commitFront, isRead ? opKeys : new ArrayList<>(),
                                              isRead ? new ArrayList<>() : opKeys, baseNode.size, baseNode.elements);
       out.accept(NodeLogicBuilder.fromFunction("SCALStateBuilder_Marker(" + nodeKey.toString() + ")", registry -> {
         var ret = new NodeLogicBlock();
         // Request register logic implementation.
-        registry.lookupExpressionRequired(new NodeInstanceDesc.Key(ReglogicImplPurpose, new SCAIEVNode(regName), core.GetRootStage(), ""));
+        registry.lookupExpressionRequired(new NodeInstanceDesc.Key(ReglogicImplPurpose, new SCAIEVNode(regName), core.getRootStage(), ""));
 
         ret.outputs.add(new NodeInstanceDesc(NodeInstanceDesc.Key.keyWithPurpose(nodeKey, Purpose.MARKER_CUSTOM_REG), "",
                                              ExpressionType.AnyExpression));

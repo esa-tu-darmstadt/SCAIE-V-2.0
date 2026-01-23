@@ -60,7 +60,7 @@ public class DefaultRdwrInStageStrategy extends MultiNodeStrategy {
     SCAIEVNode baseNode = node.isAdj() ? bNodes.GetSCAIEVNode(node.nameParentNode) : node;
 
     boolean coreSupportsNodeInStage =
-        Optional.ofNullable(core.GetNodes().get(baseNode)).map(coreNode -> core.StageIsInRange(coreNode, stage)).orElse(false);
+        Optional.ofNullable(core.getNodes().get(baseNode)).map(coreNode -> core.stageIsInRange(coreNode, stage)).orElse(false);
     //		boolean coreSupportsDeqInstrInStage = Optional.ofNullable(core.GetNodes().get(bNodes.WrDeqInstr))
     //				.map(coreNode -> core.StageIsInRange(coreNode, stage)).orElse(false);
 
@@ -231,7 +231,8 @@ public class DefaultRdwrInStageStrategy extends MultiNodeStrategy {
     var nodeKeyIter = nodeKeys.iterator();
     while (nodeKeyIter.hasNext()) {
       NodeInstanceDesc.Key nodeKey = nodeKeyIter.next();
-      boolean isCoreStage = nodeKey.getStage().getKind() == StageKind.Core || nodeKey.getStage().getKind() == StageKind.CoreInternal;
+      boolean isCoreStage = nodeKey.getStage().getKind() == StageKind.Core
+          || nodeKey.getStage().getKind() == StageKind.CoreInternal;
       if (!nodeKey.getISAX().isEmpty() || nodeKey.getAux() != 0)
         continue;
       if (isCoreStage) {

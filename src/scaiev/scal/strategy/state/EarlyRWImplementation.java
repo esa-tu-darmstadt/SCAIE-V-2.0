@@ -16,6 +16,7 @@ import scaiev.pipeline.PipelineStage;
 import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeRegistryRO;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.NodeInstanceDesc.ExpressionType;
 import scaiev.scal.strategy.StrategyBuilders;
 import scaiev.scal.strategy.state.SCALStateStrategy.RegfileInfo;
@@ -145,7 +146,7 @@ public class EarlyRWImplementation {
       // This flushes out any possible RaW hazards with early reads.
       // Note: If there are several issue stages (-> multi-issue core),
       //  the WrRerunNext implementation of the core may have to flush concurrent issues depending on the logical instruction ordering.
-      for (PipelineStage issueStage : regfile.issueFront.asList()) {
+      for (PipelineStage issueStage : SCALUtil.flatmapIntoPorts(regfile.issueFront.asList().stream()).toList()) {
         String anyWriteInitiatedExpr =
             regfile.writeback_writes.stream()
                 .filter(commitWriteKey -> rerunPreissueOn(regfile, commitWriteKey.getNode()))

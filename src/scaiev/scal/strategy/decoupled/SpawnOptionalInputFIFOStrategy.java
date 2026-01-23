@@ -26,6 +26,7 @@ import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.NodeRegistryRO;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.decoupled.DecoupledStandardModulesStrategy.FIFOFeature;
 import scaiev.ui.SCAIEVConfig;
@@ -217,6 +218,7 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
       SCAIEVNode validResp = bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.validHandshakeResp)
                                .or(() -> bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.validResp)).get();
       Optional<SCAIEVNode> cancelReq_opt = bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.cancelReq);
+      Optional<SCAIEVNode> cancelResp_opt = bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.cancelResp);
       String validReqVal = registry.lookupExpressionRequired(
           new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN_NONLATCH, validReq, spawnStage, ISAX));
       String validReqRegVal = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.REGISTERED, validReq, spawnStage, ISAX));
@@ -225,6 +227,10 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
           cancelReq_opt.map(cancelReq
                             -> registry.lookupExpressionRequired(
                                 new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN_NONLATCH, cancelReq, spawnStage, ISAX)));
+      Optional<String> cancelRespVal_opt =
+          SCALUtil.hasCancelResp(baseNode, spawnStage)
+            ? cancelResp_opt.map(cancelResp -> registry.lookupExpressionRequired(new NodeInstanceDesc.Key(cancelResp, spawnStage, ISAX)))
+            : Optional.empty();
 
       NodeInstanceDesc isaxValidCounterInst =
           registry.lookupRequired(new NodeInstanceDesc.Key(SpawnRdIValidStrategy.ISAXValidCounter, spawnStage, ISAX));
@@ -336,7 +342,7 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
           DecoupledStandardModulesStrategy.makeFIFONode(FIFOFeature.Level,
                                                         !mustBeInorder ? FIFOFeature.WriteFront : FIFOFeature.NotAFeature,
                                                         hasReadahead ? FIFOFeature.Readahead : FIFOFeature.NotAFeature),
-          core.GetRootStage(), ""));
+          core.getRootStage(), ""));
       final String tab = language.tab;
       String clearCond = (spawnStage.getKind() == StageKind.Decoupled)
                              ? registry.lookupExpressionRequired(
@@ -389,7 +395,9 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
 
       // Readahead condition
       if (hasReadahead) {
-        logicBlock.logic += String.format("assign %s = %s;\n", fifo_readahead_wireName, validRespVal);
+        logicBlock.logic += String.format("assign %s = %s%s;\n",
+                                          fifo_readahead_wireName,
+                                          validRespVal, cancelRespVal_opt.map(s->" || "+s).orElse(""));
       }
 
       //Register the 'is confirmed' condition on the currently supplied request, taking FIFO deq into consideration.
@@ -431,7 +439,7 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
       logicBlock.declarations += "logic %s;\n".formatted(reqIsRegistered_regName);
       logicBlock.declarations += "logic %s;\n".formatted(reqIsRegisteredCancel_regName);
       logicBlock.declarations += "logic %s;\n".formatted(reqIsCompleting_wireName);
-      logicBlock.logic += "assign %s = %s;\n".formatted(reqIsCompleting_wireName, validRespVal);
+      logicBlock.logic += "assign %s = %s%s;\n".formatted(reqIsCompleting_wireName, validRespVal, cancelRespVal_opt.map(s->" || "+s).orElse(""));
       logicBlock.declarations += "logic %s;\n".formatted(reqIsRegistering_wireName);
       logicBlock.declarations += "logic %s;\n".formatted(reqIsRegisteringCancel_wireName);
       //Logic for the 'registered' tracking regs (set and reset based on the various wires)
@@ -487,8 +495,16 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
           .map(a->a.outDest).reduce((a,b)->a+" || "+b)
           .orElse("1'b0");
 
-      //Dequeue from FIFO if cancelled (i.e., no registered validReq); dequeue if we got a response.
-      String mayPushRequestCond = String.format("!%s || %s", validReqRegVal, validRespVal);
+      String mayPushRequestCond;
+      if (cancelRespVal_opt.isPresent()) {
+        //Dequeue from FIFO if we got a response.
+        String cancelReqRegVal = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.REGISTERED, cancelReq_opt.get(), spawnStage, ISAX));
+        mayPushRequestCond = String.format("(%s && %s) || (%s && %s)", validReqRegVal, validRespVal, cancelReqRegVal, cancelRespVal_opt.get());
+      }
+      else {
+        //Dequeue from FIFO if cancelled (i.e., no registered validReq); dequeue if we got a response.
+        mayPushRequestCond = String.format("!%s || %s", validReqRegVal, validRespVal);
+      }
 
       readLogic += String.format("if (%s) begin\n", fifo_notEmpty_wireName);
       readLogic += tab + "//Prefer requests already stored in the FIFO;\n";
@@ -497,12 +513,14 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
       if (hasReadahead) {
         // We can implicitly read either from the front of the FIFO or the element after the front (-> readahead FIFO feature).
         //-> If the request is ending AND the FIFO has no other element yet, pass through the new request instead.
-        readLogic += tab + String.format("if (!%s || %s != %d'd1) begin\n", validRespVal, fifo_level_wireName, fifoLevelNode.size);
+        readLogic += tab + String.format("if (!%s%s || %s != %d'd1) begin\n",
+                                         validRespVal, cancelRespVal_opt.map(s->" && !"+s).orElse(""),
+                                         fifo_level_wireName, fifoLevelNode.size);
       } else {
         // We can only read from the front of the FIFO,
         //  i.e. there is no way to combinationally dequeue and read the request after that from FIFO.
         // -> If the request is ending and the FIFO, pass through the new request instead.
-        readLogic += tab + String.format("if (!%s) begin\n", validRespVal);
+        readLogic += tab + String.format("if (!%s%s) begin\n", validRespVal, cancelRespVal_opt.map(s->" && !"+s).orElse(""));
       }
       for (int iElem = fifoElements.size() - 1; iElem >= 0; --iElem) {
         var io = fifoElements.get(iElem);
@@ -523,7 +541,9 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
       //reading from FIFO, so do buffer the new request
       readLogic += tab + String.format("%s = 1'b0;\n", fifo_skipWrite_wireName);
       readLogic += tab + "end\n";
-      readLogic += tab + String.format("if (%s && %s != %d'd1) begin\n", validRespVal, fifo_level_wireName, fifoLevelNode.size);
+      readLogic += tab + String.format("if ((%s%s) && %s != %d'd1) begin\n",
+                                       validRespVal, cancelRespVal_opt.map(s->" || "+s).orElse(""),
+                                       fifo_level_wireName, fifoLevelNode.size);
       if (mustBeInorder) {
         // If there is another FIFO element, output it directly; else, pass through the new input.
         //  -> Needs ScaievFIFO support: read at wrap(read_ptr+1)
@@ -549,11 +569,21 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
       }
       readLogic += tab + "end\n";
 
-      if (hasReadahead && (isConfirmed_inst.isPresent() || isCancelled_inst.isPresent())) {
-        //If we apply commit tracking, conditionally delay readahead.
-        String stallRequestOnReadahead = nextIsConfirmed_inst.map(a->"!"+a.getExpressionWithParens()).orElse("1'b1");
-        readLogic += tab + "if (%s && %s) begin\n".formatted(fifo_readahead_wireName, stallRequestOnReadahead);
-        readLogic += tab + tab + "//Delay readahead if the next request is still pending commit confirmation.\n";
+      if (isConfirmed_inst.isPresent() || isCancelled_inst.isPresent()) {
+        //If we apply commit tracking, conditionally delay the current request.
+        String isUnapprovedReadCond = "!%s && !%s".formatted(isConfirmed_inst.map(a->a.getExpressionWithParens()).orElse("1'b1"),
+                                                             isCancelled_inst.map(a->a.getExpressionWithParens()).orElse("1'b1"));
+        Optional<String> isUnapprovedReadaheadCond = Optional.empty();
+        readLogic += tab + "// Check if the request from the FIFO is still pending commit confirmation.\n";
+        if (hasReadahead) {
+          //Delay readahead
+          String stallRequestOnReadahead = nextIsConfirmed_inst.map(a->"!"+a.getExpressionWithParens()).orElse("1'b1");
+          isUnapprovedReadaheadCond = Optional.of("%s && %s".formatted(fifo_readahead_wireName, stallRequestOnReadahead));
+          isUnapprovedReadCond += " && !%s".formatted(fifo_readahead_wireName);
+          readLogic += tab + "// Also check for commit confirmation during readahead.\n";
+        }
+        readLogic += tab + "if (%s%s) begin\n".formatted(isUnapprovedReadCond, isUnapprovedReadaheadCond.map(a->" || "+a).orElse(""));
+        readLogic += tab + tab + "// Suppress the request until we have the relevant commit confirmation.\n";
         if (validFifoIO.isPresent())
           readLogic += tab + tab + String.format("%s = 1'b0;\n", validFifoIO.get().outDest);
         if (cancelFifoIO.isPresent())
@@ -561,10 +591,13 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
         readLogic += tab + tab + String.format("%s = 1'b0;\n", fifo_skipWrite_wireName);
         readLogic += tab + "end\n";
       }
+
       //Note: The FIFO read logic ensures validReq=0 if cancelReq=1.
+
       readLogic += tab + "//Check if this is the first cycle the request is on the INPUTFIFO's output.\n";
-      readLogic += tab + String.format("if ((!%s && !%s || %s) && %s) begin\n",
-                                             reqIsRegistered_regName, reqIsRegisteredCancel_regName, validRespVal,
+      readLogic += tab + String.format("if ((!%s && !%s || %s%s) && (%s)) begin\n",
+                                             reqIsRegistered_regName, reqIsRegisteredCancel_regName,
+                                             validRespVal, cancelRespVal_opt.map(s->" || "+s).orElse(""),
                                              outgoingReqIsPresentCond);
       readLogic += tab + tab + String.format("%s = %s;\n", reqIsRegistering_wireName,
                                                    validFifoIO.map(a->a.outDest).orElse("1'b0"));
@@ -579,12 +612,13 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
       //Assign the read/pop condition if the FIFO is not empty.
       readLogic += String.format("if (%s) begin\n", fifo_notEmpty_wireName);
       String pushingRequestOrCancelCond = "(%s || %s) && (%s)".formatted(reqIsRegistered_regName, reqIsRegisteredCancel_regName, mayPushRequestCond);
-      if (cancelFifoIO.isPresent()) {
-        // When canceling, immediately pop from the FIFO (no need to / must not wait for validResp).
+      if (cancelFifoIO.isPresent() && !cancelRespVal_opt.isPresent()) {
+        // When canceling without handshake, immediately pop from the FIFO (no need to / must not wait for validResp).
         pushingRequestOrCancelCond += String.format(" || %s", cancelFifoIO.get().outDest);
       }
       if (isCancelled_inst.isPresent()) {
         // Same behavior for commit cancellation.
+        //DOES NOT SUPPORT cancelResp backpressure
         pushingRequestOrCancelCond += String.format(" || %s", isCancelled_inst.get().getExpressionWithParens());
       }
       readLogic += language.tab + String.format("%s = %s;\n", fifo_read_wireName, pushingRequestOrCancelCond);
@@ -598,7 +632,17 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
           readLogic += tab + String.format("%s = 1'b0;\n", io.outDest);
         }
       readLogic += "end\n";
+      if (cancelRespVal_opt.isPresent() && cancelFifoIO.isPresent()) {
+        readLogic += String.format("if (%s && !(%s)) begin\n", reqIsRegisteredCancel_regName, mayPushRequestCond);
+        readLogic += tab + "//Clear cancelReq if downstream has already received the pending request.\n";
+        readLogic += tab + "//cancelReq should only be set for one cycle per request.\n";
+        readLogic += tab + String.format("%s = 1'b0;\n", cancelFifoIO.get().outDest);
+        readLogic += "end\n";
+      }
       if (isCancelled_inst.isPresent()) {
+        if (cancelRespVal_opt.isPresent()) {
+          logger.error("Unsupported: %s does not support cancelResp backpressure after a commit cancellation.".formatted(fifoNameBase));
+        }
         //The commit of the current request is cancelled
         // -> set cancel tracking signal, clear outgoing validReq, set outgoing cancelReq.
         //However, if there currently is no request in the bypass-FIFO, nothing is to be done.
@@ -616,17 +660,7 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
       }
 
       logicBlock.logic += language.CreateInAlways(false, readLogic);
-
-      //// Compute outputs from FIFO
-      // String userOptValid = "";
-      // if(ISAXes.get(ISAX).GetFirstNode(node).HasAdjSig(AdjacentNode.validReq))
-      //	userOptValid = myLanguage.CreateFamNodeName(validReq, spawnStage, ISAX, false)+" && ";
-      // String FIFO_out = myLanguage.CreateLocalNodeName(validReq, spawnStage, ISAX) +" = "+userOptValid
-      // +myLanguage.CreateFamNodeName(validReq, spawnStage, ISAX, true)+ShiftmoduleSuffix+"; // Signals rest of logic valid spawn sig\n";
     }
-    // logic += "assign "+ myLanguage.CreateLocalNodeName(validReq, spawnStage, ISAX)+" =
-    // "+(nodeSched.HasAdjSig(validReq)?myLanguage.CreateFamNodeName(adjOperation, spawnStage, ISAX, false)+" && ":"")+
-    // myLanguage.CreateFamNodeName(adjOperation, spawnStage, ISAX,false)+ShiftmoduleSuffix+";\n";
   }
 
   private HashMap<String, List<SCAIEVNode>> builtToISAXNodeNameSet = new HashMap<>();
@@ -652,12 +686,7 @@ public class SpawnOptionalInputFIFOStrategy extends MultiNodeStrategy {
           ) {
         continue;
       }
-      //			if (nodeKey.getNode().isAdj()
-      //				&&
-      //! allISAXes.get(nodeKey.getISAX()).GetFirstNode(bNodes.GetSCAIEVNode(nodeKey.getNode().nameParentNode))
-      //				   .HasAdjSig(nodeKey.getNode().getAdj())
-      //				&& !op_stage_instr.getOrDefault(nodeKey.getNode(), new HashMap<>()).getOrDefault(nodeKey.getStage(),
-      // new HashSet<>()).contains(nodeKey.getISAX())) 				continue;
+
       if (/*!nodeKey.getNode().DefaultMandatoryAdjSig() && */ nodeKey.getNode().isInput) {
         //-> from ISAX
         // Do not build the same pin twice (using full name, as the ISAX does not care about node families)

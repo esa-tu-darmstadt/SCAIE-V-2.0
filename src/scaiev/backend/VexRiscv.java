@@ -2,6 +2,7 @@ package scaiev.backend;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -18,6 +19,7 @@ import scaiev.frontend.SCAIEVNode.AdjacentNode;
 import scaiev.frontend.SCAIEVNode.NodeTypeTag;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
+import scaiev.pipeline.PipelineStage.StageTag;
 import scaiev.pipeline.PipelineStage.StageKind;
 import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeLogicBuilder;
@@ -59,13 +61,13 @@ public class VexRiscv extends CoreBackend {
                       Core core, SCALBackendAPI scalAPI, BNode user_BNode) {
     super.Prepare(ISAXes, op_stage_instr, core, scalAPI, user_BNode);
     this.vex_core = core;
-    this.stages = core.GetRootStage().getAllChildren().filter(stage -> stage.getKind() != StageKind.CoreInternal).collect(Collectors.toList()).toArray(n -> new PipelineStage[n]);
+    this.stages = core.getRootStage().getAllChildren().filter(stage -> stage.getKind() != StageKind.CoreInternal).collect(Collectors.toList()).toArray(n -> new PipelineStage[n]);
     for (int i = 0; i < this.stages.length; ++i)
       assert (this.stages[i].getStagePos() == i);
-    this.stage_pcReg = core.GetRootStage().getAllChildren().filter(stage -> stage.getName().equals("fetch_pcreg")).findAny().orElseThrow();
+    this.stage_pcReg = core.getRootStage().getAllChildren().filter(stage -> stage.getName().equals("fetch_pcreg")).findAny().orElseThrow();
     this.BNode = user_BNode;
     this.language = new SpinalHDL(user_BNode, toFile, this);
-    int stage_mem_valid = this.vex_core.GetNodes().get(BNode.RdInstr).GetEarliest().asInt();
+    int stage_mem_valid = this.vex_core.getNodes().get(BNode.RdInstr).getEarliest().asInt();
     scalAPI.OverrideEarliestValid(user_BNode.WrMem, new PipelineFront(stages[stage_mem_valid]));
     scalAPI.OverrideEarliestValid(user_BNode.RdMem, new PipelineFront(stages[stage_mem_valid]));
     // Ignore WrCommit_spawn for now.
@@ -74,7 +76,7 @@ public class VexRiscv extends CoreBackend {
     BNode.WrCommit_spawn_validResp.tags.add(NodeTypeTag.noCoreInterface);
     BNode.WrInStageID.tags.add(NodeTypeTag.noCoreInterface);
     BNode.WrInStageID_valid.tags.add(NodeTypeTag.noCoreInterface);
-    core.PutNode(BNode.RdInStageValid,
+    core.putNode(BNode.RdInStageValid,
                  new CoreNode(1, 0, this.stages.length - 1, this.stages.length, BNode.RdInStageValid.name));
     this.strategyBuilders = scalAPI.getStrategyBuilders();
     scalAPI.getStrategyBuilders().put(StrategyBuilders.UUID_NodeRegPipelineStrategy, args -> this.build_vexNodeRegPipelineStrategy(args));
@@ -114,7 +116,7 @@ public class VexRiscv extends CoreBackend {
           return NodeLogicBuilder.makeEmpty();
         }
         PipelineStage prevStage = stage.equals(stages[1]) ? stage_pcReg : stage_prev.get(0);
-        return makePipelineBuilder_singleFF(nodeKey, implementation, stage, prevStage);
+        return makePipelineBuilder_singleFF(nodeKey, implementation, stage, List.of(prevStage));
       }
     };
   }
@@ -163,6 +165,7 @@ public class VexRiscv extends CoreBackend {
     String addText = """
       package vexriscv.plugin
       import vexriscv._
+      import vexriscv.Riscv._
       import spinal.core._
       import spinal.lib._
       import scala.collection.mutable.ArrayBuffer
@@ -416,9 +419,9 @@ public class VexRiscv extends CoreBackend {
       }
 
     if ((this.op_stage_instr.containsKey(BNode.RdMem) | this.op_stage_instr.containsKey(BNode.WrMem)) &&
-        stageNum == this.vex_core.GetNodes().get(BNode.RdMem).GetEarliest().asInt()) {
-      for (int earlierStage = this.vex_core.GetNodes().get(BNode.RdInstr).GetEarliest().asInt();
-           earlierStage < this.vex_core.GetNodes().get(BNode.RdMem).GetEarliest().asInt(); earlierStage++) {
+        stageNum == this.vex_core.getNodes().get(BNode.RdMem).getEarliest().asInt()) {
+      for (int earlierStage = this.vex_core.getNodes().get(BNode.RdInstr).getEarliest().asInt();
+           earlierStage < this.vex_core.getNodes().get(BNode.RdMem).getEarliest().asInt(); earlierStage++) {
         if (this.op_stage_instr.containsKey(BNode.RdMem))
           interfaces +=
               language.CreateInterface(BNode.GetAdjSCAIEVNode(BNode.RdMem, AdjacentNode.validReq).get(), stages[earlierStage], "");
@@ -488,7 +491,7 @@ public class VexRiscv extends CoreBackend {
             (!operation.equals(BNode.WrRD) && !operation.equals(BNode.WrMem) &&
              !operation.equals(BNode.RdMem))) { // it cannot be spawn, as stage does not go to max_stage + 1
           if (!FNode.HasSCAIEVNode(operation.name) ||
-              stage.getStagePos() >= this.vex_core.GetNodes().get(operation).GetEarliest().asInt()) {
+              stage.getStagePos() >= this.vex_core.getNodes().get(operation).getEarliest().asInt()) {
             thisStagebuild +=
                 language.CreateAssignToISAX(operation, stage, "", (operation.equals(BNode.WrStall) || operation.equals(BNode.WrFlush)));
           }
@@ -507,7 +510,7 @@ public class VexRiscv extends CoreBackend {
     }
     IntegrateISAX_WrRDBuild(stage);
 
-    if (stage.getStagePos() == this.vex_core.GetNodes().get(BNode.RdMem).GetEarliest().asInt() &&
+    if (stage.getStagePos() == this.vex_core.getNodes().get(BNode.RdMem).getEarliest().asInt() &&
         (op_stage_instr.containsKey(BNode.WrMem) || op_stage_instr.containsKey(BNode.WrMem_spawn) ||
          op_stage_instr.containsKey(BNode.RdMem) || op_stage_instr.containsKey(BNode.RdMem_spawn)))
       IntegrateISAX_MemBuildBody(stage);
@@ -515,7 +518,7 @@ public class VexRiscv extends CoreBackend {
 
   // RD/WR Memory
   public void IntegrateISAX_MemBuildBody(PipelineStage stage) {
-    int memStageNum = this.vex_core.GetNodes().get(BNode.RdMem).GetLatest().asInt();
+    int memStageNum = this.vex_core.getNodes().get(BNode.RdMem).getLatest().asInt();
     int spawnStageNum = this.vex_core.maxStage + 1;
     if (stage.getStagePos() == memStageNum &&
         ((op_stage_instr.containsKey(BNode.WrMem) || op_stage_instr.containsKey(BNode.WrMem_spawn) ||
@@ -765,7 +768,7 @@ public class VexRiscv extends CoreBackend {
     // SPAWN
     int spawnStageNum = this.vex_core.maxStage + 1;
     if (op_stage_instr.containsKey(BNode.WrRD_spawn) &&
-        stage.getStagePos() == this.vex_core.GetNodes().get(BNode.WrRD).GetLatest().asInt()) {
+        stage.getStagePos() == this.vex_core.getNodes().get(BNode.WrRD).getLatest().asInt()) {
       String logic = "";
       logic += "when (io." + language.CreateNodeName(BNode.WrRD_spawn_valid, stages[spawnStageNum], "") + ") {\n " + toFile.tab +
                vexInterfaceStageNames[stage.getStagePos()] + ".output(INSTRUCTION) := ((11 downto 7) ->io." +
@@ -793,10 +796,11 @@ public class VexRiscv extends CoreBackend {
     String lineToBeInserted = "new " + extension_name + "(),";
 
     toFile.UpdateContent(filePath, "plugins = List(", new ToWrite(lineToBeInserted, false, true, ""));
-    if (this.vex_core.GetNodes().get(BNode.RdRS1).GetLatest().asInt() == 3) // Disable MulPlugin for 4-stage Vex (cannot build Vex
-                                                                            // otherwise)
+    if (this.vex_core.getNodes().get(BNode.RdRS1).getLatest().asInt() == 3) { // Disable MulPlugin for 4-stage Vex (cannot build Vex
+                                                                              // otherwise)
       toFile.ReplaceContent(filePath, "new MulPlugin,", new ToWrite("//new MulPlugin, // SCAIEV Paper", false, true, ""));
-    // toFile.ReplaceContent(filePath,"new DivPlugin,", new ToWrite("//new DivPlugin, // SCAIEV Paper",false,true,""));
+      //toFile.ReplaceContent(filePath,"new DivPlugin,", new ToWrite("//new DivPlugin, // SCAIEV Paper",false,true,""));
+    }
     toFile.ReplaceContent(filePath, "earlyBranch = false,", new ToWrite("earlyBranch = true, // SCAIEV Paper", false, true, ""));
     if (vex_core.maxStage > 3)
       toFile.UpdateContent(filePath, "plugins = List(", new ToWrite("withWriteBackStage = true, //SCAIEV Paper", false, true, "", true));
@@ -806,10 +810,10 @@ public class VexRiscv extends CoreBackend {
       toFile.UpdateContent(filePath, "plugins = List(", new ToWrite("withMemoryStage    = true, // SCAIEV Paper", false, true, "", true));
     else
       toFile.UpdateContent(filePath, "plugins = List(", new ToWrite("withMemoryStage    = false, // SCAIEV Paper", false, true, "", true));
-    if (this.vex_core.GetNodes().get(BNode.RdRS1).GetLatency() == 0)
+    if (this.vex_core.getNodes().get(BNode.RdRS1).getLatency() == 0)
       toFile.ReplaceContent(filePath, "regFileReadyKind = plugin.SYNC",
                             new ToWrite("regFileReadyKind = plugin.ASYNC, //SCAIEV Paper", false, true, ""));
-    if (this.vex_core.GetNodes().get(BNode.RdRS1).GetEarliest().asInt() == 2)
+    if (this.vex_core.getNodes().get(BNode.RdRS1).getEarliest().asInt() == 2)
       toFile.UpdateContent(filePath, "regFileReadyKind = plugin.SYNC", new ToWrite("readInExecute = true,", false, true, ""));
   }
 
@@ -1075,10 +1079,23 @@ public class VexRiscv extends CoreBackend {
     this.fileHierarchy.put(extension_name, newModule);
     int spawnStage = this.vex_core.maxStage + 1;
 
-    spawnStages.put(BNode.RdMem_spawn, this.vex_core.GetNodes().get(BNode.RdMem).GetEarliest().asInt());
-    spawnStages.put(BNode.WrMem_spawn, this.vex_core.GetNodes().get(BNode.RdMem).GetEarliest().asInt());
-    spawnStages.put(BNode.WrPC_spawn, this.vex_core.GetNodes().get(BNode.WrPC).GetEarliest().asInt());
-    spawnStages.put(BNode.WrRD_spawn, this.vex_core.GetNodes().get(BNode.WrRD).GetLatest().asInt());
+    spawnStages.put(BNode.RdMem_spawn, this.vex_core.getNodes().get(BNode.RdMem).getEarliest().asInt());
+    spawnStages.put(BNode.WrMem_spawn, this.vex_core.getNodes().get(BNode.RdMem).getEarliest().asInt());
+    spawnStages.put(BNode.WrPC_spawn, this.vex_core.getNodes().get(BNode.WrPC).getEarliest().asInt());
+    spawnStages.put(BNode.WrRD_spawn, this.vex_core.getNodes().get(BNode.WrRD).getLatest().asInt());
+
+    // rdNextPC
+    var br_stage_opt = this.vex_core.getRootStage().getAllChildren().filter(stage -> stage.getTags().contains(StageTag.Nonspeculative)).findFirst();
+    br_stage_opt.ifPresent(br_stage -> {
+      this.PutNode("UInt", 
+        """
+        (input(pipeline.service(classOf[BranchPlugin]).BRANCH_COND_RESULT) ? 
+              (((input(BRANCH_CTRL) === BranchCtrlEnum.JALR) ? input(RS1).asUInt | input(PC)) +
+              ((input(BRANCH_CTRL) === BranchCtrlEnum.JALR) ? IMM(input(INSTRUCTION)).i_sext.asUInt |
+              ((input(BRANCH_CTRL) === BranchCtrlEnum.JAL) ? IMM(input(INSTRUCTION)).j_sext.asUInt |
+              IMM(input(INSTRUCTION)).b_sext.asUInt))(31 downto 1) @@ U\"0\") | 
+              (input(PC) + 4))""", br_stage.getName(), BNode.RdNextPC, br_stage);
+    });
 
     this.PutNode("UInt", "jumpInFetch.target_PC", "", BNode.WrPC, stages[0]);
     this.PutNode("Bool", "jumpInFetch.update_PC", "", BNode.WrPC_valid, stages[0]);
@@ -1108,8 +1125,8 @@ public class VexRiscv extends CoreBackend {
                    stages[stageNum]); //|| (!"+vexInterfaceStageNames[stage]+".arbitration.isValid)"
       this.PutNode("Bool", stageName + ".arbitration.haltByOther", stageName, BNode.WrStall, stages[stageNum]);
       this.PutNode("Bool", stageName + ".arbitration.flushItSV", stageName, BNode.WrFlush, stages[stageNum]);
-      if (this.vex_core.GetNodes().get(BNode.WrRD).GetLatest().asInt() >= stageNum &&
-          this.vex_core.GetNodes().get(BNode.WrRD).GetEarliest().asInt() <= stageNum) {
+      if (this.vex_core.getNodes().get(BNode.WrRD).getLatest().asInt() >= stageNum &&
+          this.vex_core.getNodes().get(BNode.WrRD).getEarliest().asInt() <= stageNum) {
         this.PutNode("Bits", stageName + ".output(REGFILE_WRITE_DATA)", stageName, BNode.WrRD, stages[stageNum]);
         this.PutNode("Bool", stageName + ".output(REGFILE_WRITE_VALID)", stageName, BNode.WrRD_valid, stages[stageNum]);
       }
@@ -1131,7 +1148,7 @@ public class VexRiscv extends CoreBackend {
       }
     }
     // Node = Operation rdrs rdinstr wrrd
-    int stageWrRD = this.vex_core.GetNodes().get(BNode.WrRD).GetLatest().asInt();
+    int stageWrRD = this.vex_core.getNodes().get(BNode.WrRD).getLatest().asInt();
     this.PutNode("Bits", vexInterfaceStageNames[stageWrRD] + ".output(REGFILE_WRITE_DATA)", vexInterfaceStageNames[stageWrRD],
                  BNode.WrRD_spawn, stages[spawnStage]);
     this.PutNode("Bool", vexInterfaceStageNames[stageWrRD] + ".output(REGFILE_WRITE_VALID)", vexInterfaceStageNames[stageWrRD],
@@ -1141,7 +1158,7 @@ public class VexRiscv extends CoreBackend {
     this.PutNode("Bool", "True", vexInterfaceStageNames[stageWrRD], BNode.WrRD_spawn_validResp, stages[spawnStage]);
     this.PutNode("Bool", "True", vexInterfaceStageNames[stageWrRD], BNode.WrRD_spawn_allowed, stages[spawnStage]);
 
-    int stageMem = this.vex_core.GetNodes().get(BNode.RdMem).GetLatest().asInt();
+    int stageMem = this.vex_core.getNodes().get(BNode.RdMem).getLatest().asInt();
     this.PutNode("Bits", vexInterfaceStageNames[stageMem] + "", vexInterfaceStageNames[stageMem], BNode.RdMem, stages[stageMem]);
     //			this.PutNode("Bool", vexInterfaceStageNames[stageMem] +"", vexInterfaceStageNames[stageMem], BNode.RdMem_validResp,
     // stages[stageMem]);
@@ -1192,7 +1209,7 @@ public class VexRiscv extends CoreBackend {
     this.PutNode("Bool", vexInterfaceStageNames[stageMem] + "", vexInterfaceStageNames[stageMem], BNode.RdMem_spawn_write,
                  stages[spawnStage]);
 
-    PipelineStage startSpawnStage = this.vex_core.GetStartSpawnStages().asList().get(0);
+    PipelineStage startSpawnStage = this.vex_core.getStartSpawnStages().asList().get(0);
     assert (startSpawnStage != null);
     this.PutNode("Bool",
                  vexInterfaceStageNames[stageMem] + ".arbitration.isFiring || io." +

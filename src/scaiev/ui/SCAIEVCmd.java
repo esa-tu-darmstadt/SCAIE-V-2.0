@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.apache.commons.cli.*;
 import org.apache.logging.log4j.*;
@@ -76,6 +77,7 @@ public class SCAIEVCmd {
       coreDatab.ReadAvailCores("./Cores");
     } catch (Exception e) {
       System.out.println("Cannot read core descriptions!");
+      e.printStackTrace();
       printHelpAndExit(options);
     }
 
@@ -165,6 +167,12 @@ public class SCAIEVCmd {
                             .desc("CVA5-specific: Always use MAX_IDS-deep buffers for fetch-decode pipelining")
                             .build());
     }
+    options.addOption(Option.builder("portmux_limit")
+        .required(false)
+        .argName("portmuxmax")
+        .hasArg()
+        .desc("Number of stage ports to multiplex from. Only applies to multi-issue cores.")
+        .build());
     
 
     //////////   collect options   //////////
@@ -228,7 +236,16 @@ public class SCAIEVCmd {
       if (line.hasOption("decoupled_retire_counter_max")) {
         cfg.decoupled_parallel_max = parseIntArgOrThrow(line.getOptionValue("decoupled_parallel_max"), "decoupled_parallel_max");
         if (cfg.decoupled_parallel_max <= 0) {
-          throw new ParseException("decoupled_parallel_max must not be below 1");
+          throw new ParseException("decoupled_retire_counter_max must not be below 1");
+        }
+      }
+      if (line.hasOption("portmux_limit")) {
+        cfg.portmux_limit = parseIntArgOrThrow(line.getOptionValue("portmux_limit"), "portmux_limit");
+        if (cfg.portmux_limit == 0) {
+          throw new ParseException("portmux_limit must not be 0");
+        }
+        if (cfg.portmux_limit < -1) {
+          throw new ParseException("portmux_limit must not be below -1");
         }
       }
 
@@ -295,6 +312,8 @@ public class SCAIEVCmd {
       throw new ParseException("Cannot parse integer argument '%s'".formatted(optionName));
     }
   }
+
+  private static final Pattern instrnamePattern = Pattern.compile("^[a-zA-Z0-9_]+$");
 
   // parse yaml and translate the description to scaiev objects
   //
@@ -392,6 +411,10 @@ public class SCAIEVCmd {
               logger.error("An instruction name and mask should be provided before the schedule. Ignoring instruction.");
               break;
             }
+            if (!instrnamePattern.matcher(instrName).matches()) {
+              logger.error("Instruction name \"{}\" contains invalid characters. Allowed: a-zA-Z0-9_. Ignoring instruction.", instrName);
+              break;
+            }
             if (f3.isEmpty())
               f3 = "---";
             if (f7.isEmpty())
@@ -459,6 +482,8 @@ public class SCAIEVCmd {
                   adjSignals.add(AdjacentNode.validReq);
                 if (nodeSetting.toString().equals("has validResp"))
                   adjSignals.add(AdjacentNode.validResp);
+                if (nodeSetting.toString().equals("has cancel")) //only useful for dynamic instructions
+                  adjSignals.add(AdjacentNode.cancelReq);
                 if (nodeSetting.toString().equals("has addr"))
                   adjSignals.add(AdjacentNode.addr);
                 if (nodeSetting.toString().equals("has size"))
@@ -516,7 +541,7 @@ public class SCAIEVCmd {
                 for (int i = 1; i < additionalStages.size(); i++) {
                   newSCAIEVInstr.PutSchedNode(FNode.GetSCAIEVNode(nodeName), i, new HashSet<>(), schedTags);
                 }
-                logger.trace("INFO. Just added for instr. " + instrName + " nodeName " + nodeName + " nodeStage = " + nodeStage +
+                logger.trace("Instruction " + instrName + ": Added nodeName " + nodeName + " nodeStage = " + nodeStage +
                              " hasValid " + adjSignals.contains(AdjacentNode.validReq) + " hasAddr " +
                              adjSignals.contains(AdjacentNode.addr) + " hasValidResp " + adjSignals.contains(AdjacentNode.validResp));
               }

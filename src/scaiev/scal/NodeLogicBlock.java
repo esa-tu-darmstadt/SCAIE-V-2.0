@@ -16,6 +16,8 @@ public class NodeLogicBlock {
   public static String InterfToISAXKey = "ISAX";
   /** Default {@link #interfPins} key for SCAL&lt;-&gt;Core pins. */
   public static String InterfToCoreKey = "Core";
+  /** Default {@link #interfPins} key for SCAL&lt;-&gt;External pins. */
+  public static String InterfToExternalKey = "External";
 
   /** An input/output interface pin declaration */
   public static class InterfacePin {

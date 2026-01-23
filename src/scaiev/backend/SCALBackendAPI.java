@@ -115,11 +115,11 @@ public interface SCALBackendAPI {
   void OverrideEarliestValid(SCAIEVNode node, PipelineFront stage_for_valid);
 
   /**
-   * Adds a custom SCAL->Core interface pin. The builder should provide an output expression for interfacePin.makeKey(Purpose.REGULAR).
-   * @param interfacePin
-   * @param builder
+   * Adds custom SCAL->Core interface pins. The builder should provide output expressions for each interfacePins[i].makeKey(Purpose.REGULAR).
+   * @param interfacePins all pins to add
+   * @param builder the builder to add to the initial set of builders
    */
-  void AddCustomToCorePinUsing(CustomCoreInterface interfacePin, NodeLogicBuilder builder);
+  void AddCustomToCorePinsUsing(NodeLogicBuilder builder, CustomCoreInterface... interfacePins);
 
   /**
    * Adds a custom Core->SCAL interface pin that will be visible to SCAL logic generation.

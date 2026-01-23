@@ -132,7 +132,7 @@ public class PipeliningRdIValidStrategy extends MultiNodeStrategy {
         String builderName = makeBuilderName.get();
         NodeLogicBuilder combinedIValidBuilder =
             CombinedNodeLogicBuilder.of(builderName + "_inner", ivalidBuilders.toArray(new NodeLogicBuilder[ivalidBuilders.size()]));
-        // The keysToImplement entry may already
+        // The keysToImplement entry may already exist
         RdIValidPostPipeliningBuilder additionalIValidBuilder = keysToImplement.computeIfAbsent(
             additionalKey, additionalKey_ -> new RdIValidPostPipeliningBuilder(builderName + "_WIREDIN+REGULAR", nodeKey));
 

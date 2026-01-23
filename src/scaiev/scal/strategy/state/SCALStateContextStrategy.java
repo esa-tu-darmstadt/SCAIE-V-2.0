@@ -70,7 +70,7 @@ public class SCALStateContextStrategy extends SingleNodeStrategy {
         allISAXes.containsKey(SCAL.PredefInstr.ctx.instr.GetName())) {
 
       // get commit stage
-      var commit_stages = core.GetRootStage()
+      var commit_stages = core.getRootStage()
                               .getAllChildren()
                               // only look at core stages
                               .filter(stage -> stage.getKind() == StageKind.Core)
@@ -114,7 +114,7 @@ public class SCALStateContextStrategy extends SingleNodeStrategy {
         // stall earlier stages if ctx switch is imminent
 
         // get all stages prior to commit
-        var stages_pre_switch_ctx = core.GetRootStage()
+        var stages_pre_switch_ctx = core.getRootStage()
                                         .getAllChildren()
                                         // only look at core stages
                                         .filter(stage -> stage.getKind() == StageKind.Core)

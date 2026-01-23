@@ -38,10 +38,13 @@ public class DirectReadNodeStrategy extends SingleNodeStrategy {
   private boolean supports(Key nodeKey) {
     SCAIEVNode node = nodeKey.getNode();
     PipelineStage stage = nodeKey.getStage();
-    CoreNode coreNode = this.core.GetNodes().get(node);
+    CoreNode coreNode = this.core.getNodes().get(node);
     if (coreNode == null)
       return false;
-    if (stage.getKind() != StageKind.Core && stage.getKind() != StageKind.CoreInternal && stage.getKind() != StageKind.Root)
+    if (stage.getKind() != StageKind.Core &&
+        stage.getKind() != StageKind.CoreMultiport &&
+        stage.getKind() != StageKind.CoreInternal &&
+        stage.getKind() != StageKind.Root)
       return false;
     if (!nodeKey.getPurpose().matches(NodeInstanceDesc.Purpose.REGULAR))
       return false;
@@ -51,9 +54,9 @@ public class DirectReadNodeStrategy extends SingleNodeStrategy {
         || node.isSpawn() ||
         node.equals(bNodes.RdIValid) /* Handled separately (check not needed assuming the RdIValid strategy is always called first) */)
       return false;
-    return (core.TranslateStageScheduleNumber(coreNode.GetEarliest()).isAroundOrBefore(stage, false)) &&
-        (stage.getKind() == StageKind.Root || core.TranslateStageScheduleNumber(coreNode.GetExpensive()).isAfter(stage, false)) &&
-        core.TranslateStageScheduleNumber(coreNode.GetLatest()).isAroundOrAfter(stage, false);
+    return (core.translateStageScheduleNumber(coreNode.getEarliest()).isAroundOrBefore(stage, false)) &&
+        (stage.getKind() == StageKind.Root || core.translateStageScheduleNumber(coreNode.getExpensive()).isAfter(stage, false)) &&
+        core.translateStageScheduleNumber(coreNode.getLatest()).isAroundOrAfter(stage, false);
   }
 
   @Override

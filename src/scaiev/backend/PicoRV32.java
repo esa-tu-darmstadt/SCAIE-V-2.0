@@ -49,7 +49,7 @@ public class PicoRV32 extends CoreBackend {
   public void Prepare(HashMap<String, SCAIEVInstr> ISAXes, HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
                       Core core, SCALBackendAPI scalAPI, BNode user_BNode) {
     super.Prepare(ISAXes, op_stage_instr, core, scalAPI, user_BNode);
-    this.stages = core.GetRootStage().getAllChildren().collect(Collectors.toList()).toArray(n -> new PipelineStage[n]);
+    this.stages = core.getRootStage().getAllChildren().collect(Collectors.toList()).toArray(n -> new PipelineStage[n]);
     for (int i = 0; i < this.stages.length; ++i)
       assert (this.stages[i].getStagePos() == i);
     assert (stages[stages.length - 1].getKind() == StageKind.Decoupled);
@@ -65,7 +65,7 @@ public class PicoRV32 extends CoreBackend {
     BNode.WrCommit_spawn_validResp.tags.add(NodeTypeTag.noCoreInterface);
     BNode.WrInStageID.tags.add(NodeTypeTag.noCoreInterface);
     BNode.WrInStageID_valid.tags.add(NodeTypeTag.noCoreInterface);
-    core.PutNode(BNode.RdInStageValid, new CoreNode(0, 0, stages.length - 1, stages.length, BNode.RdInStageValid.name));
+    core.putNode(BNode.RdInStageValid, new CoreNode(0, 0, stages.length - 1, stages.length, BNode.RdInStageValid.name));
   }
 
   public boolean Generate(HashMap<String, SCAIEVInstr> ISAXes, HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
@@ -404,7 +404,7 @@ public class PicoRV32 extends CoreBackend {
   }
 
   private void IntegrateISAX_Mem() {
-    int stageNum = this.picorv32.GetNodes().get(BNode.WrMem).GetLatest().asInt();
+    int stageNum = this.picorv32.getNodes().get(BNode.WrMem).getLatest().asInt();
     PipelineStage stage = stages[stageNum];
     boolean wrMem = this.op_stage_instr.containsKey(BNode.WrMem) && this.op_stage_instr.get(BNode.WrMem).containsKey(stage);
     boolean rdMem = this.op_stage_instr.containsKey(BNode.RdMem) && this.op_stage_instr.get(BNode.RdMem).containsKey(stage);
@@ -636,7 +636,7 @@ public class PicoRV32 extends CoreBackend {
     this.PutNode("reg", "", "picorv32", BNode.RdIValid, stages[3]);
     this.PutNode("reg", "", "picorv32", BNode.RdIValid, stages[4]);
 
-    int stageMem = picorv32.GetNodes().get(BNode.RdMem).GetLatest().asInt();
+    int stageMem = picorv32.getNodes().get(BNode.RdMem).getLatest().asInt();
     this.PutNode(" ", "mem_rdata", "picorv32", BNode.RdMem, stages[stageMem]);
     this.PutNode(" ", "mem_ready & !mem_instr & (mem_wstrb==0)", "picorv32", BNode.RdMem_spawn_validResp,
                  stages[stageMem]); // in theory should be covered by !stall in ISAX

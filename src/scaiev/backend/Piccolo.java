@@ -52,7 +52,7 @@ public class Piccolo extends CoreBackend {
   public void Prepare(HashMap<String, SCAIEVInstr> ISAXes, HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
                       Core core, SCALBackendAPI scalAPI, BNode user_BNode) {
     super.Prepare(ISAXes, op_stage_instr, core, scalAPI, user_BNode);
-    this.stages = core.GetRootStage().getAllChildren().collect(Collectors.toList()).toArray(n -> new PipelineStage[n]);
+    this.stages = core.getRootStage().getAllChildren().collect(Collectors.toList()).toArray(n -> new PipelineStage[n]);
     for (int i = 0; i < this.stages.length; ++i)
       assert (this.stages[i].getStagePos() == i);
     this.BNode = user_BNode;
@@ -65,7 +65,7 @@ public class Piccolo extends CoreBackend {
     BNode.WrInStageID.tags.add(NodeTypeTag.noCoreInterface);
     BNode.WrInStageID_valid.tags.add(NodeTypeTag.noCoreInterface);
 
-    core.PutNode(BNode.RdInStageValid, new CoreNode(0, 0, 2, 2 + 1, BNode.RdInStageValid.name));
+    core.putNode(BNode.RdInStageValid, new CoreNode(0, 0, 2, 2 + 1, BNode.RdInStageValid.name));
 
     this.stageNum_spawn = core.maxStage + 1;
     this.stage_spawn = stages[stageNum_spawn];
@@ -104,7 +104,7 @@ public class Piccolo extends CoreBackend {
       PipelineStage stagePrev = stages[stagePos - 1];
       // Typical for Piccolo: if useer wants flush in last stage, we need to generate RdInstr and Flush signals from pre-last stage . These
       // will be used by datahaz mechanism in case of spawn
-      if ((stagePos > (this.piccolo_core.GetNodes().get(BNode.RdRS1).GetEarliest().asInt() + 1)) && ContainsOpInStage(BNode.WrPC, stage)) {
+      if ((stagePos > (this.piccolo_core.getNodes().get(BNode.RdRS1).getEarliest().asInt() + 1)) && ContainsOpInStage(BNode.WrPC, stage)) {
         if (!(op_stage_instr.containsKey(BNode.RdInstr) && op_stage_instr.get(BNode.RdInstr).containsKey(stagePrev)))
           language.UpdateInterface(topModule, BNode.RdInstr, "", stagePrev, true, false);
         if (!(op_stage_instr.containsKey(BNode.RdFlush) && op_stage_instr.get(BNode.RdFlush).containsKey(stagePrev)))
@@ -132,7 +132,7 @@ public class Piccolo extends CoreBackend {
           new ToWrite("let " + rdInstr +
                           " = {inputs.decoded_instr.funct7, 10'd0, inputs.decoded_instr.funct3,5'd0,inputs.decoded_instr.opcode};\n",
                       false, true, ""));
-      PipelineStage earliestWrMemStage = stages[this.piccolo_core.GetNodes().get(BNode.WrMem).GetEarliest().asInt()];
+      PipelineStage earliestWrMemStage = stages[this.piccolo_core.getNodes().get(BNode.WrMem).getEarliest().asInt()];
       this.toFile.UpdateContent(
           this.ModFile("fv_ALU"), "function ALU_Outputs fv_STORE (ALU_Inputs inputs);",
           new ToWrite("let is_isax =  " +
@@ -156,7 +156,7 @@ public class Piccolo extends CoreBackend {
           new ToWrite("let " + rdInstr +
                           " ={inputs.decoded_instr.funct7, 10'd0, inputs.decoded_instr.funct3,5'd0,inputs.decoded_instr.opcode};\n",
                       false, true, ""));
-      PipelineStage earliestRdMemStage = stages[this.piccolo_core.GetNodes().get(BNode.RdMem).GetEarliest().asInt()];
+      PipelineStage earliestRdMemStage = stages[this.piccolo_core.getNodes().get(BNode.RdMem).getEarliest().asInt()];
       this.toFile.UpdateContent(
           this.ModFile("fv_ALU"), "function ALU_Outputs fv_LOAD (ALU_Inputs inputs);",
           new ToWrite("let is_isax =  " +
@@ -236,7 +236,7 @@ public class Piccolo extends CoreBackend {
 
   private void IntegrateISAX_WrRD() {
     String wrRD = "// ISAX WrRD Logic //\n";
-    int stageNum = this.piccolo_core.GetNodes().get(BNode.WrRD).GetLatest().asInt();
+    int stageNum = this.piccolo_core.getNodes().get(BNode.WrRD).getLatest().asInt();
     PipelineStage stage = stages[stageNum];
     if (op_stage_instr.containsKey(BNode.WrRD)) {
       String mkCPU_validDataStage1Expr =
@@ -531,7 +531,8 @@ public class Piccolo extends CoreBackend {
         String validPCFlush = language.CreateLocalNodeName(BNode.WrFlush, stages[1], "");
         // Pass WrFlush from mkCPU to mkCPU_Stage2 (as WrFlush_1).
         //-> Create CPU_Stage2 interface
-        language.UpdateInterface("mkCPU_Stage2", BNode.WrFlush, "", stages[1], true, false);
+        language.AddPortToModuleInterface("mkCPU_Stage2", BNode.WrFlush, stages[1], "");
+        language.AddPortToModule("mkCPU_Stage2", BNode.WrFlush, stages[1], "");
         //-> Call the mkCPU_Stage2 method with the local WrFlush from mkCPU (combining WrFlush from higher stages).
         String flushMethodName = language.CreateMethodName(BNode.WrFlush, stages[1], "");
         toFile.UpdateContent(this.ModFile("mkCPU"), "endrule",
@@ -581,7 +582,7 @@ public class Piccolo extends CoreBackend {
   }
 
   private void IntegrateISAX_Mem() {
-    int stageNum = this.piccolo_core.GetNodes().get(BNode.RdMem).GetEarliest().asInt();
+    int stageNum = this.piccolo_core.getNodes().get(BNode.RdMem).getEarliest().asInt();
     PipelineStage stage = stages[stageNum];
     boolean rdMem = op_stage_instr.containsKey(BNode.RdMem);
     boolean wrMem = op_stage_instr.containsKey(BNode.WrMem);
@@ -776,6 +777,7 @@ public class Piccolo extends CoreBackend {
     this.PutNode("Bit", "pc", "mkCPU_Stage1", BNode.RdPC, stages[0]);
     this.PutNode("Bit", "rg_stage2.pc", "mkCPU_Stage2", BNode.RdPC, stages[1]);
     this.PutNode("Bit", "rg_stage3.pc", "mkCPU_Stage3", BNode.RdPC, stages[2]);
+    this.PutNode("Bit", "fv_out.next_pc", "mkCPU_Stage1", BNode.RdNextPC, stages[0]);
 
     this.PutNode("Bit", "stage1.out.data_to_stage2.instr", "mkCPU", BNode.RdInstr, stages[0]);
     this.PutNode("Bit", "stage2.out.data_to_stage3.instr", "mkCPU", BNode.RdInstr, stages[1]);
@@ -797,7 +799,7 @@ public class Piccolo extends CoreBackend {
     this.PutNode("Bool", "", "mkCPU", BNode.RdIValid, stages[1]);
     this.PutNode("Bool", "", "mkCPU_Stage3", BNode.RdIValid, stages[2]);
 
-    int stageMem = this.piccolo_core.GetNodes().get(BNode.RdMem).GetEarliest().asInt();
+    int stageMem = this.piccolo_core.getNodes().get(BNode.RdMem).getEarliest().asInt();
     // this.PutNode("Bit", "truncate( near_mem.dmem.word64)", "mkCPU", BNode.RdMem,stages[stageMem]);
     this.PutNode("Bit", "truncate(dcache.word64)", "mkCPU_Stage2", BNode.RdMem, stages[stageMem]);
     this.PutNode("Bool", "", "mkCPU_Stage2", BNode.RdMem_validReq, stages[stageMem]);

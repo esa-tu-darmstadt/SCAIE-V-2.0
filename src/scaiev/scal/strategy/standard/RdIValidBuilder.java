@@ -87,7 +87,7 @@ public class RdIValidBuilder extends NodeLogicBuilder {
     NodeInstanceDesc.Key rdInstrKey = new NodeInstanceDesc.Key(bNodes.RdInstr, nodeKey.getStage(), "");
     Optional<NodeInstanceDesc> rdInstrOptional = registry.lookupOptionalUnique(rdInstrKey, requestedFor);
     return (rdInstrOptional.isPresent() ||
-            core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdInstr).GetExpensive()).isAfter(nodeKey.getStage(), false));
+            core.translateStageScheduleNumber(core.getNodes().get(bNodes.RdInstr).getExpensive()).isAfter(nodeKey.getStage(), false));
   }
 
   /** Retrieves the base RdIValid condition. The default implementation decodes RdInstr from the current stage. */
@@ -199,7 +199,7 @@ public class RdIValidBuilder extends NodeLogicBuilder {
         ret.logic += String.format("assign %s = %s;\n", nameWire, ivalidCond);
         ret.outputs.add(new NodeInstanceDesc(fullOutputKey, nameWire, ExpressionType.WireName, requestedFor));
       }
-    } else if (core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdInstr).GetEarliest()).isBefore(stage, false)) {
+    } else if (core.translateStageScheduleNumber(core.getNodes().get(bNodes.RdInstr).getEarliest()).isBefore(stage, false)) {
       // This builder doesn't handle pipelining on its own;
       //  here, it only adds the previous stage as a requirement
       //  to force creation of RdIValid in the previous stage.

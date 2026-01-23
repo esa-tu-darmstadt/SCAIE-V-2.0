@@ -260,9 +260,9 @@ public class DecoupledLateRetireStrategy extends MultiNodeStrategy {
                   %3$s[1] <= %4$s[1];
                   `ifndef SYNTHESIS
                   if (%5$s)
-                      $error("SCAL: %s - Underflow");
+                      $error("SCAL: %3$s - Underflow");
                   if (%6$s)
-                      $error("SCAL: %s - Overflow");
+                      $error("SCAL: %3$s - Overflow");
                   `endif
               end
           end
@@ -314,7 +314,7 @@ public class DecoupledLateRetireStrategy extends MultiNodeStrategy {
         continue;
       }
 
-      List<PipelineStage> issueStagesList = DecoupledPipeStrategy.getRelevantIssueStages(core, nodeKey.getStage());
+      List<PipelineStage> issueStagesList = SCALUtil.flatmapIntoPorts(DecoupledPipeStrategy.getRelevantIssueStages(core, nodeKey.getStage()).stream()).toList();
       if (implementedDHModules.add(nodeKey.getNode())) {
         out.accept(NodeLogicBuilder.fromFunction("DecoupledLateRetireStrategy_DHModule_" + nodeKey.getNode().name,
            (NodeRegistryRO registry, Integer aux) -> {

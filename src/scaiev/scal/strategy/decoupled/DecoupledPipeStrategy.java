@@ -110,7 +110,7 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
 
     // Construct stall, flush signals for optional modules. Required by the DH spawn module, shift reg module for ValidReq, FIFO for addr
     if (startSpawnFront.isBefore(spawnStage, false)) {
-      List<PipelineStage> stages = this.core.GetRootStage()
+      List<PipelineStage> stages = this.core.getRootStage()
                                        .getAllChildren()
                                        .filter(stage -> startSpawnFront.isAroundOrBefore(stage, false) && spawnFront.isAfter(stage, false))
                                        .collect(Collectors.toList());
@@ -158,8 +158,7 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
 
     String fenceValidExpr = "1'b0";
     if (allISAXes.containsKey(SCAL.PredefInstr.fence.instr.GetName())) {
-      fenceValidExpr = startSpawnFront.asList()
-                           .stream()
+      fenceValidExpr = SCALUtil.flatmapIntoPorts(startSpawnFront.asList().stream())
                            .map(startSpawnStage
                                 -> registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdIValid, startSpawnStage,
                                                                                               SCAL.PredefInstr.fence.instr.GetName())))
@@ -168,8 +167,7 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
     }
     String killValidExpr = "1'b0";
     if (allISAXes.containsKey(SCAL.PredefInstr.kill.instr.GetName())) {
-      killValidExpr = startSpawnFront.asList()
-                          .stream()
+      killValidExpr = SCALUtil.flatmapIntoPorts(startSpawnFront.asList().stream())
                           .map(startSpawnStage
                                -> registry.lookupExpressionRequired(
                                    new NodeInstanceDesc.Key(bNodes.RdIValid, startSpawnStage, SCAL.PredefInstr.kill.instr.GetName())))
@@ -195,7 +193,7 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
         return true;
 
       PipelineFront spawnStageFront = new PipelineFront(nodeKey.getStage());
-      List<PipelineStage> startSpawnStages = this.core.GetStartSpawnStages()
+      List<PipelineStage> startSpawnStages = this.core.getStartSpawnStages()
                                                  .asList()
                                                  .stream()
                                                  .filter(startSpawnStage -> spawnStageFront.isAfter(startSpawnStage, false))
@@ -221,14 +219,14 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
 
   public static List<PipelineStage> getRelevantStartSpawnStages(Core core, PipelineStage spawnStage) {
     List<PipelineStage> relevantStartSpawnStages = new ArrayList<>();
-    for (PipelineStage startSpawnStage : core.GetStartSpawnStages().asList()) {
+    for (PipelineStage startSpawnStage : core.getStartSpawnStages().asList()) {
       if (new PipelineFront(startSpawnStage).isAroundOrBefore(spawnStage, false))
         relevantStartSpawnStages.add(startSpawnStage);
     }
     return relevantStartSpawnStages;
   }
   public static List<PipelineStage> getRelevantIssueStages(Core core, PipelineStage spawnStage) {
-    List<PipelineStage> allIssueStages = core.GetRootStage().getAllChildren()
+    List<PipelineStage> allIssueStages = core.getRootStage().getAllChildren()
                                                             .filter(stage -> stage.getTags().contains(StageTag.Issue))
                                                             .toList();
     List<PipelineStage> relevantIssueStages = new ArrayList<>();
@@ -262,20 +260,23 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
       //Push from the issue stage.
       List<PipelineStage> relevantIssueStages = getRelevantIssueStages(core, stage);
       //If the core doesn't have one, use the 'start spawn' stage instead.
-      List<PipelineStage> relevantStartSpawnStages = relevantIssueStages.isEmpty() ? getRelevantStartSpawnStages(core, stage) : relevantIssueStages;
-      if (relevantStartSpawnStages.isEmpty()) {
+      List<PipelineStage> relevantStartSpawnStagePorts =
+          SCALUtil.flatmapIntoPorts(relevantIssueStages.isEmpty()
+                                      ? getRelevantStartSpawnStages(core, stage).stream()
+                                      : relevantIssueStages.stream()).toList();
+      if (relevantStartSpawnStagePorts.isEmpty()) {
         logger.error("DecoupledPipeStrategy - Found no matching startSpawnStage for " + stage.getName());
         return false;
       }
-      if (relevantStartSpawnStages.size() > 1) {
+      if (relevantStartSpawnStagePorts.size() > 1) {
         logger.warn("DecoupledPipeStrategy - Got several 'start spawn' stages for ISAX '" + isax +
-                    "', but can only handle one spawn start at a time");
+                    "', will only handle one spawn start at a time and stall the rest");
         //-> FIFO cannot handle multiple concurrent pushes.
       }
 
-      int minSpawnStagePos = relevantStartSpawnStages.stream().map(stage_ -> stage_.getStagePos()).min(Integer::compare).get();
+      int minSpawnStagePos = relevantStartSpawnStagePorts.stream().map(stage_ -> stage_.getStagePos()).min(Integer::compare).get();
       List<Optional<CustomCoreInterface>> defaultAddrOverrides =
-          relevantStartSpawnStages.stream()
+          relevantStartSpawnStagePorts.stream()
               .map(startSpawnStage -> {
                 return spawnRDAddrOverrides.stream().filter(override -> override.stage.equals(startSpawnStage)).findAny();
               })
@@ -308,7 +309,7 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
           logger.error("Node " + addrNode_opt.get().name + " is set to sample by " + addrNode_opt.get().validBy.name() +
                        ", expected validReq");
         }
-        String[] addrReadSigs = (fifoBuilderDesc.forAddr ? new String[relevantStartSpawnStages.size()] : null);
+        String[] addrReadSigs = (fifoBuilderDesc.forAddr ? new String[relevantStartSpawnStagePorts.size()] : null);
         String addrRange = "";
         int addrW = 0;
         if (fifoBuilderDesc.forAddr) {
@@ -316,9 +317,9 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
           if (bNodes.IsUserBNode(spawnNode) && addrNode_opt.isPresent()) {
             SCAIEVNode nonspawnAddrNode = bNodes.GetEquivalentNonspawnNode(addrNode_opt.get()).get();
             // The custom register implementation has to provide an addr node with the default value.
-            for (int i = 0; i < relevantStartSpawnStages.size(); ++i)
+            for (int i = 0; i < relevantStartSpawnStagePorts.size(); ++i)
               addrReadSigs[i] = registry.lookupExpressionRequired(
-                  new NodeInstanceDesc.Key(nonspawnAddrNode, relevantStartSpawnStages.get(i), ""), addrRequestedFor);
+                  new NodeInstanceDesc.Key(nonspawnAddrNode, relevantStartSpawnStagePorts.get(i), ""), addrRequestedFor);
             addrW = addrNode_opt.get().size;
           } else if (addrNode_opt.isPresent() && !addrNode_opt.get().noInterfToISAX) {
             // This is (mostly) intended for Mem.
@@ -328,16 +329,16 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
               logger.error("Cannot find default address node for " + addrNode_opt.get().name);
               fifoBuilderDesc.forAddr = false;
             } else {
-              for (int i = 0; i < relevantStartSpawnStages.size(); ++i) {
+              for (int i = 0; i < relevantStartSpawnStagePorts.size(); ++i) {
                 addrReadSigs[i] = registry.lookupExpressionRequired(
-                    new NodeInstanceDesc.Key(fromCoreAddrNode_opt.get(), relevantStartSpawnStages.get(i), ""), addrRequestedFor);
+                    new NodeInstanceDesc.Key(fromCoreAddrNode_opt.get(), relevantStartSpawnStagePorts.get(i), ""), addrRequestedFor);
               }
               addrW = addrNode_opt.get().size;
             }
           } else if (spawnNode.equals(bNodes.WrRD_spawn)) {
             addrW = defaultAddrOverrides.get(0).isPresent() ? defaultAddrOverrides.get(0).get().size : addrNode_opt.get().size;
             boolean foundDifferent = false;
-            for (int i = 0; i < relevantStartSpawnStages.size(); ++i) {
+            for (int i = 0; i < relevantStartSpawnStagePorts.size(); ++i) {
               int curDataW;
               if (defaultAddrOverrides.get(i).isPresent()) {
                 addrReadSigs[i] = registry.lookupExpressionRequired(defaultAddrOverrides.get(i).get().makeKey(Purpose.WIREDIN));
@@ -345,7 +346,7 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
                 curDataW = defaultAddrOverrides.get(i).get().size;
               } else {
                 addrReadSigs[i] = registry.lookupExpressionRequired(
-                                      new NodeInstanceDesc.Key(bNodes.RdInstr, relevantStartSpawnStages.get(i), ""), addrRequestedFor) +
+                                      new NodeInstanceDesc.Key(bNodes.RdInstr, relevantStartSpawnStagePorts.get(i), ""), addrRequestedFor) +
                                   "[11:7]";
                 curDataW = addrNode_opt.get().size;
               }
@@ -356,7 +357,7 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
             }
             if (foundDifferent)
               logger.warn("Found different default address widths for node " + spawnNode.name +
-                          " across start spawn stages: " + relevantStartSpawnStages.stream().map(stage_ -> stage_.getName()).toList());
+                          " across start spawn stages: " + relevantStartSpawnStagePorts.stream().map(stage_ -> stage_.getName()).toList());
           }
           if (addrW == 0) {
             if (fifoBuilderDesc.forAddr)
@@ -385,16 +386,16 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
           logger.error("Node " + sizeNode_opt.get().name + " is set to sample by " + sizeNode_opt.get().validBy.name() +
                        ", expected validReq");
         }
-        String[] sizeReadSigs = (fifoBuilderDesc.forSize ? new String[relevantStartSpawnStages.size()] : null);
+        String[] sizeReadSigs = (fifoBuilderDesc.forSize ? new String[relevantStartSpawnStagePorts.size()] : null);
         String sizeRange = "";
         int sizeW = 0;
         if (fifoBuilderDesc.forSize) {
           sizeW = sizeNode_opt.get().size;
 
-          for (int i = 0; i < relevantStartSpawnStages.size(); ++i) {
+          for (int i = 0; i < relevantStartSpawnStagePorts.size(); ++i) {
             // RdInstr funct3
             sizeReadSigs[i] = registry.lookupExpressionRequired(
-                                  new NodeInstanceDesc.Key(bNodes.RdInstr, relevantStartSpawnStages.get(i), ""), sizeRequestedFor) +
+                                  new NodeInstanceDesc.Key(bNodes.RdInstr, relevantStartSpawnStagePorts.get(i), ""), sizeRequestedFor) +
                               "[14:12]";
           }
 
@@ -410,16 +411,16 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
           logger.error("Node " + idNode_opt.get().name + " is set to sample by " + idNode_opt.get().validBy.name() +
                        ", expected validReq");
         }
-        String[] idReadSigs = (fifoBuilderDesc.forID ? new String[relevantStartSpawnStages.size()] : null);
+        String[] idReadSigs = (fifoBuilderDesc.forID ? new String[relevantStartSpawnStagePorts.size()] : null);
         String idRange = "";
         int idW = 0;
         if (fifoBuilderDesc.forID) {
           idW = idNode_opt.get().size;
 
-          for (int i = 0; i < relevantStartSpawnStages.size(); ++i) {
+          for (int i = 0; i < relevantStartSpawnStagePorts.size(); ++i) {
             // RdInstr funct3
             idReadSigs[i] = registry.lookupExpressionRequired(
-                                  new NodeInstanceDesc.Key(bNodes.RdIssueID, relevantStartSpawnStages.get(i), ""), idRequestedFor);
+                                  new NodeInstanceDesc.Key(bNodes.RdIssueID, relevantStartSpawnStagePorts.get(i), ""), idRequestedFor);
           }
 
           idRange = String.format("[%d-1:%d]", fifoEntryW + idW, fifoEntryW);
@@ -448,7 +449,7 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
         // Build a FIFO for the addr signal from 'start spawn' to the destination stage.
 
         String FIFOmoduleName = registry.lookupExpressionRequired(
-            new NodeInstanceDesc.Key(Purpose.HDL_MODULE, DecoupledStandardModulesStrategy.makeFIFONode(), core.GetRootStage(), ""));
+            new NodeInstanceDesc.Key(Purpose.HDL_MODULE, DecoupledStandardModulesStrategy.makeFIFONode(), core.getRootStage(), ""));
 
         int fifoDepth = stage.getStagePos() - minSpawnStagePos + 1;
         if (spawnSubStage.getKind() == StageKind.Sub) {
@@ -469,31 +470,33 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
 
 
         String fifoWriteCondExpr = "1'b0";
-        String fifoWriteDataExpr = makeWriteDataExpr.apply(0);
-        String[] fifoWriteStageStallConds = new String[relevantStartSpawnStages.size()];
+        String fifoWriteDataExpr = makeWriteDataExpr.apply(relevantStartSpawnStagePorts.size()-1);
+        String[] fifoWriteStageStallConds = new String[relevantStartSpawnStagePorts.size()];
         fifoWriteStageStallConds[0] = "";
-        for (int i = 0; i < relevantStartSpawnStages.size(); ++i) {
-          PipelineStage startSpawnStage = relevantStartSpawnStages.get(i);
+        //MUX across ports, Prioritize port 0
+        for (int i = relevantStartSpawnStagePorts.size()-1; i >= 0; --i) {
+          PipelineStage startSpawnStage = relevantStartSpawnStagePorts.get(i);
           // Is the ISAX in this 'start spawn' stage?
-          String curStartSpawnValid =
-              "("
-              + registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdIValid, startSpawnStage, isax), commonRequestedFor)
-              + " && "
-              + SCALUtil.buildCond_StageNotStalling(bNodes, registry, startSpawnStage, false, commonRequestedFor)
-              + ")";
-          fifoWriteCondExpr += " || " + curStartSpawnValid;
-          if (i + 1 < relevantStartSpawnStages.size()) {
-            // Initialize fifoWriteStageStallConds[i]
-            fifoWriteStageStallConds[i + 1] = curStartSpawnValid + " && (";
+          String curStartSpawnIValid = registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdIValid, startSpawnStage, isax),
+                                                               commonRequestedFor).getExpressionWithParens();
+          String curStartSpawnValidNoStall =
+              "(%s && %s)".formatted(curStartSpawnIValid,
+                                      SCALUtil.buildCond_StageNotStalling(bNodes, registry, startSpawnStage, false, commonRequestedFor));
+          //Only write if the instruction is valid and not stalling.
+          fifoWriteCondExpr += " || " + curStartSpawnValidNoStall;
+          if (i != relevantStartSpawnStagePorts.size()-1) {
+            // MUX across 'start spawn' stages based on just RdIValid.
+            fifoWriteDataExpr = curStartSpawnIValid + " ? " + makeWriteDataExpr.apply(i) + " : " + fifoWriteDataExpr;
           }
+          //For the stall conditions, ignore RdStall/WrStall, matching the MUX logic.
           if (i > 0) {
-            // Select from where to add the address to the FIFO.
-            fifoWriteDataExpr = curStartSpawnValid + " ? " + makeWriteDataExpr.apply(i) + " : " + fifoWriteDataExpr;
-            // Add the current 'start spawn' condition as a stall condition to all previous fifoWriteStallConds.
-            for (int i_stallcond = i; i_stallcond > 0; --i_stallcond) {
-              fifoWriteStageStallConds[i_stallcond] +=
-                  (fifoWriteStageStallConds[i_stallcond].endsWith("(") ? "" : " || ") + curStartSpawnValid;
-            }
+            //Prepare stall condition: Only possibly stall this stage if it wants to push into the FIFO.
+            fifoWriteStageStallConds[i] = curStartSpawnIValid + " && (";
+          }
+          //Stall all later stages that would also push into the FIFO (lower priority).
+          for (int i_stallcond = i + 1; i_stallcond < relevantStartSpawnStagePorts.size(); ++i_stallcond) {
+            fifoWriteStageStallConds[i_stallcond] +=
+                (fifoWriteStageStallConds[i_stallcond].endsWith("(") ? "" : " || ") + curStartSpawnIValid;
           }
         }
 
@@ -514,13 +517,16 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
         ret.declarations += String.format("wire %s;\n", outValidWire);
         ret.declarations += String.format("wire %s;\n", outNotFullWire);
         ret.declarations += String.format("wire [%d-1:0] %s;\n", fifoEntryW, outDataWire);
-        ret.logic += "\n" + FIFOmoduleName + " #( " + fifoDepth + ", " + fifoEntryW + " ) " + fifoName + "_inst (\n" + language.tab +
-                     language.clk + ",\n" + language.tab + language.reset + ",\n" + language.tab + clearCond + ",\n" + language.tab +
-                     fifoWriteCondExpr + ",\n"                  // write fifo
+        ret.logic += FIFOmoduleName + " #( " + fifoDepth + ", " + fifoEntryW + " ) " + fifoName + "_inst (\n"
+                     + language.tab + language.clk + ",\n"
+                     + language.tab + language.reset + ",\n"
+                     + language.tab + clearCond + ",\n"
+                     + language.tab + fifoWriteCondExpr + ",\n" // write fifo
                      + language.tab + fifoReadCondExpr + ",\n"  // read fifo
                      + language.tab + fifoWriteDataExpr + ",\n" // write data
-                     + language.tab + outValidWire + ",\n" + language.tab + outNotFullWire + ",\n" + language.tab + outDataWire +
-                     "\n" // read data . No family node name (for Mem we need full name as on interf to ISAX)
+                     + language.tab + outValidWire + ",\n"
+                     + language.tab + outNotFullWire + ",\n"
+                     + language.tab + outDataWire + "\n" // read data . No family node name (for Mem we need full name as on interf to ISAX)
                      + ");\n";
         if (fifoBuilderDesc.forAddr) {
           String addrFromFIFOWire = language.CreateBasicNodeName(addrNode_opt.get(), stage, isax, false) + "_fromfifo";
@@ -545,23 +551,24 @@ public class DecoupledPipeStrategy extends MultiNodeStrategy {
         }
 
         for (int i = 0; i < fifoWriteStageStallConds.length; ++i) {
+          PipelineStage startSpawnStage = relevantStartSpawnStagePorts.get(i);
           // Stall the 'start spawn' stages that try to start the same spawn ISAX as the selected stage.
           if (!fifoWriteStageStallConds[i].isEmpty())
             fifoWriteStageStallConds[i] += ")";
-          PipelineStage startSpawnStage = relevantStartSpawnStages.get(i);
+          // Also stall if the FIFO is full.
           fifoWriteStageStallConds[i] +=
               (fifoWriteStageStallConds[i].isEmpty() ? "" : " || ") +
               String.format(
                   "%s && !%s",
                   registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdIValid, startSpawnStage, isax), commonRequestedFor),
                   outNotFullWire);
-          String stallCondWire = String.format("%s_stallStart_%s_s", fifoName, relevantStartSpawnStages.get(i).getName());
+          String stallCondWire = String.format("%s_stallStart_%s_s", fifoName, startSpawnStage.getName());
           ret.declarations += String.format("wire %s;\n", stallCondWire);
           ret.logic += String.format("assign %s = %s;\n", stallCondWire, fifoWriteStageStallConds[i]);
           ret.outputs.add(
-              new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrStall, relevantStartSpawnStages.get(i), "", aux),
+              new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrStall, startSpawnStage, "", aux),
                                    stallCondWire, ExpressionType.WireName, commonRequestedFor));
-          registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.WrStall, relevantStartSpawnStages.get(i), ""));
+          registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.WrStall, startSpawnStage, ""));
         }
         return ret;
       });

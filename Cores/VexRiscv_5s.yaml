@@ -11,9 +11,9 @@ pipeline:
   - {name: fetch_nextpc, kind: core,          externalID: 0,  continuous: true,  tags: [inorder], nextStages: [decode,fetch_pcreg], children: []}
   - {name: fetch_pcreg,  kind: core_internal, externalID: -1, continuous: true,  tags: [inorder], nextStages: [decode], children: []}
   - {name: decode,       kind: core,          externalID: 1,  continuous: false, tags: [inorder], nextStages: [execute], children: []}
-  - {name: execute,      kind: core,          externalID: 2,  continuous: true,  tags: [inorder, execute], nextStages: [memory], children: []}
-  - {name: memory,       kind: core,          externalID: 3,  continuous: true,  tags: [inorder], nextStages: [writeback], children: []}
-  - {name: writeback,    kind: core,          externalID: 4,  continuous: true,  tags: [inorder, commit], nextStages: [decoupled1], children: []}
+  - {name: execute,      kind: core,          externalID: 2,  continuous: true,  tags: [inorder, execute, nonspeculative], nextStages: [memory], children: []}
+  - {name: memory,       kind: core,          externalID: 3,  continuous: true,  tags: [inorder, nonspeculative], nextStages: [writeback], children: []}
+  - {name: writeback,    kind: core,          externalID: 4,  continuous: true,  tags: [inorder, commit, nonspeculative], nextStages: [decoupled1], children: []}
   - {name: decoupled1,   kind: decoupled,     externalID: 5,  continuous: true,  tags: [inorder, commit], nextStages: [], children: []}
 operations:
 - operation: RdCustReg
@@ -89,3 +89,8 @@ operations:
   latency: 0
   latest: 4
   costly: 5
+- operation: RdNextPC
+  earliest: 2
+  latest: 2
+  costly: 3
+  latency: 0

@@ -67,7 +67,7 @@ public class RdInStageValidStrategy extends MultiNodeStrategy {
 
     boolean isCoreStage = nodeKey.getStage().getKind() == StageKind.Core || nodeKey.getStage().getKind() == StageKind.CoreInternal;
     boolean coreSupportsNodeInStage =
-        isCoreStage && Optional.ofNullable(core.GetNodes().get(node)).map(coreNode -> core.StageIsInRange(coreNode, stage)).orElse(false);
+        isCoreStage && Optional.ofNullable(core.getNodes().get(node)).map(coreNode -> core.stageIsInRange(coreNode, stage)).orElse(false);
 
     // Check if the core already supports this node.
     if (coreSupportsNodeInStage && nodeKey.getPurpose().matches(Purpose.WIREDIN)) {

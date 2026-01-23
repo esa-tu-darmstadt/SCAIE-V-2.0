@@ -5,8 +5,11 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+
 import scaiev.backend.BNode;
 import scaiev.coreconstr.Core;
 import scaiev.frontend.SCAIEVInstr;
@@ -22,6 +25,7 @@ import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.strategy.SingleNodeStrategy;
 import scaiev.util.Verilog;
 
@@ -62,11 +66,13 @@ public class SpawnFenceStrategy extends SingleNodeStrategy {
     // Additional implementation for disaxfence
     if (nodeKey.getPurpose().matches(Purpose.REGULAR) && nodeKey.getNode().equals(disaxfence_stall_node) &&
         allISAXes.containsKey(SCAL.PredefInstr.fence.instr.GetName())) {
-      PipelineFront startSpawnStages = core.GetStartSpawnStages();
-      PipelineFront spawnStages = core.GetSpawnStages();
-      List<PipelineStage> preSpawnStages = startSpawnStages.streamNext_bfs(intermediateStage -> !spawnStages.contains(intermediateStage))
-                                               .filter(intermediateStage -> spawnStages.isAroundOrAfter(intermediateStage, false))
-                                               .toList();
+      PipelineFront startSpawnStages = core.getStartSpawnStages();
+      PipelineFront startSpawnStagePorts = new PipelineFront(SCALUtil.flatmapIntoPorts(core.getStartSpawnStages().asList().stream()));
+      PipelineFront spawnStages = core.getSpawnStages();
+      List<PipelineStage> preSpawnStages =
+          SCALUtil.flatmapIntoPorts(startSpawnStages.streamNext_bfs(intermediateStage -> !spawnStages.contains(intermediateStage))
+                                      .filter(intermediateStage -> spawnStages.isAroundOrAfter(intermediateStage, false))
+                                    ).toList();
       List<String> relevantISAXes =
           op_stage_instr.entrySet()
               .stream()
@@ -99,7 +105,7 @@ public class SpawnFenceStrategy extends SingleNodeStrategy {
         var ret = new NodeLogicBlock();
         // Build intermediate condition from RdIValid for all stages between 'start spawn' (incl.) and 'spawn' (excl.)
         String fenceActiveCondition =
-            startSpawnStages.asList()
+            startSpawnStagePorts.asList()
                 .stream()
                 .map(startSpawnStage
                      -> registry.lookupExpressionRequired(
@@ -129,25 +135,25 @@ public class SpawnFenceStrategy extends SingleNodeStrategy {
         ret.declarations += String.format("wire %s;\n", wireName);
         ret.logic +=
             String.format("assign %s = %s && (%s || %s);\n", wireName, fenceActiveCondition, intermediateCondition, spawnActiveCondition);
-        ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(disaxfence_stall_node, core.GetRootStage(), ""), wireName,
+        ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(disaxfence_stall_node, core.getRootStage(), ""), wireName,
                                              ExpressionType.WireName, fenceOnlyRequestedFor));
-        startSpawnStages.asList().forEach(
+        startSpawnStagePorts.asList().forEach(
             startSpawnStage
             -> ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrStall, startSpawnStage, "", aux),
                                                     wireName, ExpressionType.AnyExpression, fenceOnlyRequestedFor)));
         return ret;
       }));
     } else if (nodeKey.getPurpose().matches(Purpose.REGULAR) && nodeKey.getNode().equals(bNodes.RdFence) &&
-               allISAXes.containsKey(SCAL.PredefInstr.fence.instr.GetName()) && core.GetStartSpawnStages().contains(nodeKey.getStage()) &&
+               allISAXes.containsKey(SCAL.PredefInstr.fence.instr.GetName()) && core.getStartSpawnStages().isAround(nodeKey.getStage()) &&
                nodeKey.getAux() == 0) {
-      PipelineFront startSpawnStages = core.GetStartSpawnStages();
+      List<PipelineStage> startSpawnStagePorts = SCALUtil.flatmapIntoPorts(core.getStartSpawnStages().asList().stream()).toList();
       RequestedForSet rdFenceRequestedFor = new RequestedForSet(SCAL.PredefInstr.fence.instr.GetName());
       return Optional.of(NodeLogicBuilder.fromFunction("RdFence_" + nodeKey.getStage().getName(), (registry, aux) -> {
         var ret = new NodeLogicBlock();
         if (!nodeKey.getISAX().isEmpty())
           rdFenceRequestedFor.addRelevantISAX(nodeKey.getISAX());
         String fenceActiveCondition =
-            startSpawnStages.asList()
+            startSpawnStagePorts
                 .stream()
                 .map(startSpawnStage
                      -> registry.lookupExpressionRequired(

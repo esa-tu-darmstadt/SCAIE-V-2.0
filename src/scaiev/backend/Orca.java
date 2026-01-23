@@ -56,7 +56,7 @@ public class Orca extends CoreBackend {
   public void Prepare(HashMap<String, SCAIEVInstr> ISAXes, HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
                       Core core, SCALBackendAPI scalAPI, BNode user_BNode) {
     super.Prepare(ISAXes, op_stage_instr, core, scalAPI, user_BNode);
-    this.stages = core.GetRootStage().getAllChildren().collect(Collectors.toList()).toArray(n -> new PipelineStage[n]);
+    this.stages = core.getRootStage().getAllChildren().collect(Collectors.toList()).toArray(n -> new PipelineStage[n]);
     for (int i = 0; i < this.stages.length; ++i)
       assert (this.stages[i].getStagePos() == i);
     this.BNode = user_BNode;
@@ -69,8 +69,8 @@ public class Orca extends CoreBackend {
     BNode.WrInStageID.tags.add(NodeTypeTag.noCoreInterface);
     BNode.WrInStageID_valid.tags.add(NodeTypeTag.noCoreInterface);
 
-    int stage_execute = core.GetNodes().get(BNode.RdRS1).GetEarliest().asInt() + 1;
-    core.PutNode(BNode.RdInStageValid, new CoreNode(0, 0, stage_execute, stage_execute + 1, BNode.RdInStageValid.name));
+    int stage_execute = core.getNodes().get(BNode.RdRS1).getEarliest().asInt() + 1;
+    core.putNode(BNode.RdInStageValid, new CoreNode(0, 0, stage_execute, stage_execute + 1, BNode.RdInStageValid.name));
 
     scalAPI.SetHasAdjSpawnAllowed(BNode.WrRD_spawn_allowed);
   }
@@ -238,7 +238,7 @@ public class Orca extends CoreBackend {
     toFile.UpdateContent(this.ModFile("execute"), Parse.declare, new ToWrite("signal " + isISAXSignal + ": std_logic;\n", false, true, ""));
 
     String mem = "";
-    int memStage = this.orca_core.GetNodes().get(BNode.WrMem).GetEarliest().asInt();
+    int memStage = this.orca_core.getNodes().get(BNode.WrMem).getEarliest().asInt();
     if (this.ContainsOpInStage(BNode.WrMem, memStage))
       mem += "," + language.CreateNodeName(BNode.WrMem_validReq, stages[memStage], "");
     if (this.ContainsOpInStage(BNode.RdMem, memStage))
@@ -496,7 +496,7 @@ public class Orca extends CoreBackend {
   }
 
   private void IntegrateISAX_Mem() {
-    int stagePos = this.orca_core.GetNodes().get(BNode.RdMem).GetLatest().asInt(); // stage for Mem trasnfers
+    int stagePos = this.orca_core.getNodes().get(BNode.RdMem).getLatest().asInt(); // stage for Mem trasnfers
     PipelineStage stage = this.stages[stagePos];
     boolean readRequired = op_stage_instr.containsKey(BNode.RdMem) && op_stage_instr.get(BNode.RdMem).containsKey(stage);
     boolean writeRequired = op_stage_instr.containsKey(BNode.WrMem) && op_stage_instr.get(BNode.WrMem).containsKey(stage);
@@ -714,9 +714,9 @@ public class Orca extends CoreBackend {
       String PC_text = "ISAX_to_pc_correction_data_s <=X\"00000000\";\n";
       String PC_clause = "";
       String PC_clause_stage0 = " ( " + language.CreateNodeName(BNode.WrPC_valid, stages[0], "") + " = '1') ";
-      for (int stagePos = 0; stagePos <= orca_core.GetNodes().get(BNode.WrPC).GetLatest().asInt() + 1; stagePos++) {
+      for (int stagePos = 0; stagePos <= orca_core.getNodes().get(BNode.WrPC).getLatest().asInt() + 1; stagePos++) {
         PipelineStage stage = stages[stagePos];
-        if (array_PC_clause.containsKey(stagePos) || (stagePos == (orca_core.GetNodes().get(BNode.WrPC).GetLatest().asInt() + 1))) {
+        if (array_PC_clause.containsKey(stagePos) || (stagePos == (orca_core.getNodes().get(BNode.WrPC).getLatest().asInt() + 1))) {
           if (this.ContainsOpInStage(BNode.WrPC, max_stage + 1) && stagePos == 0) { // not supported anymore!!!
             logger.error("Spawn PC not supported anymore");
             PC_text += "if(" + language.CreateNodeName(BNode.WrPC_spawn_valid, stages[max_stage + 1], "") + " = '1') then\n" +
@@ -732,7 +732,7 @@ public class Orca extends CoreBackend {
             PC_clause += "( " + array_PC_clause.get(stagePos) + " = '1')";
           }
         }
-        if ((stagePos == orca_core.GetNodes().get(BNode.WrPC).GetLatest().asInt()))
+        if ((stagePos == orca_core.getNodes().get(BNode.WrPC).getLatest().asInt()))
           PC_text += "if( to_pc_correction_valid = '1') then" + tab.repeat(2) +
                      "ISAX_to_pc_correction_data_s <= to_pc_correction_data;\nend if;\n";
         if (array_PC_clause.containsKey(stagePos) && stagePos != 0)
@@ -870,7 +870,7 @@ public class Orca extends CoreBackend {
     // this.PutNode( "std_logic", "", "orca_core", BNode.RdIValid, stages[3]);
     // this.PutNode( "std_logic", "", "orca_core", BNode.RdIValid, stages[4]);
 
-    int stageMem = this.orca_core.GetNodes().get(BNode.RdMem).GetLatest().asInt();
+    int stageMem = this.orca_core.getNodes().get(BNode.RdMem).getLatest().asInt();
     this.PutNode("std_logic_vector", "from_lsu_data", "load_store_unit", BNode.RdMem, stages[stageMem]);
     // this.PutNode( "std_logic", "from_lsu_valid", "load_store_unit", BNode.RdMem_validResp,stages[stageMem]);
     this.PutNode("std_logic_vector", "", "load_store_unit", BNode.WrMem, stages[stageMem]);

@@ -119,14 +119,14 @@ public class WriteQueues {
       auxVal = metaStructProperties.size();
       metaStructProperties.add(properties);
     }
-    return new NodeInstanceDesc.Key(Purpose.REGULAR, QueueElementStructNode, core.GetRootStage(), "", auxVal);
+    return new NodeInstanceDesc.Key(Purpose.REGULAR, QueueElementStructNode, core.getRootStage(), "", auxVal);
   }
   /**
    * Creates the struct key with a given aux value previously returned from a makeMetaStructKey call.
    * (is a dedicated function to avoid too many assumptions about the key in other code locations)
    */
   private static NodeInstanceDesc.Key makeMetaStructKeyFromAux(Core core, int auxVal) {
-    return new NodeInstanceDesc.Key(Purpose.REGULAR, QueueElementStructNode, core.GetRootStage(), "", auxVal);
+    return new NodeInstanceDesc.Key(Purpose.REGULAR, QueueElementStructNode, core.getRootStage(), "", auxVal);
   }
 
   private boolean implementSingle_Struct(Consumer<NodeLogicBuilder> out, NodeInstanceDesc.Key nodeKey, boolean isLast) {
@@ -325,7 +325,7 @@ public class WriteQueues {
      * @param registry the registry of the calling builder
      */
     public NodeInstanceDesc.Key getEntryStructKey(Core core, NodeRegistryRO registry) {
-      var auxKey = new NodeInstanceDesc.Key(Purpose.REGULAR, entryStructAuxNode, core.GetRootStage(), "");
+      var auxKey = new NodeInstanceDesc.Key(Purpose.REGULAR, entryStructAuxNode, core.getRootStage(), "");
       String auxExpr = registry.lookupExpressionRequired(auxKey);
       try {
         int auxVal = Integer.parseInt(auxExpr);
@@ -586,7 +586,6 @@ public class WriteQueues {
                      + SCALUtil.buildCond_StageStalling(bNodes, registry, idSource.getTriggerStage(), checkFlush);
   }
 
-  @SuppressWarnings("unused")
   boolean implementSingle(Consumer<NodeLogicBuilder> out, NodeInstanceDesc.Key nodeKey, boolean isLast) {
     if (implementSingle_Struct(out, nodeKey, isLast))
       return true;
@@ -603,7 +602,7 @@ public class WriteQueues {
       }
       out.accept(NodeLogicBuilder.fromFunction("WriteQueue_" + nodeKey.toString(false), registry -> {
         var ret = new NodeLogicBlock();
-        String queueStorageName = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(queueDesc.mainNode, core.GetRootStage(), ""));
+        String queueStorageName = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(queueDesc.mainNode, core.getRootStage(), ""));
         String queueAddr = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(
             Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, queueDesc.rdAddrNode, nodeKey.getStage(), "", nodeKey.getAux()));
         ret.outputs.add(new NodeInstanceDesc(NodeInstanceDesc.Key.keyWithPurpose(nodeKey, Purpose.REGULAR),
@@ -621,7 +620,7 @@ public class WriteQueues {
       queueDesc.requestedWrResps.add(nodeKey);
       out.accept(NodeLogicBuilder.fromFunction("WriteQueue_" + nodeKey.toString(false), registry -> {
         var ret = new NodeLogicBlock();
-        registry.lookupRequired(new NodeInstanceDesc.Key(queueDesc.mainNode, core.GetRootStage(), ""));
+        registry.lookupRequired(new NodeInstanceDesc.Key(queueDesc.mainNode, core.getRootStage(), ""));
         ret.outputs.add(new NodeInstanceDesc(NodeInstanceDesc.Key.keyWithPurpose(nodeKey, Purpose.WIREDIN_FALLBACK), "1'b1",
                                              ExpressionType.AnyExpression));
         return ret;
@@ -694,7 +693,7 @@ public class WriteQueues {
         String queueDatatype = registry.lookupExpressionRequired(metaStructKey);
         // Output the struct key aux.
         ret.outputs.add(
-            new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, queueDesc.entryStructAuxNode, core.GetRootStage(), ""),
+            new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, queueDesc.entryStructAuxNode, core.getRootStage(), ""),
                                  "" + metaStructKey.getAux(), ExpressionType.AnyExpression_Noparen));
         ret.declarations += String.format("%s %s [%d];\n", queueDatatype, queueStorageName, queueDesc.depth);
 
@@ -715,7 +714,6 @@ public class WriteQueues {
           var innerIDInst = registry.lookupRequired(idSource.makeKey_RdInnerID(0, 0));
           String innerID = innerIDInst.getExpression();
           String innerID_valid = "";
-          boolean stall_included = false;
           //Base valid condition (excl. node_response_stall/WrStall)
           innerID_valid = registry.lookupRequired(idSource.makeKey_RdInnerIDValid()).getExpressionWithParens();
 
@@ -784,7 +782,7 @@ public class WriteQueues {
           queueValidSetFF += tab + tab + tab + String.format("%s[%s].flushing <= 0;\n", queueStorageName, enqSlotWireName);
           if (hasWriteResp)
             queueValidSetFF += tab + tab + tab + String.format("%s[%s].pending <= 0;\n", queueStorageName, enqSlotWireName);
-          queueValidSetFF += tab + tab + String.format("%s[%s].data_present <= 0;\n", queueStorageName, enqSlotWireName);
+          queueValidSetFF += tab + tab + tab + String.format("%s[%s].data_present <= 0;\n", queueStorageName, enqSlotWireName);
           if (queueDesc.regIDLen > 0) {
             queueValidSetFF +=
                 tab + tab + tab + String.format("%s[%s].regID <= enq_data[%d-1:0];\n", queueStorageName, enqSlotWireName, queueDesc.regIDLen);

@@ -110,7 +110,11 @@ module top(input clk, rst,
   input  core_external_interrupt_sources_14_m_interrupt_req_set_not_clear,
   input  core_external_interrupt_sources_15_m_interrupt_req_set_not_clear,
 
-  input  nmi_req_set_not_clear);
+  input  nmi_req_set_not_clear
+
+  //SCAIEV MAKETOP WRAPPERIO
+
+  );
 	
   //SCAIEV MAKETOP COREWIRES
   

@@ -14,7 +14,8 @@ public class InterfaceRequestBuilder extends NodeLogicBuilder {
   private static final NodeInstanceDesc.Purpose AnyIOMarkerPurpose = new Purpose(
       "AnyIOMarkerPurpose", false, Optional.empty(),
       List.of(Map.entry(Purpose.MARKER_FROMCORE_PIN, 1), Map.entry(Purpose.MARKER_FROMISAX_PIN, 1), Map.entry(Purpose.MARKER_TOCORE_PIN, 1),
-              Map.entry(Purpose.MARKER_TOISAX_PIN, 1), Map.entry(Purpose.MARKER_INTERNALIMPL_PIN, 1)));
+              Map.entry(Purpose.MARKER_TOISAX_PIN, 1), Map.entry(Purpose.MARKER_INTERNALIMPL_PIN, 1),
+              Map.entry(Purpose.MARKER_TOEXTERNAL_PIN, 1), Map.entry(Purpose.MARKER_FROMEXTERNAL_PIN, 1)));
 
   NodeInstanceDesc.Purpose markerPurpose;
   NodeInstanceDesc.Key nodeKey;

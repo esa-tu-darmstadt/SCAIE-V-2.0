@@ -120,12 +120,12 @@ public abstract class GenerateText {
   }
 
   public String CreateBasicNodeName(SCAIEVNode operation, PipelineStage stage, String instr, boolean familyname) {
-    if (!instr.isEmpty())
-      instr = "_" + instr;
     String opName = operation.name;
     if (!operation.nameCousinNode.isEmpty() && operation.isAdj() && familyname)
       opName = operation.replaceRadixNameWith(operation.familyName);
-    return opName + instr + "_" + CreateStageName(stage);
+    if (!instr.isEmpty())
+      instr = "_" + instr;
+    return opName + instr + (stage != null ? ("_" + CreateStageName(stage)) : "");
   }
 
   public String CreateStageName(PipelineStage stage) {
@@ -148,13 +148,12 @@ public abstract class GenerateText {
 
   public abstract Lang getLang();
 
-  /// official repo
   public String CreateLocalNodeName(String operation, PipelineStage stage, String instr) {
     String nodeName = "";
     String suffix = "_s";
     if (!instr.isEmpty())
       instr = "_" + instr;
-    nodeName = operation + instr + "_" + CreateStageName(stage) + suffix;
+    nodeName = operation + instr + (stage != null ? ("_" + CreateStageName(stage)) : "") + suffix;
     return nodeName;
   }
 

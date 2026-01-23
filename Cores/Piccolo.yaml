@@ -1,16 +1,30 @@
 # Piccolo
+!SerialCoreDescription
+pipeline:
+  name: root
+  kind: root
+  tags: []
+  externalID: -1
+  continuous: false
+  nextStages: []
+  children:
+  - {name: fetch_execute, kind: core,          externalID: 0,  continuous: true, tags: [inorder, nonspeculative], nextStages: [memory], children: []}
+  - {name: memory,        kind: core,          externalID: 1,  continuous: true, tags: [inorder, nonspeculative], nextStages: [writeback], children: []}
+  - {name: writeback,     kind: core,          externalID: 2,  continuous: true, tags: [inorder, commit, nonspeculative], nextStages: [decoupled1], children: []}
+  - {name: decoupled1,    kind: decoupled,     externalID: 3,  continuous: true, tags: [inorder, commit], nextStages: [], children: []}
+operations:
 - operation: RdCustReg
   earliest: 0
   latency: 0
   latest: 2 
 - operation: WrCustReg.addr
-  earliest: RdCustReg.earliest
+  earliest: 0
   latency: 0
-  latest: RdCustReg.earliest
+  latest: 0
 - operation: WrCustReg.data
-  earliest: RdCustReg.earliest
+  earliest: 0
   latency: 1
-  costly: RdCustReg.earliest+1
+  costly: 1
 - operation: RdRS1
   earliest: 0
   latency: 0
@@ -75,4 +89,8 @@
   latency: 0
   latest: 1
   costly: 2
-
+- operation: RdNextPC
+  earliest: 0
+  latest: 0
+  costly: 1
+  latency: 0

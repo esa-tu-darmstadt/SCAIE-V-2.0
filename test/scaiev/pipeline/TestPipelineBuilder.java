@@ -3,6 +3,7 @@ package scaiev.pipeline;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
 import java.util.stream.Collectors;
@@ -15,7 +16,7 @@ public class TestPipelineBuilder {
   public TestPipelineBuilder(Random rand) { this.rand = rand; }
 
   public static class GeneratedPipeline {
-    public PipelineStage rootStage = new PipelineStage(StageKind.Root, EnumSet.noneOf(StageTag.class), "root", Optional.empty(), false);
+    public PipelineStage rootStage = new PipelineStage(StageKind.Root, List.of(), "root", Optional.empty(), false);
     public List<List<PipelineStage>> coreDepthBuckets = new ArrayList<List<PipelineStage>>();
     public List<PipelineStage> subPipelinedStages = new ArrayList<PipelineStage>();
   }
@@ -42,12 +43,12 @@ public class TestPipelineBuilder {
       int iSubpipeEntry = rand.nextInt(nEntries);
       for (int iEntry = 0; iEntry < nEntries; ++iEntry) {
         PipelineStage curStage =
-            new PipelineStage(StageKind.Core, EnumSet.noneOf(StageTag.class), "core" + iBucket + "_" + iEntry, Optional.of(iStage++), true);
+            new PipelineStage(StageKind.Core, List.of(), "core" + iBucket + "_" + iEntry, Optional.of(iStage++), true);
         curBucket.add(curStage);
         // Sometimes make a bucket two stages deep.
         if (rand.nextInt(128) < 16) {
           curStage.addNext(
-              new PipelineStage(StageKind.Core, EnumSet.noneOf(StageTag.class), curStage.getName() + "_b", Optional.of(iStage++), false));
+              new PipelineStage(StageKind.Core, List.of(), curStage.getName() + "_b", Optional.of(iStage++), false));
         }
         if (iBucket == iSubpipedBucket && iEntry == iSubpipeEntry) {
           ret.subPipelinedStages.add(curStage);

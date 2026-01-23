@@ -70,7 +70,7 @@ public class CoreBackend {
   public void PopulateNodesMap() {
     for (SCAIEVNode node : BNode.GetAllBackNodes()) {
       HashMap<PipelineStage, NodePropBackend> newStageNode = new HashMap<PipelineStage, NodePropBackend>();
-      core.GetRootStage().getAllChildren().forEach(stage -> {
+      core.getRootStage().getAllChildren().forEach(stage -> {
         NodePropBackend prop = new NodePropBackend();
         newStageNode.put(stage, prop);
       });
@@ -78,7 +78,7 @@ public class CoreBackend {
     }
 
     // Default nodes for spawn
-    core.GetRootStage().getAllChildren().filter(stage -> stage.getKind() == StageKind.Decoupled).forEach(decoupledStage -> {
+    core.getRootStage().getAllChildren().filter(stage -> stage.getKind() == StageKind.Decoupled).forEach(decoupledStage -> {
       this.PutNode("", "", "", BNode.ISAX_spawnStall_regF_s, decoupledStage);
       this.PutNode("", "", "", BNode.ISAX_spawnStall_mem_s, decoupledStage);
     });

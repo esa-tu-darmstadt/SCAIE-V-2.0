@@ -84,9 +84,9 @@ public class SpawnCommittedRdStrategy extends MultiNodeStrategy {
         return false;
 
       if (implementedNodes.add(nodeKey.getNode())) {
-        if (spawnNode.equals(bNodes.WrRD_spawn) && core.GetNodes().containsKey(bNodes.rd_dh_spawn_addr) &&
+        if (spawnNode.equals(bNodes.WrRD_spawn) && core.getNodes().containsKey(bNodes.rd_dh_spawn_addr) &&
             (nodeKey.getStage().getKind() == StageKind.Decoupled ||
-             core.StageIsInRange(core.GetNodes().get(bNodes.rd_dh_spawn_addr), nodeKey.getStage()))) {
+             core.stageIsInRange(core.getNodes().get(bNodes.rd_dh_spawn_addr), nodeKey.getStage()))) {
           // Take from rd_dh_spawn_addr given by the core.
           if (bNodes.rd_dh_spawn_addr.size != 5) {
             logger.warn("rd_dh_spawn_addr is expected to be five bits wide");

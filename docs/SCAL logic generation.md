@@ -20,7 +20,7 @@ The revised implementation has two main goals:
   Builders are only guaranteed to be reevaluated if a possible change to the dependency set was observed. If a strategy wants to have one of its previously returned builders reevaluated (e.g. to add another element to a FIFO builder), it has to do something that changes the dependency set; `SwitchableNodeLogicBuilder` and `TriggerableNodeLogicBuilder` implement such a technique.
 
 - Module Composer: The composer implements the main loop for logic generation. It invokes a root strategy to resolve still-missing node keys, and handles the builder invocation queue for correct resolution of dependencies.
-- Node Registry: The one-stop-shop for builders to look up and request dependencies by node key. Lookups can be 'required' and 'optional'; a required lookup can lead to construction of a missing node, and always returns a value. Expressions of required lookups start with "MISSING_" if the dependency cannot be resolved yet. All kinds of lookups will be noted as a trigger, so the builder is invocated once more if the lookup results change. 
+- Node Registry: The one-stop-shop for builders to look up and request dependencies by node key. Lookups can be 'required' and 'optional'; a required lookup can lead to construction of a missing node, and always returns a value. Expressions of required lookups start with "MISSING~" if the dependency cannot be resolved yet. All kinds of lookups will be noted as a trigger, so the builder is invocated once more if the lookup results change.
 
 - Purpose: A tag for the processing stage or kind of a node.
   The default Purpose for lookups matches, among others, `PIPEDIN` (value from a previous stage), `WIREDIN` (unprocessed value from an external input) and `REGULAR` (internally processed value) with an increasing priority, such that `WIREDIN` nodes overwrite `PIPEDIN`, whereas `REGULAR` overwrites both. Different Purposes can be chosen for both lookups and node outputs.
@@ -32,4 +32,3 @@ The revised implementation has two main goals:
 
 ## Examples
 TODO
-

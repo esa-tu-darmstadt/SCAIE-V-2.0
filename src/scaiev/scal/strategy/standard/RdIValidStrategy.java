@@ -51,7 +51,7 @@ public class RdIValidStrategy extends MultiNodeStrategy {
       if (!nodeKey.getNode().equals(bNodes.RdIValid) || (!nodeKey.getPurpose().matches(NodeInstanceDesc.Purpose.REGULAR) &&
                                                          !nodeKey.getPurpose().matches(NodeInstanceDesc.Purpose.WIREDIN)))
         continue;
-      if (core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdInstr).GetEarliest()).isAfter(nodeKey.getStage(), false))
+      if (core.translateStageScheduleNumber(core.getNodes().get(bNodes.RdInstr).getEarliest()).isAfter(nodeKey.getStage(), false))
         continue;
       if (!this.allISAXes.containsKey(nodeKey.getISAX()) || this.allISAXes.get(nodeKey.getISAX()).HasNoOp())
         continue; // Do not generate RdIValid for 'always'/NoOp ISAX, nor for invalid ISAXes.

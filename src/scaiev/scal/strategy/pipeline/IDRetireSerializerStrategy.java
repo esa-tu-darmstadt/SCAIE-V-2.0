@@ -113,7 +113,7 @@ public class IDRetireSerializerStrategy extends MultiNodeStrategy {
     this.allowCombRetireOnIssue = allowCombRetireOnIssue;
 
     this.uniqueID = nextUniqueID.getAndIncrement();
-    PipelineStage referenceStage = this.retireSources.isEmpty() ? this.core.GetRootStage() : this.retireSources.get(0).getReferenceStage();
+    PipelineStage referenceStage = this.retireSources.isEmpty() ? this.core.getRootStage() : this.retireSources.get(0).getReferenceStage();
     this.signals = new SerialRetireSignals(referenceStage, uniqueID, idWidth, idCount);
     this.builderTriggerKey = new NodeInstanceDesc.Key(Purpose.REGULAR, new SCAIEVNode("SerialRetire_Trigger" + uniqueID), referenceStage, "");
   }
@@ -374,7 +374,7 @@ public class IDRetireSerializerStrategy extends MultiNodeStrategy {
    */
   protected static List<RetireSource> constructRetireSources(BNode bNodes, Core core) {
     var ret = new ArrayList<IDRetireSerializerStrategy.RetireSource>();
-    PipelineFront coreCommitFront = new PipelineFront(core.GetRootStage().getAllChildren()
+    PipelineFront coreCommitFront = new PipelineFront(core.getRootStage().getAllChildren()
                                                      .filter(stage -> stage.getKind() == StageKind.Core
                                                                       || stage.getKind() == StageKind.CoreInternal)
                                                      .filter(stage -> stage.getTags().contains(StageTag.Commit)));
@@ -382,8 +382,8 @@ public class IDRetireSerializerStrategy extends MultiNodeStrategy {
       if (bNodes.RdCommitIDCount.size > 0 && bNodes.RdCommitIDCount.elements > 0) {
         assert(bNodes.RdCommitIDCount.size == Log2.clog2(bNodes.RdCommitIDCount.elements+1));
         ret.add(new IDAndCountRetireSource(
-                    new NodeInstanceDesc.Key(bNodes.RdCommitID, core.GetRootStage(), ""),
-                    new NodeInstanceDesc.Key(bNodes.RdCommitIDCount, core.GetRootStage(), ""),
+                    new NodeInstanceDesc.Key(bNodes.RdCommitID, core.getRootStage(), ""),
+                    new NodeInstanceDesc.Key(bNodes.RdCommitIDCount, core.getRootStage(), ""),
                     false));
       }
     }
@@ -396,23 +396,23 @@ public class IDRetireSerializerStrategy extends MultiNodeStrategy {
     if (bNodes.RdCommitFlushIDCount.size > 0 && bNodes.RdCommitFlushIDCount.elements > 0) {
       assert(bNodes.RdCommitFlushIDCount.size == Log2.clog2(bNodes.RdCommitFlushIDCount.elements+1));
       ret.add(new IDAndCountRetireSource(
-                  new NodeInstanceDesc.Key(bNodes.RdCommitFlushID, core.GetRootStage(), ""),
-                  new NodeInstanceDesc.Key(bNodes.RdCommitFlushIDCount, core.GetRootStage(), ""),
+                  new NodeInstanceDesc.Key(bNodes.RdCommitFlushID, core.getRootStage(), ""),
+                  new NodeInstanceDesc.Key(bNodes.RdCommitFlushIDCount, core.getRootStage(), ""),
                   true));
     }
     if (bNodes.RdCommitFlushMask.size > 0) {
       ret.add(new BitmaskRetireSource(
-                  new NodeInstanceDesc.Key(bNodes.RdCommitFlushMask, core.GetRootStage(), ""),
+                  new NodeInstanceDesc.Key(bNodes.RdCommitFlushMask, core.getRootStage(), ""),
                   true));
     }
     if (bNodes.RdCommitFlushAll.size > 0) {
       assert(bNodes.RdCommitFlushAll.size == 1);
       assert(bNodes.RdCommitFlushAllID.size == 0 || bNodes.RdCommitFlushAllID.size == bNodes.RdIssueID.size);
-      ret.add(new FlushResetAllSource(core.GetRootStage(),
+      ret.add(new FlushResetAllSource(core.getRootStage(),
                  bNodes.RdIssueID.size, bNodes.RdIssueID.elements,
-                 new NodeInstanceDesc.Key(bNodes.RdCommitFlushAll, core.GetRootStage(), ""),
+                 new NodeInstanceDesc.Key(bNodes.RdCommitFlushAll, core.getRootStage(), ""),
                  (bNodes.RdCommitFlushAllID.size > 0)
-                      ? Optional.of(new NodeInstanceDesc.Key(bNodes.RdCommitFlushAllID, core.GetRootStage(), ""))
+                      ? Optional.of(new NodeInstanceDesc.Key(bNodes.RdCommitFlushAllID, core.getRootStage(), ""))
                       : Optional.empty()));
     }
     return ret;
@@ -422,11 +422,12 @@ public class IDRetireSerializerStrategy extends MultiNodeStrategy {
    * Constructs an IDRetireSerializerStrategy using the core's Issue stages.
    */
   public static IDRetireSerializerStrategy constructRetireSerializer(Verilog language, BNode bNodes, Core core) {
-    //Select all first-reachable Issue stages.
-    List<PipelineStage> assignStages = core.GetRootStage().getChildren().stream()
-                                       .flatMap(child -> child.streamNext_bfs(stage->!stage.getTags().contains(StageTag.Issue)))
-                                       .filter(stage->stage.getTags().contains(StageTag.Issue))
-                                       .toList();
+    //Select all first-reachable Issue stages (diving into port stages, if present).
+    List<PipelineStage> assignStages = SCALUtil.flatmapIntoPorts(
+                                         core.getRootStage().getChildren().stream()
+                                           .flatMap(child -> child.streamNext_bfs(stage->!stage.getTags().contains(StageTag.Issue)))
+                                           .filter(stage->stage.getTags().contains(StageTag.Issue))
+                                       ).toList();
     //Should not contain duplicates, assuming core.GetRootStage().getChildren() returns sub-pipelines without any common sub-graphs.
     assert(assignStages.stream().distinct().count() == assignStages.size());
 

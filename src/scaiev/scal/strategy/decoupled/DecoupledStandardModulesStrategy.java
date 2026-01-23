@@ -230,13 +230,6 @@ public class DecoupledStandardModulesStrategy extends SingleNodeStrategy {
 
   private String ShiftModule(boolean laterFlushes) {
     String returnStr = "";
-    //		List<PipelineStage> startSpawnStagesList = this.core.GetStartSpawnStages().asList();
-    //		assert(startSpawnStagesList.size() > 0);
-    //		assert(startSpawnStagesList.stream().allMatch(startSpawnStage -> startSpawnStage.getStagePos() ==
-    // startSpawnStagesList.get(0).getStagePos())); 		if(startSpawnStagesList.stream().anyMatch(startSpawnStage ->
-    //			startSpawnStage.getNext().stream().anyMatch(postStage -> postStage.getKind() == StageKind.Core))
-    //			) //roughly: startSpawnStage < maxStage
-    //			returnStr += "`define LATER_FLUSHES\n";
     returnStr += "module " + ShiftmoduleName + (laterFlushes ? "_LateFlush" : "") + " #(\n"
                  + "    parameter NR_ELEMENTS,\n" // 64
                  + "    parameter DATAW,\n"       // 5

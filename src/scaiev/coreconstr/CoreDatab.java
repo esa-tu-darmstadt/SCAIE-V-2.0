@@ -5,13 +5,18 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.ObjectOutputStream;
 import java.io.Serializable;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -22,14 +27,21 @@ import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.TypeDescription;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.Constructor;
+import org.yaml.snakeyaml.error.YAMLException;
+import org.yaml.snakeyaml.nodes.Node;
+import org.yaml.snakeyaml.nodes.NodeId;
+
 import scaiev.backend.BNode;
 import scaiev.coreconstr.Core.CoreTag;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.NodeTypeTag;
+import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
 import scaiev.pipeline.PipelineStage.StageTag;
 import scaiev.pipeline.ScheduleFront;
+import scaiev.util.ParseUtil;
+import scaiev.util.ParseUtil.ParseException;
 
 public class CoreDatab {
   // logging
@@ -76,6 +88,19 @@ public class CoreDatab {
       /** Tags for this stage (PipelineStage.StageTag string representation) */
       List<String> tags = new ArrayList<>();
 
+      /**
+       * Required attributes for a port 'stage' sitting inside a CoreMultiport stage.
+       * Generic map type that {@link #asPipeline_thisAndChildren(boolean)} converts to {@link PipelineStage.MultiportPipeAttributes}.
+       */
+      Map<String,Object> portPipe = null;
+      //PipelineStage.MultiportPipeAttributes portPipe = null;
+      /**
+       * Required attributes for a CoreMultiport stage.
+       * Generic map type that {@link #asPipeline_thisAndChildren(boolean)} converts to {@link PipelineStage.MultiportStallAttributes}.
+       */
+      Map<String,Object> multiportStall = null;
+      //PipelineStage.MultiportStallAttributes multiportStall = null;
+
       public String getName() { return name; }
       public void setName(String name) { this.name = name; }
       public int getExternalID() { return externalID; }
@@ -90,6 +115,10 @@ public class CoreDatab {
       public void setKind(String kind) { this.kind = kind; }
       public List<String> getTags() { return tags; }
       public void setTags(List<String> tags) { this.tags = tags; }
+      public Map<String, Object> getPortPipe() { return portPipe; }
+      public void setPortPipe(Map<String, Object> portPipe) { this.portPipe = portPipe; }
+      public Map<String, Object> getMultiportStall() { return multiportStall; }
+      public void setMultiportStall(Map<String, Object> multiportStall) { this.multiportStall = multiportStall; }
 
       /**
        * Converts this stage and its children to a PipelineStage, ignoring this.nextStages.
@@ -110,20 +139,44 @@ public class CoreDatab {
           return Optional.empty();
         }
 
-        EnumSet<StageTag> tagsVal = EnumSet.noneOf(StageTag.class);
+        Map<StageTag,Object> tagsVal = new HashMap<>();
         for (String tagName : tags) {
-          var tagVal_opt = Stream.of(StageTag.values()).filter(tagVal -> tagVal.serialName.equals(tagName)).findAny();
+          var tagVal_opt = Stream.of(StageTag.values()).filter(tagVal -> tagVal.attributesClass == null && tagVal.serialName.equals(tagName)).findAny();
           if (tagVal_opt.isEmpty()) {
             logger.error("CoreDatab. Enountered invalid stage tag '{}'.", tagName);
             return Optional.empty();
           }
-          tagsVal.add(tagVal_opt.get());
+          tagsVal.put(tagVal_opt.get(), null);
+        }
+        
+        if (portPipe != null) {
+          try {
+            tagsVal.put(StageTag.MultiportPipe, ParseUtil.recordFromMap(portPipe, PipelineStage.MultiportPipeAttributes.class));
+          } catch (ParseException e) {
+            logger.error("CoreDatab. Encountered a parse exception while parsing a portPipe attribute.");
+            e.printStackTrace();
+            return Optional.empty();
+          }
+        }
+        if (multiportStall != null) {
+          try {
+            tagsVal.put(StageTag.MultiportStall, ParseUtil.recordFromMap(multiportStall, PipelineStage.MultiportStallAttributes.class));
+          } catch (ParseException e) {
+            logger.error("CoreDatab. Encountered a parse exception while parsing a multiportStall attribute.");
+            e.printStackTrace();
+            return Optional.empty();
+          }
+        }
+        else if (kindVal == StageKind.CoreMultiport) {
+          logger.error("CoreDatab. Encountered a CoreMultiport stage without a multiportStall attribute: {}.", this.name);
+          return Optional.empty();
         }
 
         PipelineStage ret =
-            new PipelineStage(kindVal, tagsVal, name, externalID == -1 ? Optional.empty() : Optional.of(externalID), continuous);
+            new PipelineStage(kindVal, tagsVal.entrySet().stream().map(e->new PipelineStage.TagAttrPair(e.getKey(), e.getValue())).toList(),
+                              name, externalID == -1 ? Optional.empty() : Optional.of(externalID), continuous);
         if (!this.children.isEmpty()) {
-          if (kindVal != StageKind.Root) {
+          if (kindVal != StageKind.Root && kindVal != StageKind.CoreMultiport) {
             // Sub pipelines are intended to be created by SCAIE-V itself.
             //  There is no fundamental reason why this shouldn't work, but at the time of writing this,
             //  there also is no reason to support this, given that no core nodes can be accessed directly from a Sub node.
@@ -133,7 +186,7 @@ public class CoreDatab {
                          name);
             return Optional.empty();
           }
-          PipelineStage directChild = null;
+          PipelineStage[] directChildren = new PipelineStage[this.children.size()];
           ArrayList<PipelineStage> childrenConverted = new ArrayList<>(this.children.size());
           HashMap<String, PipelineStage> childByName = new HashMap<>();
           HashSet<String> unusedChildren = new HashSet<>();
@@ -144,9 +197,19 @@ public class CoreDatab {
             if (curChild_opt.isEmpty()) // Errors in child
               return Optional.empty();
             var curChild = curChild_opt.get();
+            if (kindVal == StageKind.CoreMultiport) {
+              if (curChild.getKind() != StageKind.Core) {
+                logger.error("CoreDatab. All stages inside a CoreMultiport stage ({}) must be of kind Core.", this.name);
+                return Optional.empty();
+              }
+              if (curChild.getTagAttr(StageTag.MultiportPipe) == null) {
+                logger.error("CoreDatab. A stage inside a CoreMultiport stage ({}) is missing the portPipe attribute.", this.name);
+                return Optional.empty();
+              }
+            }
             childrenConverted.add(curChild);
-            if (i == 0)
-              directChild = curChild;
+            if (i == 0 || kindVal == StageKind.CoreMultiport)
+              directChildren[i] = curChild;
             else
               unusedChildren.add(curChildDesc.name); // Keep track of unused children to detect possible user errors in yaml file creation.
 
@@ -162,8 +225,11 @@ public class CoreDatab {
               return Optional.empty();
             }
           }
-          assert (directChild != null);
-          ret.addChild(directChild);
+          assert (directChildren[0] != null);
+          for (PipelineStage directChild : directChildren) {
+            if (directChild != null)
+              ret.addChild(directChild);
+          }
 
           for (int i = 0; i < this.children.size(); ++i) {
             // Connect the PipelineStage graph via next and prev.
@@ -351,14 +417,14 @@ public class CoreDatab {
                 opDesc.latest = opDesc.earliest;
             }
             CoreNode newNode = new CoreNode(opDesc.earliest, opDesc.latency, opDesc.latest, opDesc.costly, opDesc.operation);
-            if (newNode.GetLatest().asInt() > maxStage)
-              maxStage = newNode.GetLatest().asInt();
+            if (newNode.getLatest().asInt() > maxStage)
+              maxStage = newNode.getLatest().asInt();
             nodes_of1_core.put(addNode, newNode);
           }
           // Make sure no node has latest = -1
           for (SCAIEVNode fnode : nodes_of1_core.keySet()) {
-            if (nodes_of1_core.get(fnode).GetLatest().asInt() == -1) {
-              nodes_of1_core.get(fnode).OverrideLatest(new ScheduleFront(maxStage));
+            if (nodes_of1_core.get(fnode).getLatest().asInt() == -1) {
+              nodes_of1_core.get(fnode).overrideLatest(new ScheduleFront(maxStage));
             }
           }
 
@@ -379,14 +445,15 @@ public class CoreDatab {
             // If no explicit pipeline is given, construct a simple one from the known stage number range.
             PipelineStage corePipelineFront = PipelineStage.constructLinearContinuous(StageKind.Core, maxStage + 1, Optional.of(0));
             rootStage.addChild(corePipelineFront);
-            int lastRdFlushStage = Optional.ofNullable(nodes_of1_core.get(BNode.RdFlush)).map(node -> node.GetLatest().asInt()).orElse(-1);
+            int lastRdFlushStage = Optional.ofNullable(nodes_of1_core.get(BNode.RdFlush)).map(node -> node.getLatest().asInt()).orElse(-1);
             if (lastRdFlushStage == -1)
               lastRdFlushStage = maxStage;
             rootStage.getChildrenByStagePos(lastRdFlushStage, maxStage).forEach(commitStage -> commitStage.addTag(StageTag.Commit));
-
             // Add the special decoupled stage to the end of the pipeline.
             PipelineStage decoupledStage =
-                new PipelineStage(StageKind.Decoupled, EnumSet.of(StageTag.InOrder, StageTag.Commit), "decoupled", Optional.of(maxStage + 1), true);
+                new PipelineStage(StageKind.Decoupled, List.of(), "decoupled", Optional.of(maxStage + 1), true);
+            decoupledStage.addTag(StageTag.InOrder);
+            decoupledStage.addTag(StageTag.Commit);
             rootStage.getChildrenTails().forEach(tailStage -> {
               assert (tailStage.getKind() == StageKind.Core);
               tailStage.addNext(decoupledStage);
@@ -402,8 +469,24 @@ public class CoreDatab {
           assert (rootStage.getChildren().size() == 1);
 
           Core newCore = new Core(coreName, rootStage, coreTags_opt.get());
-          newCore.PutNodes(nodes_of1_core);
+          newCore.setNodes(nodes_of1_core);
           newCore.maxStage = maxStage;
+
+          //Minor assertions on the pipeline that SCAIE-V/SCAL assumes
+          PipelineFront issueFront = new PipelineFront(rootStage.getChildren().stream().filter(stage -> stage.getTags().contains(StageTag.Issue)));
+          if (!rootStage.getChildren().stream().allMatch(
+              curStage -> curStage.getTags().contains(StageTag.InOrder) || issueFront.isBefore(curStage, false))) {
+            logger.error("CoreDatab. Core pipeline has a non-'inorder' stage before post-issue, from yaml file {}", coreFile.getName());
+            continue;
+          }
+          if (nodes_of1_core.containsKey(BNode.RdFlush)) {
+            PipelineFront flushLatestFront = newCore.translateStageScheduleNumber(nodes_of1_core.get(BNode.RdFlush).getLatest());
+            if (flushLatestFront.asList().stream().anyMatch(flushLatestStage -> issueFront.isBefore(flushLatestStage, false))) {
+              logger.error("CoreDatab. Core pipeline has RdFlush in a post-issue stage, from yaml file {}", coreFile.getName());
+              continue;
+            }
+          }
+
           cores.put(coreName, newCore);
         }
       } else {

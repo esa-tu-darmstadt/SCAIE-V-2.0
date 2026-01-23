@@ -3,6 +3,8 @@ package scaiev.coreconstr;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.Set;
@@ -38,7 +40,7 @@ public class Core {
   }
 
   public Core() {
-    this.rootStage = new PipelineStage(StageKind.Root, EnumSet.noneOf(StageTag.class), "root", Optional.empty(), false);
+    this.rootStage = new PipelineStage(StageKind.Root, List.of(), "root", Optional.empty(), false);
     this.name = "";
     this.tags = EnumSet.noneOf(CoreTag.class);
   }
@@ -51,9 +53,9 @@ public class Core {
     return String.format("INFO. Core. Core named:" + name + " with nodes = " + nodes.toString());
   }
 
-  public void PutName(String name) { this.name = name; }
+  public void setName(String name) { this.name = name; }
 
-  public void PutNodes(HashMap<SCAIEVNode, CoreNode> nodes) {
+  public void setNodes(HashMap<SCAIEVNode, CoreNode> nodes) {
     for (Entry<SCAIEVNode, CoreNode> node : nodes.entrySet()) {
       if (node.getKey().name.equals("RdRS1")) {
         start_spawn_node = node.getValue();
@@ -68,61 +70,61 @@ public class Core {
    * @param node the node to declare (is an FNode if from the datasheet, can be from BNode or elsewhere if custom)
    * @param corenode the node
    */
-  public void PutNode(SCAIEVNode node, CoreNode corenode) {
+  public void putNode(SCAIEVNode node, CoreNode corenode) {
     this.nodes.put(node, corenode);
     if (node.name.equals("RdRS1"))
       start_spawn_node = corenode;
   }
 
-  public PipelineStage GetRootStage() { return this.rootStage; }
+  public PipelineStage getRootStage() { return this.rootStage; }
 
-  public PipelineFront GetSpawnStages() {
+  public PipelineFront getSpawnStages() {
     // return maxStage+1;
     return new PipelineFront(this.rootStage.getAllChildren().filter(stage -> stage.getKind() == StageKind.Decoupled));
   }
 
-  public PipelineFront GetStartSpawnStages() {
+  public PipelineFront getStartSpawnStages() {
     //If present, use RegRename-tagged stages as 'start spawn'; otherwise, use the RdRS1/start_spawn_node
     var ret = new PipelineFront(this.rootStage.getAllChildren().filter(stage -> stage.getTags().contains(StageTag.RegRename)));
     if (!ret.asList().isEmpty())
       return ret;
     if (start_spawn_node == null)
       return new PipelineFront();
-    return new PipelineFront(TranslateStageScheduleNumber(start_spawn_node.GetEarliest())
+    return new PipelineFront(translateStageScheduleNumber(start_spawn_node.getEarliest())
                                  .asList()
                                  .stream()
                                  .filter(stage -> stage.getKind() != StageKind.CoreInternal));
   }
-  public String GetName() { return name; }
+  public String getName() { return name; }
 
-  public HashMap<SCAIEVNode, CoreNode> GetNodes() { return nodes; }
+  public HashMap<SCAIEVNode, CoreNode> getNodes() { return nodes; }
 
   /**
    * Retrieves the stage schedule number that the given stage covers by default; Optional.empty if the stage is not used for scheduling by
    * default.
    */
-  public Optional<Integer> GetStageNumber(PipelineStage stage) {
-    if (stage.getKind() != StageKind.Core && stage.getKind() != StageKind.Decoupled)
+  public Optional<Integer> getStageNumber(PipelineStage stage) {
+    if (stage.getKind() != StageKind.Core && stage.getKind() != StageKind.CoreMultiport && stage.getKind() != StageKind.Decoupled)
       return Optional.empty();
     return Optional.of(stage.getStagePos());
   }
 
   /** Translates a stage schedule number from a {@link CoreNode} into a {@link PipelineFront}. */
-  public PipelineFront TranslateStageScheduleNumber(int stageNum) {
+  public PipelineFront translateStageScheduleNumber(int stageNum) {
     return new PipelineFront(rootStage.getChildrenByStagePos(stageNum).filter(stage -> stage.getKind() != StageKind.CoreInternal));
   }
 
   /** Translates a {@link ScheduleFront} from a {@link CoreNode} into a {@link PipelineFront}. */
-  public PipelineFront TranslateStageScheduleNumber(ScheduleFront stageNum) {
+  public PipelineFront translateStageScheduleNumber(ScheduleFront stageNum) {
     var asFront_opt = stageNum.tryGetAsFront();
     if (asFront_opt.isPresent())
       return asFront_opt.get();
-    return TranslateStageScheduleNumber(stageNum.asInt());
+    return translateStageScheduleNumber(stageNum.asInt());
   }
 
   /** Determines whether a {@link PipelineStage} is in the earliest-latest range of a {@link CoreNode}. */
-  public boolean StageIsInRange(CoreNode coreNode, PipelineStage stage) {
-    return TranslateStageScheduleNumber(coreNode.GetEarliest()).isAroundOrBefore(stage, false) &&
-        TranslateStageScheduleNumber(coreNode.GetLatest()).isAroundOrAfter(stage, false);
+  public boolean stageIsInRange(CoreNode coreNode, PipelineStage stage) {
+    return translateStageScheduleNumber(coreNode.getEarliest()).isAroundOrBefore(stage, false) &&
+        translateStageScheduleNumber(coreNode.getLatest()).isAroundOrAfter(stage, false);
   }
 }

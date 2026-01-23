@@ -65,7 +65,7 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
    */
   public static final SCAIEVNode ISAXValidCounter = new SCAIEVNode("ISAXValidCounter");
   /**
-   * Backpressure node; but ISAX-sensitive stall, specifically stalling before increment of {@link SpawnRdIValidStrategy#ISAXValidCounter}.
+   * Backpressure node; ISAX-sensitive stall, specifically stalling before increment of {@link SpawnRdIValidStrategy#ISAXValidCounter}.
    * Unlike WrStall, no base node is generated.
    * Instead, all WrStallISAXEntry nodes for any given ISAX are directly used in construction of sub-pipeline WrStall.
    * The ISAX field must be set to the name of a spawn ISAX with sub-pipelines below the given stage. Aux must be set to a unique value.
@@ -73,7 +73,7 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
   public static final SCAIEVNode WrStallISAXEntry = new SCAIEVNode("WrStallISAXEntry");
   /**
    * Companion node to {@link SpawnRdIValidStrategy#WrStallISAXEntry} that signals (at least) one cycle earlier.
-   * Used for ISAXes that do not
+   * Workaround for ISAXes that do not check RdStall in the stall-entry stage. Does not cover all stall reasons, however.
    */
   public static final SCAIEVNode WrStallISAXEntryEarly = new SCAIEVNode("WrStallISAXEntryEarly");
 
@@ -541,7 +541,7 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
   /** Overrides the RdIValid sub-pipeline entry of SpawnStaticNodePipeStrategy, creating WrDeqInstr and WrStall in the base pipeline. */
   private boolean implementRdIValid(Consumer<NodeLogicBuilder> out, NodeInstanceDesc.Key nodeKey) {
     if (nodeKey.getNode().equals(bNodes.WrDeqInstr) && nodeKey.getISAX().isEmpty() && nodeKey.getAux() == 0) {
-      // Add dependencies to all RdIValid entry nodes, even for dynamic ISAXes.
+      // WrDeqInstr hook to add dependencies to all RdIValid entry nodes, even for dynamic ISAXes.
       //  -> this ensures creation of all WrDeqInstr sub-conditions from the RdIValid sub-pipeline builder
       if (implementedWrDeqInstrIValidDeps.add(nodeKey.getStage())) {
         PipelineFront parentFront = new PipelineFront(nodeKey.getStage());
@@ -558,11 +558,52 @@ public class SpawnRdIValidStrategy extends MultiNodeStrategy {
                                 .map(entryStage -> Map.entry(instr_stage.getKey(), entryStage)))
                 .distinct()
                 .toList();
-        out.accept(NodeLogicBuilder.fromFunction("SpawnRdIValidStrategy_addDependency_" + nodeKey.toString(false), registry -> {
+        int rdMemCoreLatency = core.getNodes().containsKey(bNodes.RdMem) ? core.getNodes().get(bNodes.RdMem).getLatency() : -1;
+        HashSet<String> warnedMemForISAX = new HashSet<>();
+        out.accept(NodeLogicBuilder.fromFunction("SpawnRdIValidStrategy_addDependency_" + nodeKey.toString(false), (registry, aux) -> {
           var ret = new NodeLogicBlock();
-          relevantISAXes.forEach(
-              isaxStage
-              -> registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdIValid, isaxStage.getValue(), isaxStage.getKey())));
+          for (var isaxStage : relevantISAXes) {
+            String isax = isaxStage.getKey();
+            PipelineStage entryStage = isaxStage.getValue();
+            assert(isaxStage.getValue().getPrev().isEmpty() && isaxStage.getValue().getKind() == StageKind.Sub);
+            registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdIValid, entryStage, isax));
+
+            //While we're here, handle an edge case: an ISAX started a RdMem request (latency=i) in the stage N-i
+            // -> stall the ISAX entry stage until RdMem_validResp,
+            //    so the ISAX actually gets its result in the stage it expects it in
+            PipelineStage parentStage = entryStage.getParent().get();
+            if (rdMemCoreLatency > 0 && allISAXes.containsKey(isax) &&
+                allISAXes.get(isax).HasSchedWith(bNodes.RdMem,
+                    sched -> sched.GetStartCycle() + core.getNodes().get(bNodes.RdMem).getLatency() == parentStage.getStagePos())) {
+              if (core.getNodes().containsKey(bNodes.RdMem_validResp)) {
+                // Transfer parent stage's RdMem_validResp (inverted) to entry stage's WrStall
+                var memReqInst = registry.lookupRequired(new NodeInstanceDesc.Key(Purpose.PIPEDIN, bNodes.RdMem_validReq, parentStage, ""));
+                var memRespInst = registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdMem_validResp, parentStage, ""));
+                var stallCondKey = new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrStall, entryStage, "", aux);
+                String stallCondWire = "%s_waitForRdMem".formatted(stallCondKey.toString(false));
+                ret.declarations += "logic %s;\n".formatted(stallCondWire);
+                ret.logic += "assign %s = %s && !%s;\n".formatted(
+                                  stallCondWire,
+                                  memReqInst.getExpressionWithParens(), memRespInst.getExpressionWithParens());
+                ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrStall, entryStage, "", aux),
+                                                     stallCondWire, ExpressionType.WireName));
+                registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.WrStall, entryStage, ""));
+              }
+              else if (warnedMemForISAX.add(isax)) {
+                //While "!RdStall_parent" would work here, for some cores (Piccolo)
+                // it would cause a combinational loop (RdStall -> WrStall -> RdStall)
+                logger.error("RdMem result not visible in time to semi-coupled ISAX %s, since the core does not provide the RdMem_validResp signal"
+                             .formatted(isax));
+              }
+            }
+            else if (rdMemCoreLatency > 1 && allISAXes.containsKey(isax) &&
+                allISAXes.get(isax).HasSchedWith(bNodes.RdMem,
+                    sched -> sched.GetStartCycle() < parentStage.getStagePos() &&
+                             sched.GetStartCycle() + core.getNodes().get(bNodes.RdMem).getLatency() > parentStage.getStagePos())) {
+              logger.warn("RdMem result not visible to ISAX %s, since a semi-coupled pipeline starts before the core's RdMem result stage"
+                              .formatted(isax));
+            }
+          }
           return ret;
         }));
       }

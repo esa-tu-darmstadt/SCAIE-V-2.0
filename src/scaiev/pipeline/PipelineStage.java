@@ -1,13 +1,16 @@
 package scaiev.pipeline;
 
+import java.io.Serializable;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.Spliterators;
@@ -15,6 +18,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
+
+import scaiev.pipeline.PipelineStage.MultiportPipeAttributes;
+import scaiev.pipeline.PipelineStage.StageTag;
 
 /**
  * Represents an individual pipeline stage as part of a linked pipeline graph.
@@ -32,9 +38,13 @@ public class PipelineStage {
                          instanceID);
   }
 
-  public PipelineStage(StageKind kind, EnumSet<StageTag> tags, String name, Optional<Integer> globalStageID, boolean continuous) {
+  public static record TagAttrPair(StageTag tag, Object attr) {}
+
+  public PipelineStage(StageKind kind, List<TagAttrPair> tagsAndAttributes, String name, Optional<Integer> globalStageID, boolean continuous) {
     this.kind = kind;
-    this.tags = tags.clone();
+    this.tags = EnumSet.noneOf(StageTag.class);
+    this.attributes = new HashMap<>();
+    tagsAndAttributes.forEach(entry -> this.addTagAttr(entry.tag, entry.attr));
     this.name = name;
     this.globalStageID = globalStageID;
     this.continuous = continuous;
@@ -61,7 +71,7 @@ public class PipelineStage {
     var pipeline = new ArrayList<PipelineStage>(depth);
     for (int i = 0; i < depth; ++i) {
       int i_ = i;
-      var newStage = new PipelineStage(kind, EnumSet.of(StageTag.InOrder), "" + i, firstGlobalStageID.map(globalID -> globalID + i_), true);
+      var newStage = new PipelineStage(kind, List.of(new TagAttrPair(StageTag.InOrder, null)), "" + i, firstGlobalStageID.map(globalID -> globalID + i_), true);
       if (i > 0)
         pipeline.get(i - 1).addNext(newStage);
       pipeline.add(newStage);
@@ -270,7 +280,7 @@ public class PipelineStage {
     //  -> this PipelineStage does not adhere to the invariants
     //     enforced for any outwards-facing objects,
     //     e.g. its successors do not point back to it
-    PipelineStage searchFront = new PipelineStage(StageKind.Core, EnumSet.noneOf(StageTag.class), null, Optional.empty(), false);
+    PipelineStage searchFront = new PipelineStage(StageKind.Core, List.of(), null, Optional.empty(), false);
     searchFront.next = children;
     // Produce a stream across all children (but not recursive children). Skip searchFront itself.
     return searchFront.streamNext_bfs().skip(1);
@@ -294,17 +304,143 @@ public class PipelineStage {
                                      child.streamNext_bfs().filter(stage -> stage.next.isEmpty()));
   }
 
+  /**
+   * Determines whether a stage 'from' could pipe into a directly succeeding stage 'to'.
+   * Also considers port -> (non-port|port) transitions.<br/>
+   * {@link StageKind#CoreMultiport} super-stage to port transitions will return false,
+   *   whereas non-port stage to port transitions will return true. <br/>
+   * Transitions to {@link StageKind#CoreMultiport} stages are not allowed from port stages, but are allowed in general. <br/>
+   * Background: Port stages have a {@link StageTag#MultiportPipe} attribute and a successor set from the parent {@link StageKind#CoreMultiport},
+   *  and more complex rules on whether a stage is a direct successor or not.
+   * @param to the regular or port stage to possibly 'pipe to'
+   * @return true iff this may pipe (directly) into to, without other stages in-between
+   */
+  public boolean hasDirectPipeTo(PipelineStage to) {
+    PipelineStage from = this;
+    if (from.getNext().contains(to))
+      return true; // Obvious direct connection (implies non-port on both ends)
+    // No obvious from->to connection.
+    if (to.getKind() == StageKind.CoreMultiport) {
+      // a) from is port: Don't pipe from a port to a multiport super-stage.
+      // b) from is non-port: Missing connection.
+      return false;
+    }
+    if (from.getTags().contains(StageTag.MultiportPipe)) {
+      //from is a port stage
+      // -> Check for additional port-to-port or port-to-nonport cases
+      MultiportPipeAttributes portFromAttr = from.getTagAttr(StageTag.MultiportPipe, MultiportPipeAttributes.class);
+      assert(portFromAttr != null);
+      assert(new PipelineFront(to).isAfter(from, false));
+      
+      if (to.getTags().contains(StageTag.MultiportPipe)) {
+        //port stage -> port stage
+        if (portFromAttr.directMapping()) {
+          //direct mapping: Port N only pipes into successor CoreMultiport-stage's port N
+          int portFromIdx = from.getParent().orElseThrow().getChildren().indexOf(from);
+          assert(portFromIdx != -1);
+          int portToIdx = to.getParent().orElseThrow().getChildren().indexOf(to);
+          assert(portToIdx != -1);
+          return portFromIdx == portToIdx;
+        }
+      }
+      //port stage -> (port|non-port) stage
+      return portFromAttr.explicitSuccessorStageNames().isEmpty()
+          || portFromAttr.explicitSuccessorStageNames().contains(to.getName());
+    }
+    //'from' is a non-port stage, 'to' is a non-port|port stage that is not CoreMultiport
+    //The only remaining scenario where we have a direct connection
+    // is if 'to' is a port in a connected CoreMultiport stage.
+    return to.getTags().contains(StageTag.MultiportPipe) && from.getNext().contains(to.getParent().orElseThrow());
+  }
+  /**
+   * Resolves the Stream of effective successor or predecessor stages to ref, including transitions involving port stages.
+   * @param ref the reference stage to go from
+   * @param forward true: look for successors, otherwise: look for predecessors
+   * @param listCoreMultiport if true, {@link StageKind#CoreMultiport} super-stages are also listed (but only if 'this' is not a port stage).
+   * @return the found stages as a Stream
+   */
+  private static Stream<PipelineStage> resolveEffectivePrevOrNext(PipelineStage ref, boolean forward, boolean listCoreMultiport) {
+    Stream<PipelineStage> cessorStream;
+    if (ref.getTags().contains(StageTag.MultiportPipe)) {
+      assert(ref.getPrev().isEmpty() && ref.getNext().isEmpty());
+      PipelineStage refParent = ref.getParent().orElseThrow();
+      cessorStream = (forward ? refParent.getNext() : refParent.getPrev()).stream();
+    }
+    else {
+      cessorStream = (forward ? ref.getNext() : ref.getPrev()).stream();
+    }
+    // For CoreMultiport stages, consider its children as possible successors.
+    cessorStream = cessorStream.flatMap(cessorStage -> cessorStage.getKind() == StageKind.CoreMultiport
+                                             ? Stream.concat(listCoreMultiport ? Stream.of(cessorStage) : Stream.empty(),
+                                                             cessorStage.getChildren().stream())
+                                             : Stream.of(cessorStage));
+    if (ref.getTags().contains(StageTag.MultiportPipe)) {
+      // Apply the special-conditions for transitions from a port stage.
+      cessorStream = forward ? cessorStream.filter(to -> ref.hasDirectPipeTo(to))
+                             : cessorStream.filter(from -> from.hasDirectPipeTo(ref));
+    }
+    else {
+      // There should be no special rules on which port of the successor to consider.
+      // For debugging, inject some assertions into the Stream (no-op if assertions are disabled).
+      cessorStream = cessorStream.map(cessor -> {
+        assert(forward ? ref.hasDirectPipeTo(cessor) : cessor.hasDirectPipeTo(ref));
+        return cessor;
+      });
+    }
+    return cessorStream;
+  }
+  /**
+   * Resolves the Stream of effective successor stages, including transitions involving port stages. <br/>
+   * @param listCoreMultiport if true, {@link StageKind#CoreMultiport} super-stages are also listed (but only if 'this' is not a port stage).
+   * @return the found stages as a Stream
+   */
+  public Stream<PipelineStage> resolveEffectiveNext(boolean listCoreMultiport) {
+    return resolveEffectivePrevOrNext(this, true, listCoreMultiport);
+  }
+  /**
+   * Resolves the Stream of effective predecessor stages, including transitions involving port stages. <br/>
+   * @param listCoreMultiport if true, {@link StageKind#CoreMultiport} super-stages are also listed (but only if 'this' is not a port stage).
+   * @return the found stages as a Stream
+   */
+  public Stream<PipelineStage> resolveEffectivePrev(boolean listCoreMultiport) {
+    return resolveEffectivePrevOrNext(this, false, listCoreMultiport);
+  }
+  /**
+   * For port stages (with a {@link StageTag#MultiportPipe} tag/attribute), returns the {@link StageKind#CoreMultiport} super-stage.
+   * Otherwise returns the stage itself.
+   */
+  public PipelineStage getMultiportBase() {
+    if (getTags().contains(StageTag.MultiportPipe)) {
+      PipelineStage base = getParent().orElseThrow();
+      //this is Core -> parent is CoreMultiport
+      assert(getKind() != StageKind.Core || base.getKind() == StageKind.CoreMultiport);
+      //currently, multiport is only supported for Core stages
+      assert(getKind() == StageKind.Core);
+      return base;
+    }
+    else if (getKind() == StageKind.ISAXMux)
+      return getParent().orElseThrow();
+    return this;
+  }
+
   /** Categorization enum for true and synthetic PipelineStages */
   public enum StageKind {
     /** A stage from the core itself. Adheres to the constraints from the corresponding {@link scaiev.coreconstr.Core}. */
     Core("core"),
+    /**
+     * A stage from the core itself, with several Core-type ports as children.
+     * Each child stage can house an instruction and has no successors.
+     *  Stages of this kind must come with a {@link StageTag#MultiportStall} attribute tag.
+     * Adheres to the constraints from the corresponding {@link scaiev.coreconstr.Core}.
+     */
+    CoreMultiport("core_multi"),
     /** A stage from the core itself, not visible to most SCAIE-V ISAXes or operations. */
     CoreInternal("core_internal"),
     /**
      * The decoupled super-stage, placed as a {@link PipelineStage#next} neighbor of a {@link StageKind#Core} stage.
      *  For many in-order microarchitectures, this is right after the last {@link StageKind#Core} stage.
      * Inputs need to be pipelined from the {@link StageKind#Core} stage from which decoupled execution is issued.
-     * Further interaction with the core pipeline needs to be done by requesting a decoupled interface
+     *  Further interaction with the core pipeline needs to be done by requesting a decoupled spawn interface.
      */
     Decoupled("decoupled"),
     /**
@@ -314,6 +450,11 @@ public class PipelineStage {
      */
     Sub("sub"),
     /**
+     * A pseudo sub-stage for multiplexing between CoreMultiport port stages, depending on the active ISAXes.
+     * Child of a CoreMultiport stage, listed after all stage ports (of kind Core).
+     */
+    ISAXMux("isaxmux"),
+    /**
      * The root stage, into which the core pipeline is embedded as the child.
      * Does not have any pipeline semantics on its own, and thus is expected not to have any neighbors.
      */
@@ -322,6 +463,81 @@ public class PipelineStage {
     public final String serialName;
 
     private StageKind(String serialName) { this.serialName = serialName; }
+  }
+
+  /**
+   * Stall attributes of a {@link StageKind#CoreMultiport} stage.
+   */
+  public static record MultiportStallAttributes(
+      /**
+       * The multi-port pipeline stage has a general stall signal that affects all ports.
+       * Can be set in combination with perPortStall.
+       * <br/>
+       * Note: If perPortStall is also set, the RdStall port signal is assumed to contain the shared condition.
+       */
+      boolean hasSharedStall,
+      /**
+       * Each port has an individual stall signal.
+       * If a port does not stall, its data travels onwards regardless of any other ports. 
+       */
+      boolean perPortStall,
+      /**
+       * The multi-port pipeline stage has a general flush signal that affects all ports.
+       * Can be set in combination with perPortFlush.
+       */
+      boolean hasSharedFlush,
+      /**
+       * Each port has an individual flush signal.
+       * If a port flushes, the flush affects ports with later instructions.
+       * Current assumption: If port N flushes, so do all ports N+k.
+       */
+      boolean perPortFlush,
+      /** If port N stalls, so does port N+1,etc. */
+      boolean stallAffectsNext,
+      /**
+       * The core shifts instructions up (lower port num) after a stall cycle to fill in any gaps.
+       * NOTE: Assumes the core *always* (if true) or *never* (if false) shifts up slots.
+       * E.g., if ports 0..N run through but N+1 is stalled and valid,
+       *       the instruction from port N+1 will move to port 0 in the next cycle.
+       * Also implies that, if port N+1 runs through, so does port N (have to) run through.
+       */
+      boolean shiftUp
+      ) implements Serializable
+  {
+    public MultiportStallAttributes {
+      if (stallAffectsNext && !perPortStall)
+        throw new IllegalArgumentException("stallAffectsNext requires perPortStall");
+      if (shiftUp && !perPortStall)
+        throw new IllegalArgumentException("shiftUp requires perPortStall");
+    }
+  }
+
+  /**
+   * Pipeline attributes of a {@link StageKind#Core} port stage (i.e., a child stage of a {@link StageKind#CoreMultiport} stage).
+   */
+  public static record MultiportPipeAttributes(
+      /**
+       * Port N of this stage always travels to port N of the next stage.
+       * Otherwise: {@link scaiev.backend.BNode#RdPipeInto} will be used in hardware to determine the next stage.
+       */
+      boolean directMapping,
+      /**
+       * Provides the successor stage names to consider. Can either refer to <br/>
+       *   - port stages (i.e., children of the next CoreMultiport stage) <br/>
+       *   (this.parent.get().next[[size()==1]].get(0)[[getKind()==CoreMultiport]].children) <br/>
+       *   - or regular Core/CoreInternal stages (i.e., direct successor stages) <br/>
+       *   (this.parent.get().next[[size()&gt;=1]].get(i)[[getKind()!=CoreMultiport]]) <br/>
+       * If directMapping==true, this must be empty. <br/>
+       * If directMapping==false and this is empty, all of stage.parent.next's ports will be considered. <br/>
+       * If directMapping==false and this is non-empty, only the listed stages will be considered.
+       */
+      List<String> explicitSuccessorStageNames
+      ) implements Serializable
+  {
+    public MultiportPipeAttributes {
+      if (directMapping && !explicitSuccessorStageNames.isEmpty())
+        throw new IllegalArgumentException("explicitSuccessorStageNames must be empty if directMapping");
+    }
   }
 
   public enum StageTag {
@@ -348,6 +564,10 @@ public class PipelineStage {
      */
     Execute("execute"),
     /**
+     * Marks a stage as only ever containing nonspeculated instructions that are known to be executed
+     */
+    Nonspeculative("nonspeculative"),
+    /**
      * Commit stage marker: Any operation that leaves this stage can be considered committable (if not committed already), as it cannot be
      * flushed anymore.
      */
@@ -356,19 +576,79 @@ public class PipelineStage {
      * No ISAXes pass through this stage, intended for issues to other execution units.
      * Marker used to track custom register commit for 'always' ISAXes while ignoring regular ISAXes.
      */
-    NoISAX("noisax");
+    NoISAX("noisax"),
+    /**
+     * Attributes for a stage of kind {@link StageKind#CoreMultiport}, see {@link MultiportStallAttributes}.
+     */
+    MultiportStall("multiport_stall", MultiportStallAttributes.class),
+    /**
+     * Attributes for a port stage that has a parent of kind {@link StageKind#CoreMultiport}, see {@link MultiportPipeAttributes}.
+     */
+    MultiportPipe("ported_pipe", MultiportPipeAttributes.class);
 
     public final String serialName;
+    public final Class<? extends Serializable> attributesClass;
 
-    private StageTag(String serialName) { this.serialName = serialName; }
+    private StageTag(String serialName) {
+      this.serialName = serialName;
+      this.attributesClass = null;
+    }
+    private StageTag(String serialName, Class<? extends Serializable> attributesClass) {
+      this.serialName = serialName;
+      this.attributesClass = attributesClass;
+    }
   }
 
   StageKind kind;
   /** This PipelineStage's {@link StageKind} */
   public StageKind getKind() { return kind; }
   EnumSet<StageTag> tags;
-  public void addTag(StageTag tag) { tags.add(tag); }
+  Map<StageTag, Object> attributes;
+  public void addTag(StageTag tag) { addTagAttr(tag, null); }
+  /**
+   * Adds a tag with an associated attributes object.
+   * If the tag type has no attributes type ({@link StageTag#attributesClass} == null),
+   *  attr must be null. Otherwise, attr must be compatible with the type.
+   */
+  public void addTagAttr(StageTag tag, Object attr) {
+    if (tag.attributesClass != null) {
+      if (attr == null)
+        throw new IllegalArgumentException("attr must be non-null for attribute tags");
+      if (!tag.attributesClass.isAssignableFrom(attr.getClass()))
+        throw new IllegalArgumentException("attr must be compatible with the tag's expected attribute type");
+    }
+    else if (attr != null)
+      throw new IllegalArgumentException("attr must be null for non-attribute tags");
+    
+    tags.add(tag);
+    if (attr != null)
+      attributes.put(tag, attr);
+  }
+  /** Returns a read-only version of the stage's tag set. */
   public Set<StageTag> getTags() { return Collections.unmodifiableSet(tags); }
+  /**
+   * @param tag the tag to check
+   * @return Returns the attribute object associated with a StageTag.
+   * Returns null for unset tags and for tags that don't have an attribute class.
+   */
+  public Object getTagAttr(StageTag tag) {
+    return attributes.get(tag);
+  }
+  /**
+   * @param tag the tag to check
+   * @return Returns the attribute object associated with a StageTag.
+   * Returns null for unset tags and for tags that don't have an attribute class.
+   * @throws java.lang.ClassCastException invalid (non-null) cast
+   */
+  @SuppressWarnings("unchecked")
+  public <T> T getTagAttr(StageTag tag, Class<T> retClass) {
+    Object ret = attributes.get(tag);
+    if (ret == null)
+      return null;
+    if (retClass.isAssignableFrom(ret.getClass()))
+      return (T)ret;
+    throw new ClassCastException("%s to T=%s".formatted(ret.getClass().getName(), retClass.getName()));
+  }
 
   String name;
   /** The name of the stage to present to users and to use for interface pins */

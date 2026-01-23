@@ -18,6 +18,7 @@ import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.util.Verilog;
 
@@ -71,18 +72,17 @@ public class DecoupledKillStrategy extends MultiNodeStrategy {
         }));
         // Keep the node key to allow WrStall generation.
       } else if (nodeKey.getPurpose().matches(Purpose.REGULAR) && nodeKey.getNode().equals(bNodes.RdKill) &&
-                 allISAXes.containsKey(SCAL.PredefInstr.kill.instr.GetName()) && core.GetStartSpawnStages().contains(nodeKey.getStage()) &&
+                 allISAXes.containsKey(SCAL.PredefInstr.kill.instr.GetName()) && core.getStartSpawnStages().contains(nodeKey.getStage()) &&
                  nodeKey.getAux() == 0) {
-        // TODO: How do we guarantee the 'start spawn' stage is non-speculative?
-        PipelineFront startSpawnStages = core.GetStartSpawnStages();
+        // TODO: Only apply once the kill instruction has committed. Until then, stall the start spawn stages for any succeeding instructions.
+        PipelineFront startSpawnStages = core.getStartSpawnStages();
         RequestedForSet rdKillRequestedFor = new RequestedForSet(SCAL.PredefInstr.kill.instr.GetName());
         out.accept(NodeLogicBuilder.fromFunction("DecoupledKillStrategy_RdKill_" + nodeKey.getStage().getName(), (registry, aux) -> {
           if (!nodeKey.getISAX().isEmpty())
             rdKillRequestedFor.addRelevantISAX(nodeKey.getISAX());
           var ret = new NodeLogicBlock();
           String killActiveCondition =
-              startSpawnStages.asList()
-                  .stream()
+              SCALUtil.flatmapIntoPorts(startSpawnStages.asList().stream())
                   .map(startSpawnStage
                        -> registry.lookupExpressionRequired(
                            new NodeInstanceDesc.Key(bNodes.RdIValid, startSpawnStage, SCAL.PredefInstr.kill.instr.GetName()),

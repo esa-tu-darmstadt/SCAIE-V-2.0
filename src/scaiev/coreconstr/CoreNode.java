@@ -1,5 +1,9 @@
 package scaiev.coreconstr;
 
+import java.util.Collections;
+import java.util.EnumSet;
+import java.util.Set;
+
 import scaiev.pipeline.ScheduleFront;
 
 public class CoreNode {
@@ -8,6 +12,12 @@ public class CoreNode {
   ScheduleFront latestTime;
   ScheduleFront expensiveTime; // rd - timeslot starting with which it gets expensive // wr - timeslot untill which it was expensive
   String name;
+
+  /** Any additional tags a node can have */
+  public enum CoreNodeTag {
+    //Empty for now
+  }
+  Set<CoreNodeTag> tags = EnumSet.noneOf(CoreNodeTag.class);
 
   public CoreNode(int earliestTime, int latency, int latestTime, int expensiveTime, String name) {
     this.earliestTime = new ScheduleFront(earliestTime);
@@ -34,16 +44,19 @@ public class CoreNode {
     return to_print;
   }
 
-  public ScheduleFront GetLatest() { return this.latestTime; }
-  public void OverrideLatest(ScheduleFront newLatest) { this.latestTime = newLatest; }
+  public ScheduleFront getLatest() { return this.latestTime; }
+  public void overrideLatest(ScheduleFront newLatest) { this.latestTime = newLatest; }
 
-  public ScheduleFront GetEarliest() { return this.earliestTime; }
-  public void OverrideEarliest(ScheduleFront newEarliest) { this.earliestTime = newEarliest; }
+  public ScheduleFront getEarliest() { return this.earliestTime; }
+  public void overrideEarliest(ScheduleFront newEarliest) { this.earliestTime = newEarliest; }
 
-  public int GetLatency() { return this.latency; }
+  public int getLatency() { return this.latency; }
 
-  public ScheduleFront GetExpensive() { return this.expensiveTime; }
-  public void OverrideExpensive(ScheduleFront newExpensive) { this.expensiveTime = newExpensive; }
+  public ScheduleFront getExpensive() { return this.expensiveTime; }
+  public void overrideExpensive(ScheduleFront newExpensive) { this.expensiveTime = newExpensive; }
 
-  public String GetName() { return this.name; }
+  public String getName() { return this.name; }
+
+  public Set<CoreNodeTag> getTags() { return Collections.unmodifiableSet(tags); }
+  public void addTag(CoreNodeTag tag) { tags.add(tag); }
 }

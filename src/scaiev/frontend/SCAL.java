@@ -5,6 +5,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -28,6 +29,7 @@ import scaiev.frontend.SCAIEVNode.NodeTypeTag;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
+import scaiev.pipeline.PipelineStage.StageTag;
 import scaiev.scal.EitherOrNodeLogicBuilder;
 import scaiev.scal.InterfaceRequestBuilder;
 import scaiev.scal.ModuleComposer;
@@ -36,11 +38,13 @@ import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeInstanceDesc.ExpressionType;
 import scaiev.scal.NodeInstanceDesc.Key;
 import scaiev.scal.NodeInstanceDesc.Purpose;
+import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.NodeRegistry;
 import scaiev.scal.NodeRegistryRO;
 import scaiev.scal.SCALPinNet;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.strategy.MultiNodeStrategy;
 import scaiev.scal.strategy.SingleNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
@@ -280,7 +284,7 @@ public class SCAL implements SCALBackendAPI {
                   .entrySet()
                   .stream()
                   .filter(stage_isaxes_entry
-                          -> stage_isaxes_entry.getKey().getKind() == StageKind.Core) // Only look at Core stages (i.e. non-decoupled)...
+                          -> stage_isaxes_entry.getKey().getKind() == StageKind.Core) // Only look at Core stages (i.e. non-decoupled, single port)...
                   .flatMap(stage_isaxes_entry -> { // Expand the stream for each ISAX, generating the actual keys.
                     return stage_isaxes_entry.getValue().stream().map(
                         isax -> new NodeInstanceDesc.Key(op_stages_entry.getKey(), stage_isaxes_entry.getKey(), isax));
@@ -312,22 +316,26 @@ public class SCAL implements SCALBackendAPI {
 
   /**
    * SCALBackendAPI impl:
-   * Adds a custom SCAL->Core interface pin. The builder should provide an output expression for interfacePin.makeKey(Purpose.REGULAR).
-   * @param interfacePin
-   * @param builder
+   * Adds custom SCAL->Core interface pins. The builder should provide output expressions for each interfacePins[i].makeKey(Purpose.REGULAR).
+   * @param interfacePins all pins to add
+   * @param builder the builder to add to the initial set of builders
    */
   @Override
-  public void AddCustomToCorePinUsing(CustomCoreInterface interfacePin, NodeLogicBuilder builder) {
-    if (interfacePin.isInputToSCAL)
-      throw new IllegalArgumentException("interfacePin.isInputToSCAL is unexpected: pin must be an output from SCAL");
-    this.customCoreInterfaces.add(interfacePin);
-    NodeInstanceDesc.Key interfaceKey = interfacePin.makeKey(Purpose.REGULAR);
+  public void AddCustomToCorePinsUsing(NodeLogicBuilder builder, CustomCoreInterface... interfacePins) {
+    if (Stream.of(interfacePins).anyMatch(pin->pin.isInputToSCAL))
+      throw new IllegalArgumentException("interfacePins[i].isInputToSCAL is unexpected: pin must be an output from SCAL");
+    this.customCoreInterfaces.addAll(Arrays.asList(interfacePins));
+    String placeholderBuilderName = "CustomToCorePin_" + Stream.of(interfacePins).map(pin->pin.makeKey(Purpose.REGULAR).toString(false))
+                                                            .reduce((a,b)->a+"~and~"+b).orElse("none");
     globalLogicBuilders.add(new EitherOrNodeLogicBuilder(
         "CustomToCorePin:" + builder.toString(), builder,
-        NodeLogicBuilder.fromFunction("CutomToCorePin_" + interfaceKey.toString(false), registry -> {
+        NodeLogicBuilder.fromFunction(placeholderBuilderName, registry -> {
           var ret = new NodeLogicBlock();
-          // Add a placeholder to prevent other strategies.
-          ret.outputs.add(new NodeInstanceDesc(interfaceKey, NodeRegistry.MISSING_PREFIX + interfaceKey.toString(), ExpressionType.AnyExpression));
+          for (CustomCoreInterface pin : interfacePins) {
+            var interfaceKey = pin.makeKey(Purpose.REGULAR);
+            // Add a placeholder to prevent automatic instantiations of REGULAR (or below).
+            ret.outputs.add(new NodeInstanceDesc(interfaceKey, NodeRegistry.MISSING_PREFIX + interfaceKey.toString(), ExpressionType.AnyExpression));
+          }
           return ret;
         })));
   }
@@ -358,11 +366,11 @@ public class SCAL implements SCALBackendAPI {
    *
    */
   public void Generate(String inPath, String outPath, Optional<CoreBackend> coreBackend) {
-    logger.info("Generating SCAL for core: " + core.GetName());
+    logger.info("Generating SCAL for core: " + core.getName());
     this.toFile = new FileWriter(inPath);
     this.myLanguage = new Verilog(BNode, toFile, virtualBackend); // core needed for verification purposes
     myLanguage.BNode = BNode;
-    String interfToISAX = "", interfToCore = "", declarations = "", logic = "", otherModules = "";
+    String interfToISAX = "", interfToCore = "", interfToExt = "", declarations = "", logic = "", otherModules = "";
 
     ModuleComposer composer = new ModuleComposer(true, true); // TODO: Disable build log initially
 
@@ -382,22 +390,23 @@ public class SCAL implements SCALBackendAPI {
       // Go through stages...
       Collection<PipelineStage> stages = new LinkedHashSet<>(this.op_stage_instr.get(operation).keySet());
       // For nodes that require sigs also in earlier stages
-      PipelineFront latestNodeStage = core.TranslateStageScheduleNumber(operation.commitStage);
-      // int latestNodeStage = core.maxStage;
-      // if(operation.commitStage !=0)
-      //	latestNodeStage = operation.commitStage;
+      PipelineFront latestNodeStage = core.translateStageScheduleNumber(operation.commitStage);
+
       Iterator<PipelineStage> stageForValidPipeline_it =
           node_earliestStageValid.getOrDefault(operation, new PipelineFront())
               .asList()
               .stream()
               // Make a Stream of all stages from the requested earliest stage front up until the latest stage.
               .flatMap(frontStage -> frontStage.streamNext_bfs())
-              .filter(stage -> stage.getKind() == StageKind.Core && latestNodeStage.isAroundOrAfter(stage, false))
+              .filter(stage -> (stage.getKind() == StageKind.Core || stage.getKind() == StageKind.CoreMultiport)
+                                 && latestNodeStage.isAroundOrAfter(stage, false))
               .iterator();
       for (; stageForValidPipeline_it.hasNext();) {
-        PipelineStage stageForValidPipeline = stageForValidPipeline_it.next();
-        if (!stages.contains(stageForValidPipeline))
-          GenerateAllInterfToCore(operation, stageForValidPipeline, interfaceToCoreSet, globalNodeRegistry, globalLogicBuilders);
+        PipelineStage curStage = stageForValidPipeline_it.next();
+        for (PipelineStage stageForValidPipeline : (curStage.getKind() == StageKind.CoreMultiport ? curStage.getChildren() : List.of(curStage))) {
+          if (!stages.contains(stageForValidPipeline))
+            GenerateAllInterfToCore(operation, stageForValidPipeline, interfaceToCoreSet, globalNodeRegistry, globalLogicBuilders);
+        }
       }
       // For main user nodes
       for (PipelineStage stage : stages) {
@@ -406,17 +415,18 @@ public class SCAL implements SCALBackendAPI {
         // Generate interface for main node if output from ISAX
         GenerateAllInterfToISAX(operation, stage, instrIter, interfaceToISAXSet, globalNodeRegistry, globalLogicBuilders);
       }
-      if (!operation.isSpawn() && core.GetNodes().containsKey(operation)) {
+      if (!operation.isSpawn() && core.getNodes().containsKey(operation)) {
         // The ISAX may contain certain operations before the earliest allowed core stage (generally writes) / after the latest allowed one
-        // (generally reads).
-        //  After having processed the ISAX interfaces, move those operations to the earliest/latest allowed stage,
-        //  which will in turn force pipeline instantiation.
+        // (generally reads). Also, the ISAX may use ISAXMux stages if it has less ports than the core's multiport stage.
+        //
+        // After having processed the ISAX interfaces, move those operations to the actual stage(s) the core expects it in,
+        //  which will in turn force pipeline instantiation or port multiplexing in SCAL.
         PipelineFront coreOpEarliestFront = BNode.IsUserBNode(operation)
-                                                ? new PipelineFront(core.GetRootStage().getChildren())
-                                                : core.TranslateStageScheduleNumber(core.GetNodes().get(operation).GetEarliest());
+                                                ? new PipelineFront(core.getRootStage().getChildren())
+                                                : core.translateStageScheduleNumber(core.getNodes().get(operation).getEarliest());
         PipelineFront coreOpLatestFront = BNode.IsUserBNode(operation)
-                                              ? new PipelineFront(core.GetRootStage().getChildrenTails())
-                                              : core.TranslateStageScheduleNumber(core.GetNodes().get(operation).GetLatest());
+                                              ? new PipelineFront(core.getRootStage().getChildrenTails())
+                                              : core.translateStageScheduleNumber(core.getNodes().get(operation).getLatest());
         stages = new ArrayList<>(this.op_stage_instr.get(operation).keySet());
         ArrayList<PipelineStage> stages_core_interface = new ArrayList<>();
         var stagesIter = stages.iterator();
@@ -428,6 +438,7 @@ public class SCAL implements SCALBackendAPI {
           // Only add new entries to op_stage_instr, strategies should notice the node is not present in the core.
           // Netlist export requires the 'misscheduled' entries to remain in op_stage_instr.
           if (!coreOpEarliestFront.isAroundOrBefore(stage, false)) {
+            // Create operation in earliest front, to be pipelined from stage.
             for (PipelineStage stageInEarliest : coreOpEarliestFront.asList())
               if (new PipelineFront(stageInEarliest).isAfter(stage, false)) {
                 logger.debug("Resolving 'earliest' violation in {}: Moving {} to {}", stage.getName(), operation.name, stageInEarliest.getName());
@@ -435,8 +446,8 @@ public class SCAL implements SCALBackendAPI {
                 stages_core_interface.add(stageInEarliest);
                 PopulateVirtualCore(operation, stageInEarliest);
               }
-            stagesIter.remove();
           } else if (!coreOpLatestFront.isAroundOrAfter(stage, false)) {
+            // Create operation in latest front, to be pipelined to stage.
             for (PipelineStage stageInLatest : coreOpLatestFront.asList())
               if (new PipelineFront(stageInLatest).isBefore(stage, false)) {
                 logger.debug("Resolving 'latest' violation in {}: Adding {} to {}", stage.getName(), operation.name, stageInLatest.getName());
@@ -444,9 +455,47 @@ public class SCAL implements SCALBackendAPI {
                 stages_core_interface.add(stageInLatest);
                 PopulateVirtualCore(operation, stageInLatest);
               }
-            stagesIter.remove();
+          }
+          else if (stage.getKind() == StageKind.ISAXMux || stage.getKind() == StageKind.Core && stage.getMultiportBase() != stage) {
+            var multiportBaseStage = stage.getParent().orElseThrow();
+            boolean isPerPort = SCALUtil.nodeIsPerPort(operation, multiportBaseStage);
+            // Node can also be assigned to the ISAXMux stage if it is shared,
+            // since additional control logic may be needed (e.g. WrPC flush handling is per-port).
+            //assert(SCALUtil.nodeIsPerPort(operation, multiportBaseStage));
+
+            // Add each port to the SCAL<->core interface.
+            Stream<PipelineStage> ports = (stage.getKind() == StageKind.ISAXMux
+                ? multiportBaseStage.getChildren().stream().filter(st->st.getKind()==StageKind.Core)
+                : Stream.of(stage));
+            ports.forEach(st->{
+              op_stage_instr.get(operation).computeIfAbsent(st, st_ -> new HashSet<>(List.of("")));
+              if (isPerPort)
+                stages_core_interface.add(st);
+              PopulateVirtualCore(operation, st);
+            });
+            if (!isPerPort) {
+              // For WrPC, etc., make sure a core interface is created for the multiport base stage
+              stages_core_interface.add(multiportBaseStage);
+              op_stage_instr.get(operation).computeIfAbsent(multiportBaseStage, st_ -> new HashSet<>(List.of("")));
+              PopulateVirtualCore(operation, multiportBaseStage);
+              // Request the node and its essential adjacents in the port stages
+              // -> This assumes that the strategy implementing those per-port nodes (typ. ValidMuxStrategy)
+              //    helps coordinate the generation in the multiport base stage.
+              globalLogicBuilders.add(NodeLogicBuilder.fromFunction(
+                "ISAXMux_request_ports(%s,%s)".formatted(operation.name,multiportBaseStage.getName()),
+                registry -> {
+                  multiportBaseStage.getChildren().stream().filter(st->st.getKind()==StageKind.Core).forEach(st->{
+                    Stream.concat(Stream.of(operation), BNode.GetAdjSCAIEVNodes(operation).stream()).forEach(op->{
+                      registry.lookupExpressionRequired(new NodeInstanceDesc.Key(op, st, ""));
+                    });
+                  });
+                  return new NodeLogicBlock();
+                }
+              ));
+            }
           }
           else {
+            // Keep as-is.
             stages_core_interface.add(stage);
           }
         }
@@ -488,7 +537,7 @@ public class SCAL implements SCALBackendAPI {
             readNode_opt.stream(),
             Stream.concat(writeNode_opt.stream(), writeNode_spawn_opt.stream())
            ).toList()) {
-        NodeInstanceDesc.Key markerKey = new NodeInstanceDesc.Key(Purpose.MARKER_CUSTOM_REG, customRegNode, core.GetRootStage(), "");
+        NodeInstanceDesc.Key markerKey = new NodeInstanceDesc.Key(Purpose.MARKER_CUSTOM_REG, customRegNode, core.getRootStage(), "");
         NodeLogicBuilder markerBuilder = NodeLogicBuilder.fromFunction("customRegBuilder_" + markerKey.toString(false), registry -> {
           // explicitly request output
           registry.lookupExpressionRequired(markerKey);
@@ -498,7 +547,7 @@ public class SCAL implements SCALBackendAPI {
       }
     }
 
-    PipelineFront generalMinPipelineFront = new PipelineFront(core.GetRootStage().getChildrenByStagePos(1));
+    PipelineFront generalMinPipelineFront = new PipelineFront(core.getRootStage().getChildrenByStagePos(1));
 
     // Strategy to use for RdIValid nodes.
     MultiNodeStrategy ivalidStrategy = strategyBuilders.buildPipeliningRdIValidStrategy(myLanguage, BNode, core, generalMinPipelineFront,
@@ -508,6 +557,19 @@ public class SCAL implements SCALBackendAPI {
     // Strategy to request additional read nodes, to be used as part of other strategies.
     SingleNodeStrategy readNodeStrategy_direct = strategyBuilders.buildDirectReadNodeStrategy(myLanguage, BNode, core);
 
+    SingleNodeStrategy readNodeStrategy_commit = new SingleNodeStrategy() {
+      @Override
+      public Optional<NodeLogicBuilder> implement(Key nodeKey) {
+        if (!nodeKey.getPurpose().matches(NodeInstanceDesc.Purpose.REGULAR))
+          return Optional.empty();
+        if (nodeKey.getStage().getKind() != StageKind.Root)
+          return Optional.empty();
+        if (!nodeKey.getNode().name.startsWith("RdCommit")) //May want to add a NodeTypeTag "root stage read node" instead
+          return Optional.empty();
+        return readNodeStrategy_direct.implement(nodeKey);
+      }
+    };
+
     // For RdStall, RdFlush. Assuming '0' where not provided by the core backend.
     SingleNodeStrategy readNodeStrategy_corePipeStatus = new SingleNodeStrategy() {
       @Override
@@ -516,6 +578,21 @@ public class SCAL implements SCALBackendAPI {
           return Optional.empty();
         if (!nodeKey.getNode().equals(BNode.RdStall) && !nodeKey.getNode().equals(BNode.RdFlush))
           return Optional.empty();
+        var stallAttr = nodeKey.getStage().getMultiportBase().getTagAttr(StageTag.MultiportStall, PipelineStage.MultiportStallAttributes.class);
+        if (stallAttr != null) {
+          // Check if the core has the node specifically for the current port / multiport base stage
+          if (nodeKey.getStage().getMultiportBase() != nodeKey.getStage()) {
+            // Is a port stage
+            if (nodeKey.getNode().equals(BNode.RdStall) ? !stallAttr.perPortStall() : !stallAttr.perPortFlush())
+              return Optional.empty();
+          }
+          else {
+            assert(nodeKey.getStage().getKind() == StageKind.CoreMultiport);
+            // Is a multiport base stage
+            if (nodeKey.getNode().equals(BNode.RdStall) ? !stallAttr.hasSharedStall() : !stallAttr.hasSharedFlush())
+              return Optional.empty();
+          }
+        }
         Optional<NodeLogicBuilder> directBuilder = readNodeStrategy_direct.implement(nodeKey);
         if (directBuilder.isPresent())
           return directBuilder;
@@ -535,6 +612,49 @@ public class SCAL implements SCALBackendAPI {
       }
     };
 
+    // Additional read nodes that are shared across all ports
+    MultiNodeStrategy readNodeStrategy_assignFromMultiport = new MultiNodeStrategy() {
+      HashSet<NodeInstanceDesc.Key> implementedSet = new HashSet<>();
+      public void implement(Consumer<NodeLogicBuilder> out, Iterable<NodeInstanceDesc.Key> nodeKeys, boolean isLast) {
+        var nodeKeyIter = nodeKeys.iterator();
+        while (nodeKeyIter.hasNext()) {
+          NodeInstanceDesc.Key nodeKey = nodeKeyIter.next();
+          if (implementSingle(out, nodeKey))
+            nodeKeyIter.remove();
+        }
+      }
+      protected boolean implementSingle(Consumer<NodeLogicBuilder> out, NodeInstanceDesc.Key nodeKey) {
+        if (!nodeKey.getPurpose().matches(NodeInstanceDesc.Purpose.WIREDIN)
+            || !nodeKey.getISAX().isEmpty() || nodeKey.getAux() != 0)
+          return false;
+        if (nodeKey.getNode().equals(BNode.RdStall) || nodeKey.getNode().equals(BNode.RdFlush))
+          return false;
+        if (nodeKey.getStage().getKind() != StageKind.Core || nodeKey.getStage().getMultiportBase().getKind() != StageKind.CoreMultiport)
+          return false;
+        if (SCALUtil.nodeIsPerPort(nodeKey.getNode(), nodeKey.getStage())) //!nodeKey.getNode().tags.contains(NodeTypeTag.sharedAcrossPorts)
+          return false;
+        if (!nodeKey.getNode().tags.contains(NodeTypeTag.staticReadResult) && !nodeKey.getNode().tags.contains(NodeTypeTag.nonStaticReadResult))
+          return false;
+        RequestedForSet requestedFor = new RequestedForSet();
+        NodeInstanceDesc.Key outputKey = NodeInstanceDesc.Key.keyWithPurpose(nodeKey, Purpose.WIREDIN);
+        if (!implementedSet.add(outputKey))
+          return true; // Implement once.
+        out.accept(NodeLogicBuilder.fromFunction("readNodeStrategy_assignFromMultiport_%s".formatted(nodeKey.toString()), registry -> {
+          var ret = new NodeLogicBlock();
+          String wireName = nodeKey.toString(false) + "_i";
+          var inst = registry.lookupRequired(new NodeInstanceDesc.Key(nodeKey.getNode(), nodeKey.getStage().getMultiportBase(), ""), requestedFor);
+          if (inst.getExpression().startsWith(NodeRegistry.MISSING_PREFIX))
+            return ret; // Return empty if the node could not be assigned.
+          int wireLen = inst.getKey().getNode().size;
+          ret.declarations += "logic %s%s;\n".formatted((wireLen>1)?"[%d-1:0]".formatted(wireLen):"", wireName);
+          ret.logic += "assign %s = %s;\n".formatted(wireName, inst.getExpression());
+          ret.outputs.add(new NodeInstanceDesc(outputKey, wireName, ExpressionType.WireName, requestedFor));
+          return ret;
+        }));
+        return true;
+      }
+    };
+
     // For RdMem, RdRS*, RdInstr, etc.
     MultiNodeStrategy readNodeStrategy_pipelineable = strategyBuilders.buildNodeRegPipelineStrategy(
         this.myLanguage, BNode, generalMinPipelineFront, false, false, false, // No need zeroing non-control data registers
@@ -543,33 +663,50 @@ public class SCAL implements SCALBackendAPI {
           while (stage.getKind() == StageKind.Sub) {
             stage = stage.getParent().get();
           }
-          boolean staticReadResultOnly = (stage.getKind() == StageKind.Decoupled);
-          if (stage.getKind() != StageKind.Core && stage.getKind() != StageKind.CoreInternal && stage.getKind() != StageKind.Decoupled)
+          if (stage.getKind() != StageKind.Core && stage.getKind() != StageKind.CoreInternal
+              && stage.getKind() != StageKind.CoreMultiport && stage.getKind() != StageKind.Decoupled)
             return false;
+          if (stage.getMultiportBase().getKind() == StageKind.CoreMultiport) {
+            boolean isPerPort = SCALUtil.nodeIsPerPort(key.getNode(), stage);
+            if (stage.getMultiportBase() == stage && isPerPort)
+              return false;
+            if (stage.getMultiportBase() != stage && !isPerPort)
+              return false;
+          }
           if (!key.getPurpose().matches(Purpose.PIPEDIN))
             return false;
           if (BNode.IsUserBNode(key.getNode()))
             return false;
           SCAIEVNode baseNode = key.getNode().isAdj() ? BNode.GetSCAIEVNode(key.getNode().nameParentNode) : key.getNode();
+          boolean staticReadResultOnly = (stage.getKind() == StageKind.Decoupled);
           PipelineStage stage_ = stage;
           return (key.getNode().tags.contains(NodeTypeTag.staticReadResult) ||
                   !staticReadResultOnly && key.getNode().tags.contains(NodeTypeTag.nonStaticReadResult)) &&
               Optional
-                  .ofNullable(this.core.GetNodes().get(baseNode)) /* If the node exists in the core... */
+                  .ofNullable(this.core.getNodes().get(baseNode)) /* If the node exists in the core... */
                   .map(coreNode
-                       -> core.TranslateStageScheduleNumber(coreNode.GetEarliest())
+                       -> core.translateStageScheduleNumber(coreNode.getEarliest())
                               .isAroundOrBefore(stage_, false)) /* ...and is available in the given stage */
                   .orElse(false);
         },
         // Prefer direct generation in the given stage over pipelining...
         key
-        -> Optional.ofNullable(this.core.GetNodes().get(key.getNode())) /* ...if the node exists in the core... */
+        -> Optional.ofNullable(this.core.getNodes().get(key.getNode())) /* ...if the node exists in the core... */
                    .map(coreNode
-                        -> core.TranslateStageScheduleNumber(coreNode.GetExpensive())
+                        -> core.translateStageScheduleNumber(coreNode.getExpensive())
                                .isAfter(key.getStage(), false)) /* ...and is not expensive in the given stage */
                    .orElse(false) &&
-               key.getStage().getKind() == StageKind.Core && !BNode.IsUserBNode(key.getNode()),
-        MultiNodeStrategy.filter(readNodeStrategy_direct, key -> !BNode.IsUserBNode(key.getNode())),
+                   (key.getStage().getKind() == StageKind.Core || key.getStage().getKind() == StageKind.CoreMultiport) &&
+                   !BNode.IsUserBNode(key.getNode()),
+        MultiNodeStrategy.filter(readNodeStrategy_direct, key -> {
+          if (BNode.IsUserBNode(key.getNode()))
+            return false;
+          boolean staticReadResultOnly = (key.getStage().getKind() == StageKind.Decoupled);
+          if (!key.getNode().tags.contains(NodeTypeTag.staticReadResult) &&
+              (staticReadResultOnly || !key.getNode().tags.contains(NodeTypeTag.nonStaticReadResult)))
+            return false;
+          return true;
+        }),
         false);
 
     // Generate Valid bits for earlier stages. For exp for mem operations, core needs to know if it.s a mem op before mem stage
@@ -586,8 +723,10 @@ public class SCAL implements SCALBackendAPI {
     MultiNodeStrategy scalStateContextStrategy =
         strategyBuilders.buildSCALStateContextStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes, cfg);
 
-    // generate normal Valid bits
-    SingleNodeStrategy normalValidBitStrategy = strategyBuilders.buildValidMuxStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes);
+    MultiNodeStrategy regularOpMuxStrategy = strategyBuilders.buildValidMuxStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes);
+
+    // Port MUX+stall logic for single-port ISAXes on multi-port frontend stages (used in combination with regularOpMuxStrategy)
+    SingleNodeStrategy portMuxStrategy = strategyBuilders.buildPortMuxStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes, cfg);
 
     // Pipeline nodes that the ISAX provides before the core can handle them.
     MultiNodeStrategy pipelinedOpStrategy =
@@ -597,13 +736,13 @@ public class SCAL implements SCALBackendAPI {
           if (!key.getISAX().isEmpty() && !ISAXes.containsKey(key.getISAX()))
             return false;
 
-          SCAIEVNode baseNode = (key.getNode().isAdj() && !core.GetNodes().containsKey(key.getNode()))
+          SCAIEVNode baseNode = (key.getNode().isAdj() && !core.getNodes().containsKey(key.getNode()))
                                     ? BNode.GetSCAIEVNode(key.getNode().nameParentNode)
                                     : key.getNode();
-          if (!core.GetNodes().containsKey(baseNode))
+          if (!core.getNodes().containsKey(baseNode))
             return false;
-          PipelineFront baseNodeEarliest = core.GetNodes().containsKey(baseNode)
-                                               ? core.TranslateStageScheduleNumber(core.GetNodes().get(baseNode).GetEarliest())
+          PipelineFront baseNodeEarliest = core.getNodes().containsKey(baseNode)
+                                               ? core.translateStageScheduleNumber(core.getNodes().get(baseNode).getEarliest())
                                                : new PipelineFront();
           Stream<SCAIEVInstr> ISAXesToCheck;
           if (key.getISAX().isEmpty())
@@ -627,14 +766,14 @@ public class SCAL implements SCALBackendAPI {
             }
             return isaxInstr.HasSchedWith(baseNode,
                                    sched
-                                   -> core.TranslateStageScheduleNumber(sched.GetStartCycle())
+                                   -> core.translateStageScheduleNumber(sched.GetStartCycle())
                                        .asList()
                                        .stream()
                                        .allMatch(schedStartStage -> baseNodeEarliest.isAfter(schedStartStage, false)));
           });
         }, key_ -> false, MultiNodeStrategy.noneStrategy, true);
 
-    SingleNodeStrategy rdwrStallFlushDeqStrategy = strategyBuilders.buildStallFlushDeqStrategy(myLanguage, BNode, core);
+    SingleNodeStrategy rdwrStallFlushDeqStrategy = strategyBuilders.buildStallFlushDeqStrategy(myLanguage, BNode, core, op_stage_instr);
     SingleNodeStrategy SCALInputOutputStrategy = strategyBuilders.buildSCALInputOutputStrategy(myLanguage, BNode);
     SingleNodeStrategy pipeoutRegularStrategy = strategyBuilders.buildPipeoutRegularStrategy();
     MultiNodeStrategy defaultMemAdjStrategy = strategyBuilders.buildDefaultMemAdjStrategy(myLanguage, BNode, core);
@@ -642,11 +781,12 @@ public class SCAL implements SCALBackendAPI {
     SingleNodeStrategy defaultValidCancelReqStrategy = strategyBuilders.buildDefaultValidCancelReqStrategy(myLanguage, BNode, core, ISAXes);
     MultiNodeStrategy defaultRerunStrategy = strategyBuilders.buildDefaultRerunStrategy(myLanguage, BNode, core);
     MultiNodeStrategy defaultRdinstrRSRDStrategy = strategyBuilders.buildDefaultRdInstrRSRDStrategy(myLanguage, BNode, core, op_stage_instr, ISAXes);
+    MultiNodeStrategy multiportWrPCStrategy = strategyBuilders.buildMultiportWrPCStrategy(myLanguage, BNode, core);
 
     //////////////////////////  Spawn/Decoupled //////////////////////////
     Map<SCAIEVNode, Collection<String>> isaxPriorities = new HashMap<>();
     for (SCAIEVNode node : this.spawn_instr_stage.keySet()) {
-      if (this.core.GetSpawnStages().asList().stream().anyMatch(spawnStage -> this.ContainsOpInStage(node, spawnStage)) &&
+      if (this.core.getSpawnStages().asList().stream().anyMatch(spawnStage -> this.ContainsOpInStage(node, spawnStage)) &&
           node.allowMultipleSpawn) {
         // Set basic priority.
         // TODO: Make configurable! Currently, the priority is only based on HashMap ordering, which is rather chaotic.
@@ -658,7 +798,7 @@ public class SCAL implements SCALBackendAPI {
       for (var op_stage_instr_entry : op_stage_instr.entrySet()) {
         SCAIEVNode op = op_stage_instr_entry.getKey();
         if (op.isSpawn() && !op.isAdj() && op.DH) {
-          for (var stage_instr_entry : op_stage_instr_entry.getValue().entrySet())
+          for (var stage_instr_entry : op_stage_instr_entry.getValue().entrySet()) {
             if (stage_instr_entry.getKey().getKind() == StageKind.Decoupled) {
               PipelineStage stage = stage_instr_entry.getKey();
               // Add a pseudo builder to trigger decoupledDHStrategy.
@@ -667,6 +807,7 @@ public class SCAL implements SCALBackendAPI {
                 return new NodeLogicBlock();
               }));
             }
+          }
         }
       }
     }
@@ -703,7 +844,7 @@ public class SCAL implements SCALBackendAPI {
           myLanguage, BNode, core, op_stage_instr, spawn_instr_stage, ISAXes, idRetireSerializerStrategy_opt.get(), this.cfg);
 
       //Request the late retire handling for all used spawn nodes in decoupled stages.
-      var spawnStages = this.core.GetSpawnStages();
+      var spawnStages = this.core.getSpawnStages();
       for (SCAIEVNode bnode : BNode.GetAllBackNodes()) {
         if (!bnode.isSpawn()) continue;
         if (bnode.isAdj()) continue;
@@ -758,7 +899,7 @@ public class SCAL implements SCALBackendAPI {
     // Request disaxfence stall implementation
     if (ISAXes.containsKey(SCAL.PredefInstr.fence.instr.GetName())) {
       globalLogicBuilders.add(NodeLogicBuilder.fromFunction("Request disaxfence_stall", registry -> {
-        registry.lookupExpressionRequired(new NodeInstanceDesc.Key(SpawnFenceStrategy.disaxfence_stall_node, core.GetRootStage(), ""));
+        registry.lookupExpressionRequired(new NodeInstanceDesc.Key(SpawnFenceStrategy.disaxfence_stall_node, core.getRootStage(), ""));
         return new NodeLogicBlock();
       }));
     }
@@ -767,7 +908,7 @@ public class SCAL implements SCALBackendAPI {
     if (ISAXes.containsKey(SCAL.PredefInstr.ctx.instr.GetName())) {
       globalLogicBuilders.add(NodeLogicBuilder.fromFunction("Request isaxctx", registry -> {
         registry.lookupExpressionRequired(
-            new NodeInstanceDesc.Key(Purpose.MARKER_INTERNALIMPL_PIN, SCALStateContextStrategy.isaxctx_node, core.GetRootStage(), ""));
+            new NodeInstanceDesc.Key(Purpose.MARKER_INTERNALIMPL_PIN, SCALStateContextStrategy.isaxctx_node, core.getRootStage(), ""));
         return new NodeLogicBlock();
       }));
     }
@@ -796,6 +937,7 @@ public class SCAL implements SCALBackendAPI {
           idRetireSerializerStrategy_opt.get().implement(out, nodeKeys, isLast);
         scalStateStrategy.implement(out, nodeKeys, isLast);
         scalStateContextStrategy.implement(out, nodeKeys, isLast);
+        portMuxStrategy.implement(out, nodeKeys, isLast);
         
         decoupledDHStrategy.implement(out, nodeKeys, isLast);
         spawnOrderedMuxStrategy.implement(out, nodeKeys, isLast);
@@ -820,10 +962,13 @@ public class SCAL implements SCALBackendAPI {
         ivalidStrategy.implement(out, nodeKeys, isLast);
         rdInStageValidStrategy.implement(out, nodeKeys, isLast);
         rdwrStallFlushDeqStrategy.implement(out, nodeKeys, isLast);
+        readNodeStrategy_commit.implement(out, nodeKeys, isLast);
         readNodeStrategy_corePipeStatus.implement(out, nodeKeys, isLast);
         writeNodeEarlyValidStrategy.implement(out, nodeKeys, isLast);
-        normalValidBitStrategy.implement(out, nodeKeys, isLast);
+        regularOpMuxStrategy.implement(out, nodeKeys, isLast);
         readNodeStrategy_pipelineable.implement(out, nodeKeys, isLast);
+        readNodeStrategy_assignFromMultiport.implement(out, nodeKeys, isLast);
+        multiportWrPCStrategy.implement(out, nodeKeys, isLast);
 
         if (isLast) {
           pipelinedOpStrategy.implement(out, nodeKeys, isLast);
@@ -900,6 +1045,7 @@ public class SCAL implements SCALBackendAPI {
     // Temporary, as long as the old logic is in place.
     interfToISAX = "";
     interfToCore = "";
+    interfToExt  = "";
     declarations = "";
     logic = "";
     otherModules = "";
@@ -955,7 +1101,7 @@ public class SCAL implements SCALBackendAPI {
               if (isaxPinKeyOverride != null)
                 curTopWireName += " " + netISAX;
               return netlist.computeIfAbsent(curTopWireName,
-                                             newTopWireName -> new SCALPinNet(operation.size, scalPinName, "", isaxPinName));
+                                             newTopWireName -> new SCALPinNet(operation.size, scalPinName, "", isaxPinName, "", operation.isInput));
             });
             net.isaxes.add(netISAX);
             assert (net.size == operation.size);
@@ -968,7 +1114,7 @@ public class SCAL implements SCALBackendAPI {
                                (operation.isInput ? "_to_scal" : "_from_scal");
           String corePinName = this.myLanguage.CreateFamNodeName(operation.NodeNegInput(), stage, instrName, false);
           if (!netlist.containsKey(topWireName)) {
-            SCALPinNet net = new SCALPinNet(operation.size, scalPinName, corePinName, "");
+            SCALPinNet net = new SCALPinNet(operation.size, scalPinName, corePinName, "", "", operation.isInput);
             netlist.put(topWireName, net);
           } else {
             SCALPinNet net = netlist.get(topWireName);
@@ -976,6 +1122,19 @@ public class SCAL implements SCALBackendAPI {
             assert (net.core_module_pin.equals(corePinName));
           }
           interfToCore += pin.getValue().declaration;
+        } else if (pin.getKey().equals(NodeLogicBlock.InterfToExternalKey)) {
+          String topWireName = "top_" + this.myLanguage.CreateBasicNodeName(operation, stage, instrName, false) +
+                               (operation.isInput ? "_to_scal" : "_from_scal");
+          String topPinName = scalPinName;
+          if (!netlist.containsKey(topWireName)) {
+            SCALPinNet net = new SCALPinNet(operation.size, scalPinName, "", "", topPinName, operation.isInput);
+            netlist.put(topWireName, net);
+          } else {
+            SCALPinNet net = netlist.get(topWireName);
+            assert (net.size == operation.size);
+            assert (net.wrapper_module_pin.equals(topPinName));
+          }
+          interfToExt += pin.getValue().declaration;
         } else {
           logger.error("SCAL.Generate: Unknown interface key " + pin.getKey());
         }
@@ -1008,6 +1167,7 @@ public class SCAL implements SCALBackendAPI {
     }
 
     op_stage_instr.clear();
+    // Rebuild op_stage_instr based on the SCAL->Core interface pins
     for (NodeBuilderEntry builderEntry : builtNodes) {
       if (builderEntry.block.isEmpty())
         continue;
@@ -1041,7 +1201,7 @@ public class SCAL implements SCALBackendAPI {
 
     ////////////////////// Write all this logic to file //////////////////////
     String clkrst = "\ninput " + myLanguage.clk + ",\ninput " + myLanguage.reset + "\n";
-    WriteFileUsingTemplate(interfToISAX, interfToCore + clkrst, declarations, logic, otherModules, outPath);
+    WriteFileUsingTemplate(interfToISAX, interfToCore, interfToExt + clkrst, declarations, logic, otherModules, outPath);
   }
 
   //////////////////////////////////////////////FUNCTIONS: FOR MAIN ADAPTER LOGIC ////////////////////////
@@ -1082,6 +1242,8 @@ public class SCAL implements SCALBackendAPI {
   private void GenerateAllInterfToCore(SCAIEVNode operation, PipelineStage stage, HashSet<String> interfaceText, NodeRegistry registry,
                                        List<NodeLogicBuilder> interfaceBuilders) {
     if (operation.equals(BNode.RdIValid) || operation.equals(BNode.RdAnyValid)) // SCAL handles RdIValid and ISAX Internal state
+      return;
+    if (stage.getMultiportBase() != stage && !SCALUtil.nodeIsPerPort(operation, stage)) // Don't generate per-port interfaces for shared-only nodes
       return;
 
     String newinterf = "";
@@ -1138,7 +1300,7 @@ public class SCAL implements SCALBackendAPI {
             adjOperation = SCAIEVNode.CloneNode(adjOperation, Optional.of(adjOperation.replaceRadixNameWith(operation.familyName)), true);
           if (adjacent == AdjacentNode.spawnAllowed && !adjSpawnAllowedNodes.contains(adjOperation) && !BNode.IsUserBNode(adjOperation))
             continue; // Core may not provide specific spawnAllowed node.
-          if (adjOperation.tags.contains(NodeTypeTag.defaultNotprovidedByCore) && !core.GetNodes().containsKey(adjOperation))
+          if (adjOperation.tags.contains(NodeTypeTag.defaultNotprovidedByCore) && !core.getNodes().containsKey(adjOperation))
             continue;
           String interfaceInstr = "";
           boolean noInterface = operation.tags.contains(NodeTypeTag.noCoreInterface);
@@ -1241,7 +1403,8 @@ public class SCAL implements SCALBackendAPI {
       // Generate main FNode interface
       String instrName = "";
       if (!operation.oneInterfToISAX || nodePerISAXOverride.getOrDefault(operation, emptyStrHashSet).contains(instruction) ||
-          operation.tags.contains(NodeTypeTag.supportsPortNodes) && (!ISAXes.containsKey(instruction) || ISAXes.get(instruction).HasNoOp()))
+          operation.tags.contains(NodeTypeTag.supportsPortNodes) && (!ISAXes.containsKey(instruction) || ISAXes.get(instruction).HasNoOp()) ||
+          stage.getKind() == StageKind.ISAXMux)
         instrName = instruction;
 
       // Change the interface stage to the decoupled stage for semi-coupled instructions mechanism
@@ -1303,7 +1466,7 @@ public class SCAL implements SCALBackendAPI {
       for (AdjacentNode adjacent : BNode.GetAdj(operation)) {
         SCAIEVNode adjOperation = BNode.GetAdjSCAIEVNode(operation, adjacent).get();
         instrName = "";
-        if (!adjOperation.oneInterfToISAX)
+        if (!adjOperation.oneInterfToISAX || stage.getKind() == StageKind.ISAXMux)
           instrName = instruction;
         if (adjOperation.noInterfToISAX && !(adjOperation.mandatory && ISAXes.get(instruction).GetRunsAsDynamic()))
           continue;
@@ -1360,20 +1523,34 @@ public class SCAL implements SCALBackendAPI {
    * Write text based on template
    *
    */
-  private void WriteFileUsingTemplate(String interfToISAX, String interfToCore, String declarations, String logic, String otherModules,
+  private void WriteFileUsingTemplate(String interfToISAX, String interfToCore, String interfToExternal, String declarations, String logic, String otherModules,
                                       String outPath) {
     String tab =
         myLanguage
             .tab; //  no need to use the same tab as in Core's module files. It is important just to have same tab across the same file
     String endl = "\n";
-    String textToWrite = "" + endl + tab.repeat(0) + "// SystemVerilog file \n " + endl + tab.repeat(0) + "module SCAL (" + endl +
-                         tab.repeat(1) + "// Interface to the ISAX Module" + endl + tab.repeat(1) + "\n" +
-                         this.myLanguage.AlignText(tab.repeat(1), interfToISAX) + endl + tab.repeat(1) + "" + endl + tab.repeat(1) +
-                         "// Interface to the Core" + endl + tab.repeat(1) + "\n" +
-                         this.myLanguage.AlignText(tab.repeat(1), interfToCore) + endl + tab.repeat(1) + "" + endl + tab.repeat(0) + ");" +
-                         endl + tab.repeat(0) + "// Declare local signals" + endl + tab.repeat(0) + declarations + endl + tab.repeat(0) +
-                         "" + endl + tab.repeat(0) + "// Logic" + endl + tab.repeat(0) + logic + endl + tab.repeat(0) + "" + endl +
-                         tab.repeat(0) + "endmodule\n" + endl + tab.repeat(0) + "\n" + endl + tab.repeat(0) + otherModules + "\n";
+    String textToWrite = "" + endl +
+                         tab.repeat(0) + "// SystemVerilog file \n " + endl +
+                         tab.repeat(0) + "module SCAL (" + endl +
+                         tab.repeat(1) + "// Interface to the ISAX Module" + endl +
+                         tab.repeat(1) + "\n" + this.myLanguage.AlignText(tab.repeat(1), interfToISAX) + endl +
+                         endl +
+                         tab.repeat(1) + "// Interface to the Core" + endl +
+                         tab.repeat(1) + "\n" + this.myLanguage.AlignText(tab.repeat(1), interfToCore) + endl +
+                         endl +
+                         tab.repeat(1) + "// Interface to external modules" + endl +
+                         tab.repeat(1) + "\n" + this.myLanguage.AlignText(tab.repeat(1), interfToExternal) + endl +
+                         endl +
+                         tab.repeat(0) + ");" + endl +
+                         tab.repeat(0) + "// Declare local signals" + endl +
+                         tab.repeat(0) + declarations + endl +
+                         endl +
+                         tab.repeat(0) + "// Logic" + endl +
+                         tab.repeat(0) + logic + endl +
+                         endl +
+                         tab.repeat(0) + "endmodule\n" + endl +
+                         endl +
+                         tab.repeat(0) + otherModules + endl;
 
     // Write text to file CommonLogicModule.sv
     String fileName = "CommonLogicModule.sv";

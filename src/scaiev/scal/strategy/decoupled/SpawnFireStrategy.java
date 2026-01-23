@@ -237,11 +237,11 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
       // (Wr|Rd)Mem_spawn : Stall until the first available stage for WrMem.
       PipelineFront maxStall = new PipelineFront();
       if (node.equals(bNodes.WrRD_spawn))
-        maxStall = new PipelineFront(core.GetRootStage().getChildrenTails());
+        maxStall = new PipelineFront(core.getRootStage().getChildrenTails());
       else if (node.equals(bNodes.WrMem_spawn) || node.equals(bNodes.RdMem_spawn))
-        maxStall = core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.WrMem).GetEarliest());
+        maxStall = core.translateStageScheduleNumber(core.getNodes().get(bNodes.WrMem).getEarliest());
       final PipelineFront maxStall_ = maxStall;
-      core.GetRootStage().getAllChildren()
+      core.getRootStage().getAllChildren()
                          .filter(stage -> stage.getKind() != StageKind.CoreInternal) //Filter out CoreInternal stages, which may not have WrStall.
                          .filter(stage -> maxStall_.isAroundOrAfter(stage, false))
                          .forEach(stage -> {
@@ -291,7 +291,7 @@ public class SpawnFireStrategy extends MultiNodeStrategy {
       nonportSpawnNode = bNodes.GetSCAIEVNode(nonportSpawnNode.nameCousinNode);
     } while (!nonportSpawnNode.nameCousinNode.isEmpty());
     return sortedNodes.stream().flatMap(node -> {
-      SCAIEVNode nodePorted = bNodes.GetAllPortsByBaseName().getOrDefault(node, List.of()).stream()
+      SCAIEVNode nodePorted = bNodes.GetAllPortsByBaseName().getOrDefault(node.name, List.of()).stream()
           .filter(portnode -> bNodes.getPortName(portnode).equals(portName))
           .findAny().orElse(node);
       return priorities.getOrDefault(node, List.of()).stream().map(isax -> Map.entry(nodePorted, isax));

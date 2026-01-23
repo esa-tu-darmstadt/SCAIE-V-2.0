@@ -48,7 +48,14 @@ public class SCAIEVInstr {
     /** The ISAX interface has the ISAX name in its RdStall, RdFlush pins */
     PerISAXRdStallFlush("RdStallFlush-Is-Per-ISAX"),
     /** The ISAX interface has the ISAX name in all read node pins (RdRS1/2, RdRD, RdMem, RdInstr, RdCustomReg, etc.) */
-    PerISAXReadResults("ReadResults-Are-Per-ISAX");
+    PerISAXReadResults("ReadResults-Are-Per-ISAX"),
+    /**
+     * In the frontend stages (pre-execute), the ISAX has as many ports as the core has.
+     * If the tag is provided, SCAIE-V adds ISAX interface pins for each port stage.
+     *   These interfaces are named by the port stage's name (not by the stage number).
+     * If the tag is not provided, SCAIE-V multiplexes all core ports to one ISAX port.
+     */
+    MultiPortFrontend("Frontend-Multiport");
 
     public final String serialName;
 
@@ -109,7 +116,7 @@ public class SCAIEVInstr {
     for (SCAIEVNode node : userBNode.GetAllFrontendNodes()) {
       CheckThrowNodeUniquePerCycle(node);
     }
-    List<PipelineStage> startSpawnStagesList = core.GetStartSpawnStages().asList();
+    List<PipelineStage> startSpawnStagesList = core.getStartSpawnStages().asList();
     assert (startSpawnStagesList.size() >= 1);
     if (startSpawnStagesList.size() > 1)
       logger.warn("ConvertToBackend - only considering first of several 'start spawn stages'");
@@ -117,7 +124,8 @@ public class SCAIEVInstr {
     int postStartSpawnStagePos = startSpawnStage.getStagePos() + 1;
 
     List<PipelineStage> postStartSpawnStagesList =
-        new PipelineFront(startSpawnStage.getNext().stream().filter(nextStage -> nextStage.getKind() == StageKind.Core)).asList();
+        new PipelineFront(startSpawnStage.getNext().stream().filter(nextStage -> nextStage.getKind() == StageKind.Core
+                                                                                 || nextStage.getKind() == StageKind.CoreMultiport)).asList();
     if (postStartSpawnStagesList.size() > 0) {
       postStartSpawnStagePos = postStartSpawnStagesList.get(0).getStagePos();
       int postStartSpawnStagePos_ = postStartSpawnStagePos;
@@ -132,7 +140,7 @@ public class SCAIEVInstr {
         continue;
 
       // Get commit and spawn stage positions.
-      PipelineFront commitFront = core.TranslateStageScheduleNumber(parentNode.commitStage);
+      PipelineFront commitFront = core.translateStageScheduleNumber(parentNode.commitStage);
       if (commitFront.asList().isEmpty()) {
         logger.error("The commitStage list for node {} is empty; skipping spawn scheduling.", parentNode.name);
         continue;

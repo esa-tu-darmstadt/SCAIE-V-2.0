@@ -631,7 +631,15 @@ public class IDBasedPipelineStrategy extends MultiNodeStrategy {
           continue;
 
         for (NodeInstanceDesc.Key getallKey : implementation.requestedGetallToPipeTo) {
-          assert(getallKey.equals(NodeInstanceDesc.Key.keyWithPurpose(pipelineToKey, NodeRegPipelineStrategy.Purpose_Getall_ToPipeTo)));
+          assert(getallKey.getPurpose().equals(NodeRegPipelineStrategy.Purpose_Getall_ToPipeTo));
+          assert(getallKey.getNode().equals(pipelineToKey.getNode())
+                   && getallKey.getAux() == pipelineToKey.getAux()
+                   && getallKey.getISAX().equals(pipelineToKey.getISAX()));
+          //The key can also be requested on the multiport super stage, since the port does not matter for this pipeliner.
+          if (getallKey.getStage() == pipelineToKey.getStage().getMultiportBase())
+            assert(implementation.getallToPipeToSharedMultiport);
+          else
+            assert(getallKey.getStage() == pipelineToKey.getStage());
           SCAIEVNode nodeWithElements = SCAIEVNode.CloneNode(getallKey.getNode(), Optional.empty(), true);
           nodeWithElements.elements = getBufferDepth();
           NodeInstanceDesc.Key getallKey_elements = new NodeInstanceDesc.Key(NodeRegPipelineStrategy.Purpose_Getall_ToPipeTo,
@@ -805,6 +813,7 @@ public class IDBasedPipelineStrategy extends MultiNodeStrategy {
     }
 
     pendingKeyImplementations.add(Map.entry(pipelineToKey, implementation));
+    implementation.getallToPipeToSharedMultiport = true;
   }
 
   /**
@@ -899,16 +908,16 @@ public class IDBasedPipelineStrategy extends MultiNodeStrategy {
           if (!groupBuilder.allBufferedNodes.contains(nodeKey.getNode()))
             groupBuilder.allBufferedNodes.add(nodeKey.getNode());
 
-          // TODO: Apply pipeline from override
-          List<PipelineStage> newPipelineFromList = null;
-          for (PipelineStage pipelineFromStage : nodeKey.getStage().getPrev()) {
+          // TODO: Consider overrides from setPipelineFrom (if needed?)
+          List<PipelineStage> newPipelineFromList = new ArrayList<>();
+          nodeKey.getStage().resolveEffectivePrev(false).forEach((PipelineStage pipelineFromStage) -> {
             if (!groupBuilder.pipelineFromFront.contains(pipelineFromStage) && assignIDFront.isAroundOrBefore(pipelineFromStage, false)) {
-              if (newPipelineFromList == null)
-                newPipelineFromList = new ArrayList<>(groupBuilder.pipelineFromFront.asList());
+              if (newPipelineFromList.isEmpty())
+                newPipelineFromList.addAll(groupBuilder.pipelineFromFront.asList());
               newPipelineFromList.add(pipelineFromStage);
             }
-          }
-          if (newPipelineFromList != null)
+          });
+          if (!newPipelineFromList.isEmpty())
             groupBuilder.pipelineFromFront = new PipelineFront(newPipelineFromList);
 
           groupBuilder.trigger(out);

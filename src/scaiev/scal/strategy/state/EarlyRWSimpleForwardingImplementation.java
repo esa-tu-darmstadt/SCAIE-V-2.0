@@ -1,6 +1,10 @@
 package scaiev.scal.strategy.state;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import scaiev.backend.BNode;
 import scaiev.coreconstr.Core;
@@ -8,6 +12,7 @@ import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
+import scaiev.pipeline.PipelineStage.StageKind;
 import scaiev.pipeline.PipelineStage.StageTag;
 import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeLogicBlock;
@@ -108,19 +113,29 @@ public class EarlyRWSimpleForwardingImplementation extends EarlyRWImplementation
         // - still clear the forward buffers on flush of the read stage
       }
       //Observe all stages between read and issue.
-      List<PipelineStage> observeStages = earlyReadKey.getStage().streamNext_bfs(successorStage -> !regfile.issueFront.contains(successorStage))
-                                              .skip(1).distinct().toList();
+      List<PipelineStage> observeStages = earlyReadKey.getStage().getMultiportBase()
+                                              .streamNext_bfs(successorStage -> !regfile.issueFront.contains(successorStage))
+                                              .skip(1).distinct().collect(Collectors.toCollection(ArrayList::new));
       //Check if there is any (early) write pending for the current node.
       String anyEarlyWriteCond = "";
       // (extra condition that only is set if a pending write is being flushed)
       String anyEarlyWriteMayGetFlushedCond = "";
       for (SCAIEVNode earlyWriteToForward : forwardedEarlyWriteNodes) {
         SCAIEVNode earlyWriteValidReq = bNodes.GetAdjSCAIEVNode(earlyWriteToForward, AdjacentNode.validReq).get();
-        for (PipelineStage observeStage : observeStages) {
+        for (int iObserveStage = 0; iObserveStage < observeStages.size(); ++iObserveStage) {
+          PipelineStage observeStage = observeStages.get(iObserveStage);
           var allValidsInStageKey = new NodeInstanceDesc.Key(NodeRegPipelineStrategy.Purpose_Getall_ToPipeTo, earlyWriteValidReq, observeStage, "");
           var allValidsNodeInst = registry.lookupRequired(allValidsInStageKey);
-          if (allValidsNodeInst.getExpression().startsWith(NodeRegistry.MISSING_PREFIX))
+          if (allValidsNodeInst.getExpression().startsWith(NodeRegistry.MISSING_PREFIX)) {
+            // Pipeliner may have per-port Getall_ToPipeTo.
+            // Note: May cause the Getall_ToPipeTo instances to be created for each port even if not needed,
+            //  since the lookup will likely fail in the first iteration.
+            //  (should not make a difference to the HDL output)
+            if (observeStage.getKind() == StageKind.CoreMultiport)
+              observeStage.getChildren().stream().filter(st->st.getKind() == StageKind.Core)
+                .forEach(st->observeStages.add(st));
             continue;
+          }
           String anyInStageValidCond = allValidsNodeInst.getExpressionWithParens();
           if (allValidsNodeInst.getKey().getNode().elements > 1)
             anyInStageValidCond = "(|%s)".formatted(anyInStageValidCond);

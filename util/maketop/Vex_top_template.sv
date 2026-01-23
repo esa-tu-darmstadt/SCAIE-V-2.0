@@ -33,10 +33,14 @@ module top(
 	input      [31:0]   dBusAhbLite3_HRDATA,
 	input               dBusAhbLite3_HREADY,
 	input               dBusAhbLite3_HRESP, 
-	input				debugReset);
+	input               debugReset
+
+    //SCAIEV MAKETOP WRAPPERIO
+
+    );
 
     //SCAIEV MAKETOP COREWIRES
-    
+
     VexRiscv VexRiscv_inst(
         .debug_bus_cmd_valid(debug_bus_cmd_valid),
         .debug_bus_cmd_ready(debug_bus_cmd_ready),
@@ -78,9 +82,9 @@ module top(
     );
 
     //SCAIEV MAKETOP ISAXWIRES
-    
+
     //SCAIEV MAKETOP SCAL
-    
+
     //SCAIEV MAKETOP ISAXINST
-    	
+
 endmodule

@@ -74,6 +74,9 @@ Each custom register has several operations that can be requested in the interfa
 
 In the core datasheet, the custom register operations should, in most cases, be within the constraints of RdCustomReg and WrCustomReg.addr/.data. There is limited support for earlier reads/writes (e.g., zero-overhead loops) on single-element registers, requiring relatively expensive hazard handling.
 
+# Additional entries
+A custom SystemVerilog module name can be provided as a `- module: NAME` entry in case it deviates from the ISAX's yaml file name (without extension). This entry is handled by the `util/maketop` scripts and has no effect on SCAIE-V itself.
+
 ## Example instructions with custom registers
 Specifies two 1-element registers, ADDR and INCR, and two instructions accessing them. The setup instruction writes the ADDR and INCR registers and reads rs1, rs2. The lw_inc instruction reads the two registers, reads from memory, updates the ADDR register, and writes a result to rd.
 
@@ -141,4 +144,3 @@ Corresponds with the following ISAX-side HDL interface, assuming a 32bit core:
   output        WrADDR_validReq_lw_inc_2_o,
   output [31:0] WrRD_lw_inc_3_o
 ```
-

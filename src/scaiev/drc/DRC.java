@@ -86,7 +86,9 @@ public class DRC {
     for (int i = 0; i < isaxEncodings.size(); ++i) {
       for (int j = i + 1; j < isaxEncodings.size(); ++j) {
         if (EncodingOverlaps(isaxEncodings.get(i), isaxEncodings.get(j))) {
-          logger.error("Found instruction encoding overlap: '{}' and '{}' have encodings '{}' and '{}'", isaxNames.get(i), isaxNames.get(j),
+          logger.error("Found instruction encoding overlap: '{}' and '{}' have encodings '{}' and '{}'. "
+                       + "Note that SCAIE-V only uses the opcode, funct3, funct7 encoding bits.",
+                       isaxNames.get(i), isaxNames.get(j),
                        isaxEncodings.get(i), isaxEncodings.get(j));
           hasFatalError = true;
           if (++numMessages > 5) {
@@ -100,7 +102,7 @@ public class DRC {
   public void CheckSchedErr() {
     for (var op_stage_instr_entry : op_stage_instr.entrySet()) {
       SCAIEVNode operation = op_stage_instr_entry.getKey();
-      if (!operation.isSpawn() && !core.GetNodes().containsKey(operation)) {
+      if (!operation.isSpawn() && !core.getNodes().containsKey(operation)) {
         logger.fatal("Requested operation " + operation + " does not exist ");
         hasFatalError = true;
         continue;
@@ -118,10 +120,10 @@ public class DRC {
       for (var stage_instr_entry : op_stage_instr_entry.getValue().entrySet()) {
         PipelineStage stage = stage_instr_entry.getKey();
         if (!operation.isSpawn() && !(stage.getKind() == StageKind.Sub && operation.equals(BNodes.RdAnyValid))) {
-          var end_constrain_cycle = core.TranslateStageScheduleNumber(core.GetNodes().get(operation).GetLatest());
+          var end_constrain_cycle = core.translateStageScheduleNumber(core.getNodes().get(operation).getLatest());
           var start_constrain_cycle = BNodes.IsUserBNode(operation)
-                                          ? new PipelineFront(core.GetRootStage().getChildren())
-                                          : core.TranslateStageScheduleNumber(core.GetNodes().get(operation).GetEarliest());
+                                          ? new PipelineFront(core.getRootStage().getChildren())
+                                          : core.translateStageScheduleNumber(core.getNodes().get(operation).getEarliest());
           if ((!operation.isInput && !start_constrain_cycle.isAroundOrBefore(stage, false)) ||
               (operation.isInput && !end_constrain_cycle.isAroundOrAfter(stage, false))) {
             String message =

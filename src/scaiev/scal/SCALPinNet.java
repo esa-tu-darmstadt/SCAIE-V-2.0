@@ -12,6 +12,10 @@ public class SCALPinNet {
   public String core_module_pin;
   /** Name of the pin in the ISAX module interface ("" for N/A) */
   public String isax_module_pin;
+  /** Name of the pin in the wrapper toplevel interface ("" for N/A) */
+  public String wrapper_module_pin;
+  /** Is wrapper input or output - ignored if no wrapper_module_pin is set */
+  public boolean wrapper_isinput;
   /** List of ISAXes this net applies to */
   public List<String> isaxes = new ArrayList<>();
   /** 
@@ -19,12 +23,16 @@ public class SCALPinNet {
    * @param scal_module_pin Name of the pin in the SCAL module interface.
    * @param core_module_pin Name of the pin in the core module interface ("" for N/A)
    * @param isax_module_pin Name of the pin in the ISAX module interface ("" for N/A)
+   * @param wrapper_module_pin Name of the pin in the wrapper toplevel interface ("" for N/A)
+   * @param wrapper_isinput Is wrapper input or output - ignored if no wrapper_module_pin is set
    */
-  public SCALPinNet(int size, String scal_module_pin, String core_module_pin, String isax_module_pin) {
+  public SCALPinNet(int size, String scal_module_pin, String core_module_pin, String isax_module_pin, String wrapper_module_pin, boolean wrapper_isinput) {
     this.size = size;
     this.scal_module_pin = scal_module_pin;
     this.core_module_pin = core_module_pin;
     this.isax_module_pin = isax_module_pin;
+    this.wrapper_module_pin = wrapper_module_pin;
+    this.wrapper_isinput = wrapper_isinput;
   }
 
   // Boilerplate for serialization / JavaBean

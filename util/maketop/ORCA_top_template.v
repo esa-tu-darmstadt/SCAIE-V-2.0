@@ -84,7 +84,7 @@ module top(input clk, input rst,
 	
     orca orca_inst(
         .clk(clk), 
-        .reset(0), //TODO: Should actually be connected to rst. However, the core converted to a Verilog netlist does not appear to work after reset is asserted..?
+        .reset(0), //TODO: Should actually be connected to rst. However, the core does not appear to work after reset is asserted..?
 
 		.IUC_ARADDR(IUC_ARADDR),
 		.IUC_ARBURST(IUC_ARBURST),

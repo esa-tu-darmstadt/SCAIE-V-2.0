@@ -9,6 +9,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.stream.IntStream;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import scaiev.backend.BNode;
@@ -16,7 +18,10 @@ import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
+import scaiev.pipeline.PipelineStage.MultiportPipeAttributes;
+import scaiev.pipeline.PipelineStage.MultiportStallAttributes;
 import scaiev.pipeline.PipelineStage.StageKind;
+import scaiev.pipeline.PipelineStage.StageTag;
 import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeInstanceDesc.ExpressionType;
 import scaiev.scal.NodeInstanceDesc.Purpose;
@@ -28,7 +33,9 @@ import scaiev.scal.NodeRegistryRO;
 import scaiev.scal.SCALUtil;
 import scaiev.scal.TriggerableNodeLogicBuilder;
 import scaiev.scal.strategy.MultiNodeStrategy;
+import scaiev.util.JavaUtil;
 import scaiev.util.ListRemoveView;
+import scaiev.util.Log2;
 import scaiev.util.Verilog;
 
 /**
@@ -94,6 +101,9 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
      * The {@link #triggerable} builder will be triggered if the set changes.
      */
     Set<NodeInstanceDesc.Key> requestedGetallToPipeTo = new HashSet<>();
+
+    /** Set by makePipelineBuilder_single, true iff the 'getallToPipeTo' value is the same across all ports. */
+    boolean getallToPipeToSharedMultiport = false;
   }
 
   /** Per-composition state: Keys already implemented */
@@ -153,50 +163,111 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
    * @return a valid NodeLogicBuilder
    */
   protected NodeLogicBuilder makePipelineBuilder_singleFF(NodeInstanceDesc.Key nodeKey, ImplementedKeyInfo implementation,
-      PipelineStage stage, PipelineStage stageFrom) {
+      PipelineStage stage, List<PipelineStage> stagesFrom) {
     var requestedFor = new RequestedForSet(nodeKey.getISAX());
     boolean zeroOnFlushSrc = this.zeroOnFlushSrc;
     boolean zeroOnFlushDest = this.zeroOnFlushDest;
     boolean zeroOnBubble = this.zeroOnBubble;
+  //Each port has its own GetallToPipeTo (which just is the currently stored value).
+    implementation.getallToPipeToSharedMultiport = false;
     return NodeLogicBuilder.fromFunction("pipelineBuilder_single (" + nodeKey.toString(false) + ")", (NodeRegistryRO registry) -> {
-      NodeInstanceDesc.Key nodeKey_prevStage =
-          new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.PIPEOUT, nodeKey.getNode(), stageFrom, nodeKey.getISAX(), nodeKey.getAux());
-      Optional<NodeInstanceDesc> prevStageNodeInstance = registry.lookupOptionalUnique(nodeKey_prevStage, requestedFor);
-      if (implementation.pipeliningIsRequired)
-        registry.lookupExpressionRequired(nodeKey_prevStage);
+      String tab = language.tab;
 
+      List<NodeInstanceDesc> prevStageNodeInstances = stagesFrom.stream().map(stageFrom -> {
+        NodeInstanceDesc.Key nodeKey_prevStage =
+            new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.PIPEOUT, nodeKey.getNode(), stageFrom, nodeKey.getISAX(), nodeKey.getAux());
+        Optional<NodeInstanceDesc> prevStageNodeInstance = registry.lookupOptionalUnique(nodeKey_prevStage, requestedFor);
+        if (implementation.pipeliningIsRequired)
+          registry.lookupExpressionRequired(nodeKey_prevStage);
+        return prevStageNodeInstance.orElse(null);
+      }).toList();
+      
       NodeLogicBlock ret = new NodeLogicBlock();
-      if (prevStageNodeInstance.isPresent()) {
+      if (prevStageNodeInstances.stream().allMatch(inst -> inst != null)) {
         if (implementation.forwardRequestedFor)
-          requestedFor.addAll(prevStageNodeInstance.get().getRequestedFor(), true);
+          prevStageNodeInstances.forEach(prevStageNodeInstance -> requestedFor.addAll(prevStageNodeInstance.getRequestedFor(), true));
         // The name of the register to declare.
         String nameReg = language.CreateBasicNodeName(nodeKey.getNode(), stage, nodeKey.getISAX(), true) +
                          (nodeKey.getAux() != 0 ? "_" + nodeKey.getAux() : "") + "_regpipein";
-        // The expression that defines the updated register value.
-        String value = prevStageNodeInstance.get().getExpression();
-        boolean value_missing = prevStageNodeInstance.get().getExpression().startsWith(NodeRegistry.MISSING_PREFIX);
-        if (zeroOnFlushSrc) {
-          // If the previous stage is being flushed and not stalling, register a zero instead of the current value.
-          String flushPrevStage = SCALUtil.buildCond_StageFlushing(bNodes, registry, stageFrom, requestedFor);
-          value = "(" + flushPrevStage + ") ? 0 : " + value;
-        }
         // Add the declaration for the register.
         ret.declarations += language.CreateDeclSig(nodeKey.getNode(), stage, nodeKey.getISAX(), true, nameReg);
 
-        // The conditions for whether a new value is being pipelined.
-        String stallPrevStage = SCALUtil.buildCond_StageStalling(bNodes, registry, stageFrom, false, requestedFor);
-        var pipeintoCondInst_opt =
-            registry.lookupOptionalUnique(new NodeInstanceDesc.Key(bNodes.RdPipeInto, stageFrom, "stage_" + stage.getName()));
-        String pipeintoCond = pipeintoCondInst_opt.isPresent() ? String.format(" && %s", pipeintoCondInst_opt.get().getExpression()) : "";
-
         // Add the register logic.
-
-        String tab = language.tab;
         String regLogic = "";
-        regLogic += "always@(posedge " + language.clk + ") begin\n" + tab + "if (" + language.reset + ")\n" + tab.repeat(2) + nameReg +
-                    " <= 0;\n" // Reset value: 0
-                    + tab + "else if (!(" + stallPrevStage + ")" + pipeintoCond +
-                    ")\n" + tab.repeat(2) + nameReg + " <= " + value + ";\n"; //
+        regLogic += "always_ff @(posedge " + language.clk + ") begin\n"
+                    + tab + "if (" + language.reset + ")\n"
+                    + tab.repeat(2) + nameReg + " <= 0;\n"; // Reset value: 0
+        
+        List<String> allStallConditions = new ArrayList<>(stagesFrom.size());
+
+        // Register write logic for each source stage.
+        for (int iFrom = 0; iFrom < stagesFrom.size(); ++iFrom) {
+          NodeInstanceDesc prevStageNodeInstance = prevStageNodeInstances.get(iFrom);
+          PipelineStage stageFrom = stagesFrom.get(iFrom);
+
+          // Special rule: Rotations across ports (e.g. port 0 runs, port 1 stalls -> shift port 1 to port 0)
+          // -> In this case, pipe from the stalling port whenever RdPipeInto.
+          boolean isPortRotation = stageFrom.getMultiportBase() == stage.getMultiportBase();
+          assert(!isPortRotation || stage.getMultiportBase().getKind() == StageKind.CoreMultiport && stage != stage.getMultiportBase());
+
+          // The conditions for whether a new value is being pipelined.
+          String stallPrevStage = isPortRotation ? "1'b0" : SCALUtil.buildCond_StageStalling(bNodes, registry, stageFrom, false, requestedFor);
+          
+          // Check RdPipeInto if needed, if a stage has multiple possible successors
+          NodeInstanceDesc.Key pipeintoCondKey = new NodeInstanceDesc.Key(bNodes.RdPipeInto, stageFrom, "stage_" + stage.getName());
+          boolean needsPipeInto = isPortRotation
+              || stageFrom.getMultiportBase().getKind() == StageKind.CoreMultiport && portNeedsRdPipeInto(nodeKey.getNode(), stageFrom);
+          Optional<NodeInstanceDesc> pipeintoCondInst_opt = needsPipeInto
+                                                              ? Optional.of(registry.lookupRequired(pipeintoCondKey))
+                                                              : registry.lookupOptionalUnique(pipeintoCondKey);
+          String pipeintoCond = pipeintoCondInst_opt.isPresent() ? String.format(" && %s", pipeintoCondInst_opt.get().getExpression()) : "";
+
+          // The expression that defines the updated register value.
+          String value = prevStageNodeInstance.getExpression();
+          if (zeroOnFlushSrc) {
+            // If the previous stage is being flushed and not stalling, register a zero instead of the current value.
+            String flushPrevStage = SCALUtil.buildCond_StageFlushing(bNodes, registry, stageFrom, requestedFor);
+            value = "(" + flushPrevStage + ") ? 0 : " + value;
+          }
+          
+          
+          String pipeCond = "!(%s)%s".formatted(stallPrevStage, pipeintoCond);
+          regLogic += tab + "else if (" + pipeCond + ")\n"
+                      + tab.repeat(2) + nameReg + " <= " + value + ";\n"; //
+          allStallConditions.add(pipeCond);
+        }
+        assert(allStallConditions.size() == stagesFrom.size());
+
+        if (stagesFrom.size() > 1) {
+          // Simulation 'assertion' to check that we don't get values from two different stages.
+          int assertutil_validWidth = Log2.clog2(stagesFrom.size()+1);
+          ret.logic += """
+              `ifndef SYNTHESIS
+              wire [$clog2(%3$d+1)-1:0][%3$d-1:0] NodeRegPipeline_%4$s_assertutil_valid;%5$s
+              always_ff @(posedge %1$s) begin : ctx_NodeRegPipeline_%4$s_assert
+                  if (!%2$s && (%6$s > %7$d'd1)) begin
+                      $display("ERROR: FF for %4$s fed by several source stages at the same time");
+                      $stop;
+                  end
+              end
+              `endif
+              """.formatted(language.clk, language.reset, stagesFrom.size(), nodeKey.toString(false), //1,2,3,4
+                            IntStream //assign, zero-extend the individual valid conditions
+                                .range(0, stagesFrom.size())
+                                .mapToObj(iFrom -> "\nassign NodeRegPipeline_%s_assertutil_valid[%d] = {%d'd0,%s};"
+                                                       .formatted(nodeKey.toString(false), iFrom,
+                                                                  assertutil_validWidth-1, allStallConditions.get(iFrom)))
+                                .reduce((a,b)->a+b).orElse(""), //5
+                            IntStream //sum over all valid conditions
+                                .range(0, stagesFrom.size())
+                                .mapToObj(iFrom -> "NodeRegPipeline_%s_assertutil_valid[%d]"
+                                                       .formatted(nodeKey.toString(false), iFrom))
+                                .reduce((a,b)->a+"+"+b).orElse(""), //6
+                            assertutil_validWidth);
+        }
+
+        boolean anyValueMissing = prevStageNodeInstances.stream().anyMatch(inst -> inst.getExpression().startsWith(NodeRegistry.MISSING_PREFIX));
+
         boolean doZeroOnBubble = zeroOnBubble || !implementation.requestedGetallToPipeTo.isEmpty()
                                                  && (nodeKey.getNode().getAdj().isValidMarker() || nodeKey.getNode().getAdj() == AdjacentNode.cancelReq);
         if (doZeroOnBubble) {
@@ -217,9 +288,9 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
 
         NodeInstanceDesc.Key generatedNodeKey = new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.PIPEDIN, nodeKey.getNode(),
                                                                          nodeKey.getStage(), nodeKey.getISAX(), nodeKey.getAux());
-        ExpressionType generatedNodeExprType = !value_missing ? ExpressionType.WireName : ExpressionType.AnyExpression_Noparen;
-        String generatedNodeVal = !value_missing ? nameReg : String.format("%s%s~from_previous", NodeRegistry.MISSING_PREFIX, nameReg);
-        if (value_missing) {
+        ExpressionType generatedNodeExprType = !anyValueMissing ? ExpressionType.WireName : ExpressionType.AnyExpression_Noparen;
+        String generatedNodeVal = !anyValueMissing ? nameReg : String.format("%s%s~from_previous", NodeRegistry.MISSING_PREFIX, nameReg);
+        if (anyValueMissing) {
           // Output NodeRegistry.MISSING_PREFIX+"<..>" in case a rule polls for NodeRegPipelineStrategy validity.
           // Also clear the logic for the same reason, while still keeping the dependencies,
           //  in case downstream node construction just needs a couple more iterations.
@@ -262,23 +333,113 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
     PipelineStage stage = nodeKey.getStage();
     assert (minPipeFront.isAroundOrBefore(stage, false));
     var stage_prev = stage.getPrev();
-    if (stage_prev.size() == 0) {
+    Iterable<PipelineStage> ports_prev = List.of();
+    if (stage.getTags().contains(StageTag.MultiportPipe)) {
+      if (SCALUtil.nodeIsPerPort(nodeKey.getNode(), stage.getMultiportBase())) {
+        PipelineStage baseStage = stage.getMultiportBase();
+        assert(baseStage == stage.getParent().orElseThrow());
+        stage_prev = baseStage.getPrev();
+
+        // Check for previous ports
+        if (baseStage.getTagAttr(StageTag.MultiportStall) != null) {
+          int iPort = baseStage.getChildren().indexOf(stage);
+          assert(iPort != -1);
+          var multiportStallAttr = baseStage.getTagAttr(StageTag.MultiportStall, PipelineStage.MultiportStallAttributes.class);
+          if (iPort != -1 && multiportStallAttr.shiftUp())
+            ports_prev = JavaUtil.iterableSkip(baseStage.getChildren(), iPort + 1);
+        }
+      }
+      else
+        stage_prev = List.of();
+    }
+    if (stage_prev.size() == 0 && (!ports_prev.iterator().hasNext() || ports_prev.iterator().next().getKind() != StageKind.Core)) {
       return NodeLogicBuilder.makeEmpty();
     }
     if (stage_prev.size() > 1) {
-      // Could be fixable by adding a 'TOPIPEIN' Purpose or something that does all the MUXing.
-      logger.error("Unsupported: Cannot select from several predecessor stages");
+      // Should be fine if the core pipeline is declared with care and all RdPipeInto&&!(stalling/flushing) are mutually exclusive
+      //logger.warn("Unsupported: Cannot select from several predecessor stages");
+    }
+    List<PipelineStage> prevStages = new ArrayList<>();
+    for (PipelineStage prevStage : stage_prev) {
+      if (prevStage.getKind() == StageKind.CoreMultiport && SCALUtil.nodeIsPerPort(nodeKey.getNode(), prevStage)) {
+        prevStage.getChildren().stream().filter(portStage -> portStage.getKind() == StageKind.Core && portStage.hasDirectPipeTo(stage))
+            .forEach(x -> prevStages.add(x));
+      }
+      else {
+        prevStages.add(prevStage);
+      }
+    }
+    for (PipelineStage port : ports_prev) if (port.getKind() == StageKind.Core) {
+      //If the payload shifts if only the later ports of a multi-port stage stall,
+      // we need to treat that like a pipeline transition.
+      //Add all later ports as possible 'previous stages' to pipeline from.
+      prevStages.add(port);
+    }
+    if (prevStages.isEmpty()) {
+      logger.error("Could not find any viable stages / stage ports to pipeline from ({})", nodeKey.toString());
       return NodeLogicBuilder.makeEmpty();
     }
-    PipelineStage prevStage = stage_prev.get(0);
-    return makePipelineBuilder_singleFF(nodeKey, implementation, stage, prevStage);
+    return makePipelineBuilder_singleFF(nodeKey, implementation, stage, prevStages);
+  }
+
+  /**
+   * Checks if a port stage needs RdPipeInto to determine where it pipes into.
+   * Also considers the CoreMultiport -> CoreMultiport stage scenario.
+   * @param portFrom the port stage
+   * @return true iff there are multiple 'next' stages to pipe into
+   */
+  protected boolean portNeedsRdPipeInto(SCAIEVNode node, PipelineStage portFrom) {
+    assert(portFrom.getTags().contains(StageTag.MultiportPipe));
+    PipelineStage parent = portFrom.getMultiportBase();
+    assert(parent != portFrom);
+    //Port shift-after-stall condition / maximum distance.
+    // -> If the core does shift within the multi-port stage, we may need RdPipeInto
+    //    even if there is only one "true" destination stage.
+    int maxShiftupDistance = 0;
+    if (parent.getTagAttr(StageTag.MultiportStall, MultiportStallAttributes.class).shiftUp()) {
+      int portIdx = parent.getChildren().indexOf(portFrom);
+      assert(portIdx >= 0);
+      //Only alter the bounds of the condition:
+      // if a core (for some reason) has a bottleneck with only one stage output port,
+      // we may not need RdPipeInto after all.
+      maxShiftupDistance = portIdx;
+    }
+
+    //NOTE: the listCoreMultiport arg makes no difference here
+    return portFrom.resolveEffectiveNext(!SCALUtil.nodeIsPerPort(node, portFrom)).count() > (1 - maxShiftupDistance);
+  }
+  /**
+   * Returns either a list of just 'stage', if stage is not multi-port or nodeToPipe is not per-port,
+   *  or a list of the port stages that can pipe into 'stageToPipeTo'.
+   * @param stage the stage to pipe from, which may or may not be CoreMultiport
+   * @param nodeToPipe the node to pipe
+   * @param stagesToPipeTo the stages to pipe to (at least one needs to be a destination)
+   * @return a list of stages
+   */
+  protected List<PipelineStage> portsOrStage(PipelineStage stage, SCAIEVNode nodeToPipe, List<PipelineStage> stagesToPipeTo) {
+    List<PipelineStage> stagePorts;
+    if (stage.getKind() == StageKind.CoreMultiport && SCALUtil.nodeIsPerPort(nodeToPipe, stage)) {
+      //Only consider ports of prevStage that can actually pipe into stage.
+      stagePorts = stage.getChildren().stream().filter(
+            portStage -> portStage.getKind() == StageKind.Core && stagesToPipeTo.stream().anyMatch(dest -> portStage.hasDirectPipeTo(dest))
+          ).toList();
+    }
+    else {
+      stagePorts = List.of(stage);
+    }
+    return stagePorts;
   }
 
   protected boolean implementSingle(NodeInstanceDesc.Key nodeKey, Consumer<NodeLogicBuilder> out) {
     List<NodeLogicBuilder> baseBuilders = new ArrayList<>();
     ListRemoveView<NodeInstanceDesc.Key> implementKeyAsNew_RemoveView = new ListRemoveView<>(List.of(nodeKey));
-    if (!nodeKey.getPurpose().matches(Purpose_Getall_ToPipeTo))
+    if (!nodeKey.getPurpose().matches(Purpose_Getall_ToPipeTo)) {
+      if (nodeKey.getStage().getKind() == StageKind.CoreMultiport && SCALUtil.nodeIsPerPort(nodeKey.getNode(), nodeKey.getStage())) {
+        //Don't pipeline a node into a CoreMultiport 'group stage' unless the node is whitelisted for that
+        return false;
+      }
       this.strategy_instantiateNew.implement(builder -> baseBuilders.add(builder), implementKeyAsNew_RemoveView, false);
+    }
     // Determine if strategy_instantiateNew can handle the key, based on whether it removed it from the list.
     boolean canBeImplementedAsNew = implementKeyAsNew_RemoveView.isEmpty();
     if (!minPipeFront.isAroundOrBefore(nodeKey.getStage(), false) || !this.can_pipe.test(nodeKey)) {
@@ -290,6 +451,23 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
     NodeInstanceDesc.Key implementedKey =
         new NodeInstanceDesc.Key(Purpose.PIPEDIN, nodeKey.getNode(), nodeKey.getStage(), nodeKey.getISAX(), nodeKey.getAux());
     ImplementedKeyInfo implementation = implementedKeys.get(implementedKey);
+
+    // Multiport Purpose_Getall_ToPipeTo: If shared, return the from the multiport super stage.
+    if (nodeKey.getStage().getKind() == StageKind.CoreMultiport && SCALUtil.nodeIsPerPort(nodeKey.getNode(), nodeKey.getStage())) {
+      assert(nodeKey.getPurpose().matches(Purpose_Getall_ToPipeTo));
+      assert(implementation == null);
+      if (nodeKey.getPurpose().matches(Purpose_Getall_ToPipeTo)) {
+        for (PipelineStage portStage : nodeKey.getStage().getChildren()) if (portStage.getKind() == StageKind.Core) {
+          var portKey = new NodeInstanceDesc.Key(Purpose.PIPEDIN, nodeKey.getNode(), portStage, nodeKey.getISAX(), nodeKey.getAux());
+          var portImplementation = implementedKeys.get(portKey);
+          if (portImplementation != null && portImplementation.getallToPipeToSharedMultiport) {
+            implementation = portImplementation;
+            break;
+          }
+        }
+      }
+    }
+
     if (implementation != null) {
       // Reconfigure the existing builder.
       if (!implementation.pipeliningIsRequired && baseBuilders.isEmpty()) {
@@ -336,13 +514,31 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
         NodeLogicBuilder.fromFunction("pipelineBuilder_optionalCheckAny (" + nodeKey.toString(false) + ")", (NodeRegistryRO registry) -> {
           PipelineStage stage = nodeKey.getStage();
           List<PipelineStage> stages_found = new ArrayList<>();
-          // Go backwards, checking for existing instances of the node.
-          for (PipelineStage prevStage :
-               stage.iterablePrev_bfs(predecStage
-                                      -> predecStage.getKind() != StageKind.CoreInternal &&
-                                             !minPipeFront.contains(predecStage) // Don't iterate past minPipeFront
-                                      )) {
-            if (prevStage.getKind() == StageKind.CoreInternal)
+          //Port stage: need to check the multiport parent for any predecessors in the graph.
+          PipelineStage baseStage = (stage.getParent().isPresent() && stage.getParent().get().getKind() == StageKind.CoreMultiport)
+                                        ? stage.getParent().get() : stage;
+
+          List<PipelineStage> needsPipetoAnyOf = List.of(stage);
+
+          //Iterable over previous ports (i.e. higher indices) of the same stage that may shift up to this stage.
+          Iterable<PipelineStage> prevPortsIterable = List.of();
+          if (stage != baseStage && baseStage.getTagAttr(StageTag.MultiportStall) != null) {
+            if (!baseStage.getTags().contains(StageTag.InOrder))
+              logger.warn("Unsupported: Pipelining to a multi-port stage that is not tagged InOrder.");
+            int iPort = baseStage.getChildren().indexOf(stage);
+            assert(iPort != -1);
+            var multiportStallAttr = baseStage.getTagAttr(StageTag.MultiportStall, PipelineStage.MultiportStallAttributes.class);
+            if (iPort != -1 && multiportStallAttr.shiftUp())
+              prevPortsIterable = JavaUtil.iterableSkip(baseStage.getChildren(), iPort + 1);
+          }
+          //Iterable over previous stages.
+          Iterable<PipelineStage> prevDiscoveryIterable = baseStage.iterablePrev_bfs(predecStage
+                  -> predecStage.getKind() != StageKind.CoreInternal &&
+                  !minPipeFront.contains(predecStage) // Don't iterate past minPipeFront
+          );
+
+          for (PipelineStage prevStage : JavaUtil.concatIterable(prevPortsIterable, prevDiscoveryIterable)) {
+            if (prevStage == baseStage || prevStage.getKind() == StageKind.CoreInternal || prevStage.getKind() == StageKind.ISAXMux)
               continue;
             if (prevStage.getPrev().stream().filter(prevprevStage -> prevprevStage.getKind() != StageKind.CoreInternal).count() > 1) {
               // This sub-builder would probably work, but force pipelining through *all* predecessor sub-graphs, which probably would be
@@ -350,52 +546,65 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
               logger.warn("Unsupported for pipelining currently: Encountered a multi stage with multiple predecessors");
               continue;
             }
-            // if (prevStage == stage)
-            //	continue;
-
-            NodeInstanceDesc.Key nodeKey_prevStage = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, nodeKey.getNode(),
-                                                                              prevStage, nodeKey.getISAX(), nodeKey.getAux());
-            // This optional lookup will also be used to establish the ordering relationship,
-            Optional<NodeInstanceDesc> prevStageNodeInstance = registry.lookupOptionalUnique(nodeKey_prevStage);
-            if (prevStageNodeInstance.isPresent()) {
-              // Assert no other NodeLogicBuilder has output a matching node in the destination stage.
-              assert (prevStage != stage || !prevStageNodeInstance.get().getKey().getPurpose().matches(Purpose.PIPEDIN));
-
-              if (prevStage != stage)
-                stages_found.add(prevStage);
+            //Check all relevant ports of prevStage, or from prevStage itself
+            List<PipelineStage> prevStagePorts = portsOrStage(prevStage, nodeKey.getNode(), needsPipetoAnyOf);
+            for (PipelineStage prevStagePort : prevStagePorts) {
+              NodeInstanceDesc.Key nodeKey_prevStage = new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN,
+                                                                                nodeKey.getNode(), prevStagePort,
+                                                                                nodeKey.getISAX(), nodeKey.getAux());
+              // This optional lookup will also be used to establish the ordering relationship in construction.
+              Optional<NodeInstanceDesc> prevStageNodeInstance = registry.lookupOptionalUnique(nodeKey_prevStage);
+              if (prevStageNodeInstance.isPresent()) {
+                // Assert no other NodeLogicBuilder has output a matching node in the destination stage.
+                assert (prevStagePort != stage || !prevStageNodeInstance.get().getKey().getPurpose().matches(Purpose.PIPEDIN));
+  
+                if (prevStagePort != stage)
+                  stages_found.add(prevStagePort);
+              }
             }
+            needsPipetoAnyOf = prevStagePorts;
           }
           if (!stages_found.isEmpty()) {
-            PipelineFront foundAtFront = new PipelineFront(stages_found);
+            PipelineFront foundAtFront = new PipelineFront(stages_found.stream().map(st->st.getMultiportBase()).distinct());
             class IterationParam {
               boolean need_full_comparison = false;
             };
             var iterationParam = new IterationParam(); // Also accessed by lambda
+            needsPipetoAnyOf = List.of(stage);
             // Note: Assumes that iterablePrev_bfs calls the 'processSuccessors' lambda on a stage's successors _after_ listing the stage
             // itself.
             //       This is for the need_full_comparison check to work as expected;
             //       however, even if this assumption were to become wrong,
             //       this would only add more discarded loop iterations (via `continue`) and not introduce faults.
-            for (PipelineStage prevStage :
-                 stage.iterablePrev_bfs(prevStage
-                                        -> !minPipeFront.contains(prevStage) // Don't iterate past minPipeFront
-                                               && (iterationParam.need_full_comparison
-                                                       ? foundAtFront.isBefore(prevStage, false)
-                                                       : !foundAtFront.contains(prevStage)) // Only iterate towards foundAtFront
-                                               /* Don't iterate past stages marked non-continuous,
-                                                * besides `stage`, where we know we need to iterate past to make any progess.
-                                                *  */
-                                               && (prevStage == stage || prevStage.getContinuous()))) {
-              if (prevStage.getPrev().size() > 1)
+            Iterable<PipelineStage> prevRetraceIterable = baseStage.iterablePrev_bfs(prevStage
+                -> !minPipeFront.contains(prevStage) // Don't iterate past minPipeFront
+                && (iterationParam.need_full_comparison
+                        ? foundAtFront.isBefore(prevStage, false)
+                        : !foundAtFront.contains(prevStage)) // Only iterate towards foundAtFront
+                /* Don't iterate past stages marked non-continuous,
+                 * besides `stage`, where we know we need to iterate past to make any progress.
+                 *  */
+                && (prevStage == stage || prevStage.getContinuous()));
+            for (PipelineStage prevStage : JavaUtil.concatIterable(prevPortsIterable, prevRetraceIterable)) {
+              if (prevStage.getKind() == StageKind.ISAXMux)
+                continue;
+              if (prevStage.getPrev().size() > 1
+                  || prevStage.getPrev().size() > 0 && prevStage.getPrev().get(0).getKind() == StageKind.CoreMultiport
+                     && prevStage.getPrev().get(0).getChildren().size() > 1)
                 iterationParam.need_full_comparison =
                     true; // If there are several paths in the graph, we need to make sure we took one of the correct turns.
-              if (prevStage == nodeKey.getStage())
+              if (prevStage == stage || prevStage == baseStage)
                 continue;
               if (iterationParam.need_full_comparison && !foundAtFront.isAroundOrBefore(prevStage, false))
                 continue;
-              NodeInstanceDesc.Key nodeKey_prevStage =
-                  new NodeInstanceDesc.Key(Purpose.PIPEOUT, nodeKey.getNode(), prevStage, nodeKey.getISAX(), nodeKey.getAux());
-              registry.lookupExpressionRequired(nodeKey_prevStage);
+              //Add the dependency from all relevant ports of prevStage, or from prevStage itself
+              List<PipelineStage> prevStagePorts = portsOrStage(prevStage, nodeKey.getNode(), needsPipetoAnyOf);
+              for (PipelineStage prevIndivStage : prevStagePorts) {
+                NodeInstanceDesc.Key nodeKey_prevStage =
+                    new NodeInstanceDesc.Key(Purpose.PIPEOUT, nodeKey.getNode(), prevIndivStage, nodeKey.getISAX(), nodeKey.getAux());
+                registry.lookupExpressionRequired(nodeKey_prevStage);
+              }
+              needsPipetoAnyOf = prevStagePorts;
             }
           }
 
@@ -415,7 +624,7 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
       // Also, if the current stage is marked non-continuous, first try building in the current stage.
       boolean triedDirect = false;
       NodeLogicBlock baseBlock = new NodeLogicBlock();
-      if (preferDirect || !nodeKey.getStage().getContinuous()) {
+      if (preferDirect || !nodeKey.getStage().getMultiportBase().getContinuous()) {
         for (var baseBuilder : implementation_.baseBuilders) {
           baseBlock.addOther(baseBuilder.apply(registry, aux));
         }
@@ -431,8 +640,8 @@ public class NodeRegPipelineStrategy extends MultiNodeStrategy {
         baseBlock.addOther(pipelineBuilder_optionalSingle.apply(registry, aux));
         if (!baseBlock.isEmpty())
           return baseBlock;
-        baseBlock.addOther(pipelineBuilder_optionalCheckAny.apply(registry, aux));
         // If that wasn't possible, go further back and check if there is any logic block to create a pipeline from.
+        baseBlock.addOther(pipelineBuilder_optionalCheckAny.apply(registry, aux));
         if (!baseBlock.isEmpty())
           return baseBlock;
       }

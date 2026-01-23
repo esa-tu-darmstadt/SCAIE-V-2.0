@@ -5,11 +5,15 @@ import java.util.stream.Stream;
 
 import scaiev.backend.BNode;
 import scaiev.frontend.SCAIEVNode;
+import scaiev.frontend.SCAIEVNode.NodeTypeTag;
 import scaiev.pipeline.PipelineStage;
+import scaiev.pipeline.PipelineStage.StageKind;
+import scaiev.pipeline.PipelineStage.StageTag;
+import scaiev.scal.NodeInstanceDesc.ExpressionType;
 import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 
 /**
- * Utility methods for use in SCAL strategies
+ * Utility methods for use in SCAL strategies and in interaction with SCAL
  */
 public class SCALUtil {
   
@@ -108,5 +112,115 @@ public class SCALUtil {
     var condStream = makeRdwrCondStream(bNodes, registry, stage, requestedFor, nodes);
     //AND of (not RdStall), (not RdFlush), etc.
     return condStream.map(a -> "!" + a).reduce((a,b) -> a + " && " + b).orElse("1'b1");
+  }
+
+  /**
+   * Returns an ExpressionType that can be used when outputting a looked-up node expression as-is.
+   * Translates unique types (WireName, ModuleInput, ModuleOutput) to AnyExpression_Noparen.
+   * @param inherited the NodeInstanceDesc the reused expression comes from
+   * @return an ExpressionType that is never WireName
+   */
+  public static ExpressionType typeOfInheritedExpression(NodeInstanceDesc inherited) {
+    switch (inherited.getExpressionType()) {
+      case WireName:
+        return ExpressionType.AnyExpression_Noparen;
+      case ModuleInput:
+        return ExpressionType.AnyExpression_Noparen;
+      case ModuleOutput:
+        return ExpressionType.AnyExpression_Noparen;
+      default:
+        return inherited.getExpressionType();
+    }
+  }
+
+  /**
+   * Determines, for port/ported stages, whether a node is per-port or per-CoreMultiport
+   * @param node the node to check
+   * @param stage a port or multiport base stage
+   * @return true iff the node is considered per-port
+   */
+  public static boolean nodeIsPerPort(SCAIEVNode node, PipelineStage stage) {
+    if (node.tags.contains(NodeTypeTag.sharedAcrossPorts))
+      return false;
+    var multiportStall = stage.getMultiportBase().getTagAttr(StageTag.MultiportStall, PipelineStage.MultiportStallAttributes.class);
+    if (multiportStall != null) {
+      assert(stage.getMultiportBase().getKind() == StageKind.CoreMultiport);
+      if (node.name.equals("RdStall") || node.name.equals("RdStallLegacy") || node.name.equals("WrStall")) {
+        //ignoring hasSharedStall, since that is fed into the per-port information
+        return multiportStall.perPortStall();
+      }
+      if (node.name.equals("RdFlush") || node.name.equals("WrFlush") || node.name.equals("WrPC")) {
+        //ignoring hasSharedFlush, since that is fed into the per-port information
+        return multiportStall.perPortFlush();
+      }
+      if (node.name.equals("WrPC") || node.name.startsWith("WrPC_")) {
+        //Shared
+        return false;
+      }
+    }
+    //for now, we don't consider data shared across ports (i.e., across instructions) moving in sync
+    return true;
+  }
+
+  /**
+   * Determines if cancelResp should be considered (as backpressure on cancelReq) for the given spawn operation.
+   * Callers should additionally check for existence of the cancelResp in BNode.
+   * @param spawnBaseNode the spawn node, e.g. WrCUSTOMREG_spawn or WrMem_spawn
+   * @param spawnStage the stage the spawn takes place in (Core or Decoupled stage)
+   * @return true iff cancelResp should be considered (given that the node exists)
+   */
+  public static boolean hasCancelResp(SCAIEVNode spawnBaseNode, PipelineStage spawnStage) {
+    // assuming there is no Sub and no CoreMultiport spawnStage
+    assert(spawnStage.getKind() == StageKind.Core || spawnStage.getKind() == StageKind.Decoupled);
+    return spawnStage.getKind() == StageKind.Core;
+  }
+
+  /**
+   * Maps port stages of the given stream to the multi-port base/super stage (non-distinct).
+   * @param stream input stream that will be devoured by map
+   * @return result stream
+   */
+  public static Stream<PipelineStage> mapIntoMultiportBase(Stream<PipelineStage> stream) {
+    return stream.map(intermStage -> intermStage.getTags().contains(StageTag.MultiportPipe)
+                                           ? intermStage.getParent().orElseThrow()
+                                           : intermStage);
+  }
+
+  /**
+   * Maps multi-port stages of the given stream into the individual port stages.
+   * The multi-port super stage will be removed from the stream. Keeps all non-multiport stages.
+   * @param stream input stream that will be devoured by flatMap
+   * @return result stream
+   */
+  public static Stream<PipelineStage> flatmapIntoPorts(Stream<PipelineStage> stream) {
+    return stream.flatMap(intermStage -> intermStage.getKind() == StageKind.CoreMultiport
+                                           ? intermStage.getChildren().stream().filter(st->st.getKind()==StageKind.Core)
+                                           : Stream.of(intermStage));
+  }
+
+  /**
+   * Adds in individual port stages to the stream after any multi-port stage.
+   * Retains all stages in the stream, including the multi-port super stage.
+   * @param stream input stream that will be devoured by flatMap
+   * @return result stream
+   */
+  public static Stream<PipelineStage> flatmapAddPorts(Stream<PipelineStage> stream) {
+    return stream.flatMap(intermStage -> Stream.concat(Stream.of(intermStage),
+                                                       intermStage.getKind() == StageKind.CoreMultiport
+                                                         ? intermStage.getChildren().stream().filter(st->st.getKind()==StageKind.Core)
+                                                         : Stream.empty()));
+  }
+
+  /**
+   * Adds in individual port stages to the stream before any multi-port stage.
+   * Retains all stages in the stream, including the multi-port super stage.
+   * @param stream input stream that will be devoured by flatMap
+   * @return result stream
+   */
+  public static Stream<PipelineStage> flatmapAddPortsBefore(Stream<PipelineStage> stream) {
+    return stream.flatMap(intermStage -> Stream.concat(intermStage.getKind() == StageKind.CoreMultiport
+                                                         ? intermStage.getChildren().stream().filter(st->st.getKind()==StageKind.Core)
+                                                         : Stream.empty(),
+                                                       Stream.of(intermStage)));
   }
 }

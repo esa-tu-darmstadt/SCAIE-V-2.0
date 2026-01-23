@@ -6,6 +6,7 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -157,7 +158,7 @@ public class PipelineFront {
     //  -> this PipelineStage does not adhere to the invariants
     //     enforced for any outwards-facing objects,
     //     e.g. its successors do not point back to it
-    PipelineStage searchFront = new PipelineStage(StageKind.Core, EnumSet.noneOf(StageTag.class), null, Optional.empty(), false);
+    PipelineStage searchFront = new PipelineStage(StageKind.Core, List.of(), null, Optional.empty(), false);
     searchFront.next = frontList;
     // Produce a stream across all children (but not recursive children). Skip searchFront itself.
     return searchFront.streamNext_bfs(refStage -> refStage == searchFront || processSuccessors.test(refStage)).skip(1);
@@ -175,7 +176,7 @@ public class PipelineFront {
     //  -> this PipelineStage does not adhere to the invariants
     //     enforced for any outwards-facing objects,
     //     e.g. its successors do not point back to it
-    PipelineStage searchFront = new PipelineStage(StageKind.Core, EnumSet.noneOf(StageTag.class), null, Optional.empty(), false);
+    PipelineStage searchFront = new PipelineStage(StageKind.Core, List.of(), null, Optional.empty(), false);
     searchFront.prev = frontList;
     // Produce a stream across all children (but not recursive children). Skip searchFront itself.
     return searchFront.streamPrev_bfs(refStage -> refStage == searchFront || processPredecessors.test(refStage)).skip(1);

@@ -1,31 +1,33 @@
 package scaiev.scal.strategy.standard;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeInstanceDesc.ExpressionType;
-import scaiev.scal.NodeInstanceDesc.Key;
 import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.backend.BNode;
 import scaiev.coreconstr.Core;
-import scaiev.frontend.SCAIEVNode;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
+import scaiev.pipeline.PipelineStage.MultiportStallAttributes;
 import scaiev.pipeline.PipelineStage.StageKind;
+import scaiev.pipeline.PipelineStage.StageTag;
 import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.NodeRegistryRO;
 import scaiev.scal.SCALUtil;
 import scaiev.scal.strategy.MultiNodeStrategy;
-import scaiev.scal.strategy.SingleNodeStrategy;
 import scaiev.scal.strategy.StrategyBuilders;
 import scaiev.util.ListRemoveView;
 import scaiev.util.Verilog;
@@ -67,22 +69,23 @@ public class DefaultRerunStrategy extends MultiNodeStrategy {
    * Determines whether the default WrRerunNext implementation works for a given stage.
    */
   protected boolean useDefaultRerunNextImplementation(PipelineStage stage) {
-    if (stage.getKind() != StageKind.Core)
+    if (stage.getKind() != StageKind.Core && stage.getKind() != StageKind.CoreMultiport)
       return false; // Note: Also excluding CoreInternal stages for now.
-    assert (core.GetNodes().get(bNodes.RdPC) != null);
-    if (!core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdPC).GetEarliest()).isAroundOrBefore(stage, false) ||
-        !core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdPC).GetLatest()).isAroundOrAfter(stage, false)) {
+    assert (core.getNodes().get(bNodes.RdPC) != null);
+    if (!core.translateStageScheduleNumber(core.getNodes().get(bNodes.RdPC).getEarliest()).isAroundOrBefore(stage, false) ||
+        !core.translateStageScheduleNumber(core.getNodes().get(bNodes.RdPC).getLatest()).isAroundOrAfter(stage, false)) {
       // Need to read the PC of the next instruction.
       return false;
     }
-    if (core.GetRootStage().getChildrenTails().anyMatch(tailStage -> tailStage.getStagePos() < stage.getStagePos()) ||
-        core.GetRootStage()
-            .getChildrenByStagePos(stage.getStagePos())
-            .filter(refStage -> refStage != stage)
+    PipelineStage baseStage = stage.getMultiportBase();
+    if (core.getRootStage().getChildrenTails().anyMatch(tailStage -> tailStage.getStagePos() < baseStage.getStagePos()) ||
+        core.getRootStage()
+            .getChildrenByStagePos(baseStage.getStagePos())
+            .filter(refStage -> refStage != baseStage)
             .anyMatch(refStage
-                      -> refStage.streamNext_bfs(succ -> succ != stage).noneMatch(succ -> succ == stage) ||
-                             refStage.streamNext_bfs(succ -> succ != stage)
-                                 .anyMatch(succ -> succ.getNext().size() > 1 && succ.getNext().contains(stage)))) {
+                      -> refStage.streamNext_bfs(succ -> succ != baseStage).noneMatch(succ -> succ == baseStage) ||
+                             refStage.streamNext_bfs(succ -> succ != baseStage)
+                                 .anyMatch(succ -> succ.getNext().size() > 1 && succ.getNext().contains(baseStage)))) {
       // If there is any path for an instruction around the stage, we can't reliably wait for the next instruction.
       return false;
     }
@@ -91,6 +94,7 @@ public class DefaultRerunStrategy extends MultiNodeStrategy {
 
   protected boolean needsOrigPCNode(NodeRegistryRO registry, PipelineStage toStage) {
     // ASSUMPTION: Earliest WrPC also has RdPC.
+    // ASSUMPTION: Earliest WrPC does not sit in a particular port.
     return toStage.streamPrev_bfs()
         .filter(fromStage -> fromStage.getPrev().isEmpty())
         .anyMatch(fromStage -> registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrPC_valid, fromStage, "")).isPresent());
@@ -110,14 +114,15 @@ public class DefaultRerunStrategy extends MultiNodeStrategy {
   private boolean implementSingle(Consumer<NodeLogicBuilder> out, NodeInstanceDesc.Key nodeKey) {
     if ((nodeKey.getNode().equals(bNodes.RdOrigPC) || nodeKey.getNode().equals(bNodes.RdOrigPC_valid)) && nodeKey.getISAX().isEmpty() &&
         nodeKey.getAux() == 0) {
-      if (!nodeKey.getStage().getPrev().isEmpty()) {
+      if (!nodeKey.getStage().getMultiportBase().getPrev().isEmpty()) {
         if (!nodeKey.getPurpose().matches(Purpose.PIPEDIN))
           return false;
         // Pipeline to this stage.
         var pipelineStrategy = origPCPipelineStrategyByPipetoStage.computeIfAbsent(
-            nodeKey.getStage(),
+            nodeKey.getStage().getMultiportBase(),
             strategyMapKey
-            -> strategyBuilders.buildNodeRegPipelineStrategy(language, bNodes, new PipelineFront(nodeKey.getStage()), false, false, false,
+            -> strategyBuilders.buildNodeRegPipelineStrategy(language, bNodes, new PipelineFront(nodeKey.getStage().getMultiportBase()),
+                                                             false, false, false,
                                                              _nodeKey -> true, _nodeKey -> false, MultiNodeStrategy.noneStrategy,
                                                              false));
         pipelineStrategy.implement(out, new ListRemoveView<>(List.of(nodeKey)), false);
@@ -171,86 +176,186 @@ public class DefaultRerunStrategy extends MultiNodeStrategy {
         }));
         return true;
       }
+      if (nodeKey.getStage().getTags().contains(StageTag.MultiportPipe)) {
+        out.accept(NodeLogicBuilder.fromFunction("DefaultRerunStrategy_ReqMultiport_" + nodeKey.getStage().getName(), registry -> {
+          var ret = new NodeLogicBlock();
+          // Request MARKER_INTERNALIMPL_PIN in the multiport base stage.
+          registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.MARKER_INTERNALIMPL_PIN, bNodes.WrRerunNext,
+                                                                     nodeKey.getStage().getMultiportBase(), ""));
+          ret.outputs.add(new NodeInstanceDesc(nodeKey, "", ExpressionType.AnyExpression));
+          return ret;
+        }));
+        return true;
+      }
 
-      // TODO: Lookbehind/forwarding optimization: If nodeKey.getStage() has just one predecessor and is continuous to it, flush to its PC
+      // Possible lookbehind/forwarding optimization: If nodeKey.getStage() has just one predecessor and is continuous to it, flush to its PC
       // if it's valid
       //  (could, in principle, extend that to several stages)
+      
+      List<PipelineStage> portStages = nodeKey.getStage().getKind() == StageKind.CoreMultiport
+                                         ? nodeKey.getStage().getChildren().stream().filter(st->st.getKind()==StageKind.Core).toList()
+                                         : List.of(nodeKey.getStage());
+      //When a new WrRerunNext occurs, we stall all following ports.
+      //If the core is wired to produce no gaps from port 0 onwards, we only ever need to flush to port 0's PC.
+      var stallAttr = nodeKey.getStage().getTagAttr(StageTag.MultiportStall, MultiportStallAttributes.class);
+      boolean hasNoPortGaps = nodeKey.getStage().getKind() == StageKind.CoreMultiport
+                                ? stallAttr.shiftUp()
+                                : true; //value doesn't matter if we don't have more than 1 port
+      if (portStages.size() > 1 && !hasNoPortGaps && stallAttr != null && !stallAttr.perPortFlush()) {
+        logger.error("DefaultRerunStrategy: Cannot correctly implement WrRerunNext for a stage without shiftUp and without per-port flushing.");
+      }
+      var persistentMisc = new Object() {int auxCombStall = 0;};
 
       out.accept(NodeLogicBuilder.fromFunction("DefaultRerunStrategy_" + nodeKey.getStage().getName(), (registry, aux) -> {
+        registry.newUniqueAux();
         var ret = new NodeLogicBlock();
         String tab = language.tab;
-        // Request the MARKER_TOCORE_PIN node, which should then create the interface pin towards the core.
-        String rerunNextCond =
-            registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.WrRerunNext, nodeKey.getStage(), "")).getExpressionWithParens();
-        String rdPCExpr = registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdPC, nodeKey.getStage(), "")).getExpressionWithParens();
-        String rdPCOrigExpr = rdPCExpr;
+        // Implements the default (port-aware) WrRerunNext logic.
+
+        List<String> rerunNextCond = portStages.stream()
+            .map(portStage -> registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.WrRerunNext, portStage, "")).getExpressionWithParens())
+            .toList();
+        List<String> rdPCExpr = (hasNoPortGaps ? Stream.of(portStages.get(0)) : portStages.stream())
+            .map(portStage -> registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdPC, portStage, "")).getExpressionWithParens())
+            .toList();
+        List<String> rdPCOrigExpr = rdPCExpr;
         if (needsOrigPCNode(registry, nodeKey.getStage())) {
-          String rdOrigPC =
-              registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdOrigPC, nodeKey.getStage(), "")).getExpressionWithParens();
-          String rdOrigPCValid =
-              registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdOrigPC_valid, nodeKey.getStage(), "")).getExpressionWithParens();
-          rdPCOrigExpr = String.format("%s ? %s : %s", rdOrigPCValid, rdOrigPC, rdPCExpr);
+          rdPCOrigExpr = new ArrayList<>(portStages.size());
+          for (int iPort = 0; iPort < rdPCExpr.size(); ++iPort) {
+            String rdOrigPC =
+                registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdOrigPC, portStages.get(iPort), "")).getExpressionWithParens();
+            String rdOrigPCValid =
+                registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdOrigPC_valid, portStages.get(iPort), "")).getExpressionWithParens();
+            rdPCOrigExpr.add(String.format("%s ? %s : %s", rdOrigPCValid, rdOrigPC, rdPCExpr.get(iPort)));
+          }
         }
-        String rdFlushExpr =
-            registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, nodeKey.getStage(), "")).getExpressionWithParens();
-        Optional<String> wrFlushExpr_opt = registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrFlush, nodeKey.getStage(), ""))
-                                               .map(desc -> desc.getExpressionWithParens());
-        String nostallExpr = SCALUtil.buildCond_StageNotStalling(bNodes, registry, nodeKey.getStage(), false);
-        String rdInStageValidExpr =
-            registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdInStageValid, nodeKey.getStage(), ""));
+        for (int iPortCombStall = 1; iPortCombStall < portStages.size(); ++iPortCombStall) {
+          if (persistentMisc.auxCombStall == 0)
+            persistentMisc.auxCombStall = registry.newUniqueAux();
+          PipelineStage portStage = portStages.get(iPortCombStall);
+
+          // Stall all ports following a WrRerunNext.
+          // This ensures we don't have any following instructions in other ports sneaking past alongside the WrRerunNext instruction.
+          String accumStallCondWire = String.format("WrStall_WrRerunNext_%s_combReq", portStage.getName());
+          ret.declarations += "logic %s;\n".formatted(accumStallCondWire);
+          ret.logic += "assign %s = %s;\n".formatted(accumStallCondWire, rerunNextCond.stream().limit(iPortCombStall).reduce((a,b)->a+" || "+b).get());
+          ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrStall, portStage, "", persistentMisc.auxCombStall),
+                                               accumStallCondWire, ExpressionType.WireName));
+          registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.WrStall, portStage, "")); // Ensure WrStall generation
+        }
+
+        //Access (read) RdFlush/WrFlush
+        List<String> rdFlushExpr = portStages.stream()
+            .map(portStage -> registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdFlush, portStage, "")).getExpressionWithParens())
+            .toList();
+        Optional<String> wrFlushExpr_base = registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrFlush, nodeKey.getStage(), ""))
+            .map(desc -> desc.getExpressionWithParens());
+        List<Optional<String>> wrFlushExpr_opt = new ArrayList<>(portStages.size());
+        for (int iPort = 0; iPort < portStages.size(); ++iPort) {
+          Optional<String> wrFlushExpr_opt_cur = registry.lookupOptional(new NodeInstanceDesc.Key(bNodes.WrFlush, portStages.get(iPort), ""))
+                                                     .map(desc -> desc.getExpressionWithParens());
+          if (wrFlushExpr_opt_cur.isEmpty()) {
+            //Inherit flush from logically earlier port.
+            final int iPort_ = iPort;
+            wrFlushExpr_opt_cur = wrFlushExpr_opt_cur.or(() -> (iPort_ == 0) ? wrFlushExpr_base : wrFlushExpr_opt.get(iPort_ - 1)); 
+          }
+          wrFlushExpr_opt.add(wrFlushExpr_opt_cur);
+        }
+
+        List<String> nostallExpr = portStages.stream()
+            .map(portStage -> SCALUtil.buildCond_StageNotStalling(bNodes, registry, portStage, false))
+            .toList();
+        List<String> rdInStageValidExpr = portStages.stream()
+            .map(portStage -> registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.RdInStageValid, portStage, "")))
+            .toList();
 
         String rerunRegName = String.format("WrRerunNext_%s_reg", nodeKey.getStage().getName());
-        String rerunWrPCRegName = String.format("WrPC_WrRerunNext_%s_r", nodeKey.getStage().getName());
-        String rerunWrPCValidWireName = String.format("WrPC_validReq_WrRerunNext_%s_s", nodeKey.getStage().getName());
-        String rerunWrPCValidRegName = String.format("WrPC_validReq_WrRerunNext_%s_r", nodeKey.getStage().getName());
-        String rerunWrFlushWireName = String.format("WrFlush_WrRerunNext_%s_s", nodeKey.getStage().getName());
+        List<String> rerunWrPCRegName = List.of();
+        List<String> rerunWrPCValidWireName = IntStream.range(0, rdPCExpr.size())
+                                                .mapToObj(iPort -> String.format("WrPC_validReq_WrRerunNext_%s_s", portStages.get(iPort).getName()))
+                                                .toList();
+        List<String> rerunWrPCValidRegName = List.of();
+        List<String> rerunWrFlushWireName = IntStream.range(0, rdPCExpr.size())
+                                              .mapToObj(iPort -> String.format("WrFlush_WrRerunNext_%s_s", portStages.get(iPort).getName()))
+                                              .toList();
         ret.declarations += String.format("logic %s;\n", rerunRegName);
         if (wrFlushPreventsFetch()) {
-          ret.declarations += String.format("logic [%d-1:0] %s;\n", bNodes.WrPC.size, rerunWrPCRegName);
-          ret.declarations += String.format("logic %s;\n", rerunWrPCValidRegName);
-          ret.logic += String.format("always_ff @(posedge %s) begin\n", language.clk);
-          ret.logic += tab + String.format("%s <= %s ? 1'b0 : %s;\n", rerunWrPCValidRegName, language.reset, rerunWrPCValidWireName);
-          ret.logic += tab + String.format("%s <= %s;\n", rerunWrPCRegName, rdPCOrigExpr);
-          ret.logic += "end\n";
+          rerunWrPCRegName = IntStream.range(0, rdPCExpr.size())
+              .mapToObj(iPort -> String.format("WrPC_WrRerunNext_%s_r", portStages.get(iPort).getName()))
+              .toList();
+          rerunWrPCValidRegName = IntStream.range(0, rdPCExpr.size())
+              .mapToObj(iPort -> String.format("WrPC_validReq_WrRerunNext_%s_r", portStages.get(iPort).getName()))
+              .toList();
+          for (int iPort = 0; iPort < rdPCExpr.size(); ++iPort) {
+            ret.declarations += String.format("logic [%d-1:0] %s;\n", bNodes.WrPC.size, rerunWrPCRegName.get(iPort));
+            ret.declarations += String.format("logic %s;\n", rerunWrPCValidRegName.get(iPort));
+            ret.logic += String.format("always_ff @(posedge %s) begin\n", language.clk);
+            ret.logic += tab + String.format("%s <= %s ? 1'b0 : %s;\n", rerunWrPCValidRegName.get(iPort), language.reset, rerunWrPCValidWireName.get(iPort));
+            ret.logic += tab + String.format("%s <= %s;\n", rerunWrPCRegName.get(iPort), rdPCOrigExpr.get(iPort));
+            ret.logic += "end\n";
+          }
         }
-        ret.declarations += String.format("logic %s;\n", rerunWrPCValidWireName);
-        ret.declarations += String.format("logic %s;\n", rerunWrFlushWireName);
-        ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrPC, nodeKey.getStage(), "", aux),
-                                             wrFlushPreventsFetch() ? rerunWrPCRegName : rdPCOrigExpr, ExpressionType.AnyExpression));
-        ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrPC_valid, nodeKey.getStage(), "", aux),
-                                             wrFlushPreventsFetch() ? rerunWrPCValidRegName : rerunWrPCValidWireName,
-                                             ExpressionType.WireName));
-        ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrFlush, nodeKey.getStage(), "", aux),
-                                             rerunWrFlushWireName, ExpressionType.WireName));
-        registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.WrFlush, nodeKey.getStage(), "")); // Ensure WrFlush generation
-        registry.lookupRequired(
-            new NodeInstanceDesc.Key(Purpose.MARKER_TOCORE_PIN, bNodes.WrPC, nodeKey.getStage(), "")); // Ensure WrPC pin generation
-        registry.lookupRequired(new NodeInstanceDesc.Key(Purpose.MARKER_TOCORE_PIN, bNodes.WrPC_valid, nodeKey.getStage(),
-                                                         "")); // Ensure WrPC_valid pin generation
+        assert(SCALUtil.nodeIsPerPort(bNodes.WrPC, nodeKey.getStage()) || rdPCExpr.size() == 1);
+        for (int iPort = 0; iPort < rdPCExpr.size(); ++iPort) {
+          PipelineStage portStage = portStages.get(iPort);
+          PipelineStage wrPCStage = (!SCALUtil.nodeIsPerPort(bNodes.WrPC, nodeKey.getStage()) && iPort == 0)
+                                      ? portStage.getMultiportBase()
+                                      : portStage;
+          ret.declarations += String.format("logic %s;\n", rerunWrPCValidWireName.get(iPort));
+          ret.declarations += String.format("logic %s;\n", rerunWrFlushWireName.get(iPort));
+          ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrPC, wrPCStage, "", aux),
+                                               wrFlushPreventsFetch() ? rerunWrPCRegName.get(iPort) : rdPCOrigExpr.get(iPort), ExpressionType.AnyExpression));
+          ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrPC_valid, wrPCStage, "", aux),
+                                               wrFlushPreventsFetch() ? rerunWrPCValidRegName.get(iPort) : rerunWrPCValidWireName.get(iPort),
+                                               ExpressionType.WireName));
+          PipelineStage flushStage = hasNoPortGaps ? portStage.getMultiportBase() : portStage;
+          ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrFlush, flushStage, "", aux),
+                                               rerunWrFlushWireName.get(iPort), ExpressionType.WireName));
+          registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.WrFlush, flushStage, "")); // Ensure WrFlush generation
+          registry.lookupRequired(
+              new NodeInstanceDesc.Key(Purpose.MARKER_TOCORE_PIN, bNodes.WrPC, wrPCStage, "")); // Ensure WrPC pin generation
+          registry.lookupRequired(new NodeInstanceDesc.Key(Purpose.MARKER_TOCORE_PIN, bNodes.WrPC_valid, wrPCStage,
+                                                           "")); // Ensure WrPC_valid pin generation
+        }
+        for (int iPort = rdPCExpr.size(); iPort < portStages.size(); ++iPort) {
+          PipelineStage portStage = portStages.get(iPort);
+          //Stall all ports we can't flush directly, until they shift up to a port we can flush.
+          ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrStall, portStage, "", aux),
+                                               rerunRegName, ExpressionType.AnyExpression_Noparen));
+          registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.WrStall, portStage, "")); // Ensure WrStall generation
+        }
 
         ret.logic += "always_comb begin\n";
-        ret.logic += tab + String.format("%s = 0;\n", rerunWrPCValidWireName);
-        ret.logic += tab + String.format("%s = 0;\n", rerunWrFlushWireName);
-        ret.logic += tab + String.format("if (%s && %s) begin\n", rerunRegName, rdInStageValidExpr);
-        // Note: WrPC_valid is set based on !RdFlush; however, some WrFlush conditions may also be relevant.
-        //  The problem is, one must ensure there is no WrPC_valid->WrFlush->WrPC_valid combinational loop.
-        ret.logic += tab + tab + String.format("%s = !%s;\n", rerunWrPCValidWireName, rdFlushExpr);
-        ret.logic += tab + tab + String.format("%s = 1;\n", rerunWrFlushWireName);
-        ret.logic += tab + "end\n";
+        for (int iPort = 0; iPort < (hasNoPortGaps ? 1 : (portStages.size()-1)); ++iPort) {
+          ret.logic += tab + String.format("%s = 0;\n", rerunWrPCValidWireName.get(iPort));
+          ret.logic += tab + String.format("%s = 0;\n", rerunWrFlushWireName.get(iPort));
+        }
+        for (int iPort = 0; iPort < (hasNoPortGaps ? 1 : (portStages.size()-1)); ++iPort) {
+          ret.logic += tab + String.format("%sif (%s && %s) begin\n", iPort==0?"":"else ", rerunRegName, rdInStageValidExpr.get(iPort));
+          // Note: WrPC_valid is set based on !RdFlush; however, some WrFlush conditions may also be relevant.
+          //  The problem is, one must ensure there is no WrPC_valid->WrFlush->WrPC_valid combinational loop.
+          ret.logic += tab + tab + String.format("%s = !%s;\n", rerunWrPCValidWireName.get(iPort), rdFlushExpr.get(iPort));
+          ret.logic += tab + tab + String.format("%s = 1;\n", rerunWrFlushWireName.get(iPort));
+          ret.logic += tab + "end\n";
+        }
         ret.logic += "end\n";
 
         ret.logic += String.format("always_ff @(posedge %s) begin\n", language.clk);
         // Clear on reset
         ret.logic += tab + String.format("if (%s) %s <= 0;\n", language.reset, rerunRegName);
         ret.logic += tab + String.format("else if (%s) begin\n", rerunRegName);
-        // Clear on flush
-        ret.logic += tab + tab + String.format("if (%s%s)\n", rdFlushExpr, wrFlushExpr_opt.map(expr -> " || " + expr).orElse(""));
-        ret.logic += tab + tab + tab + String.format("%s <= 0;\n", rerunRegName);
+        for (int iPort = 0; iPort < portStages.size(); ++iPort) {
+          // Clear on flush
+          ret.logic += tab + tab + String.format("if (%s%s)\n", rdFlushExpr.get(iPort), wrFlushExpr_opt.get(iPort).map(expr -> " || " + expr).orElse(""));
+          ret.logic += tab + tab + tab + String.format("%s <= 0;\n", rerunRegName);
+        }
         ret.logic += tab + "end\n";
-        ret.logic += tab + String.format("else if (%s) begin\n", nostallExpr); //! rerunRegName
-        // Set from WrRerunNext
-        ret.logic += tab + tab + String.format("%s <= %s;\n", rerunRegName, rerunNextCond); //! rerunRegName
-        ret.logic += tab + "end\n";
+        for (int iPort = portStages.size()-1; iPort >= 0; --iPort) {
+          // Check last non-stalling port first (i.e. newest instruction)
+          ret.logic += tab + String.format("else if (%s)\n", nostallExpr.get(iPort)); //! rerunRegName
+          // Set from WrRerunNext
+          ret.logic += tab + tab + String.format("%s <= %s;\n", rerunRegName, rerunNextCond.get(iPort)); //! rerunRegName
+        }
         ret.logic += "end\n";
 
         ret.outputs.add(new NodeInstanceDesc(nodeKey, "", ExpressionType.AnyExpression));

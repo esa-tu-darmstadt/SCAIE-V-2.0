@@ -21,13 +21,18 @@ public class Scheduled {
      * Disable read forwarding for a custom register read.
      * Note: May still perform forwarding if the read port is shared with a scheduled node that has forwarding enabled.
      */
-    Custreg_DisableReadForwarding("Custreg_DisableReadForwarding");
+    Custreg_DisableReadForwarding("Custreg_DisableReadForwarding"),
+    /**
+     * Node added as a marker, not an actual interface.
+     */
+    Marker(null);
 
     public final String serialName;
 
     private ScheduledNodeTag(String serialName) { this.serialName = serialName; }
     public static Optional<ScheduledNodeTag> fromSerialName(String serialName) {
-      return Stream.of(ScheduledNodeTag.values()).filter(tagVal -> tagVal.serialName.equals(serialName)).findAny();
+      return Stream.of(ScheduledNodeTag.values()).filter(tagVal -> tagVal.serialName != null
+                                                                   && tagVal.serialName.equals(serialName)).findAny();
     }
   }
 

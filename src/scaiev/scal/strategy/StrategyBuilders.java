@@ -47,8 +47,10 @@ import scaiev.scal.strategy.standard.DefaultRerunStrategy;
 import scaiev.scal.strategy.standard.DefaultValidCancelReqStrategy;
 import scaiev.scal.strategy.standard.DirectReadNodeStrategy;
 import scaiev.scal.strategy.standard.EarlyValidStrategy;
+import scaiev.scal.strategy.standard.MultiportWrPCStrategy;
 import scaiev.scal.strategy.standard.PipeliningRdIValidStrategy;
 import scaiev.scal.strategy.standard.PipeoutRegularStrategy;
+import scaiev.scal.strategy.standard.PortMuxStrategy;
 import scaiev.scal.strategy.standard.RdIValidStrategy;
 import scaiev.scal.strategy.standard.RdInStageValidStrategy;
 import scaiev.scal.strategy.standard.SCALInputOutputStrategy;
@@ -102,7 +104,9 @@ public class StrategyBuilders {
     putUniqueBuilder(UUID_NodeRegPipelineStrategy, (Map<String, Object> args) -> this.default_buildNodeRegPipelineStrategy(args));
     putUniqueBuilder(UUID_DirectReadNodeStrategy, (Map<String, Object> args) -> this.default_buildDirectReadNodeStrategy(args));
     putUniqueBuilder(UUID_EarlyValidStrategy, (Map<String, Object> args) -> this.default_buildEarlyValidStrategy(args));
+    putUniqueBuilder(UUID_MultiportWrPCStrategy, (Map<String, Object> args) -> this.default_buildMultiportWrPCStrategy(args));
     putUniqueBuilder(UUID_ValidMuxStrategy, (Map<String, Object> args) -> this.default_buildValidMuxStrategy(args));
+    putUniqueBuilder(UUID_PortMuxStrategy, (Map<String, Object> args) -> this.default_buildPortMuxStrategy(args));
     putUniqueBuilder(UUID_StallFlushDeqStrategy, (Map<String, Object> args) -> this.default_buildStallFlushDeqStrategy(args));
     putUniqueBuilder(UUID_RdIValidStrategy, (Map<String, Object> args) -> this.default_buildRdIValidStrategy(args));
     putUniqueBuilder(UUID_RdInStageValidStrategy, (Map<String, Object> args) -> this.default_buildRdInStageValidStrategy(args));
@@ -169,6 +173,12 @@ public class StrategyBuilders {
    */
   public static UUID UUID_EarlyValidStrategy = uuidFor("EarlyValidStrategy");
   /**
+   * UUID for a MultiportWrPCStrategy-compatible implementation.
+   * {@link scaiev.scal.strategy.standard.MultiportWrPCStrategy}
+   *  Args: Verilog language, BNode bNodes, Core core
+   */
+  public static UUID UUID_MultiportWrPCStrategy = uuidFor("MultiportWrPCStrategy");
+  /**
    * UUID for a ValidMuxStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.standard.ValidMuxStrategy}
    *  Args: Verilog language, BNode bNodes, Core core,
@@ -177,9 +187,19 @@ public class StrategyBuilders {
    */
   public static UUID UUID_ValidMuxStrategy = uuidFor("ValidMuxStrategy");
   /**
+   * UUID for a PortMuxStrategy-compatible implementation.
+   * {@link scaiev.scal.strategy.standard.PortMuxStrategy}
+   *  Args: Verilog language, BNode bNodes, Core core,
+   *        HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr,
+   *        HashMap&lt;String,SCAIEVInstr&gt; allISAXes,
+   *        SCAIEVConfig cfg
+   */
+  public static UUID UUID_PortMuxStrategy = uuidFor("PortMuxStrategy");
+  /**
    * UUID for a StallFlushDeqStrategy-compatible implementation.
    * {@link scaiev.scal.strategy.standard.StallFlushDeqStrategy}
-   *  Args: Verilog language, BNode bNodes, Core core
+   *  Args: Verilog language, BNode bNodes, Core core,
+   *        HashMap&lt;SCAIEVNode,HashMap&lt;PipelineStage,HashSet&lt;String&gt;&gt;&gt; op_stage_instr
    */
   public static UUID UUID_StallFlushDeqStrategy = uuidFor("StallFlushDeqStrategy");
   /**
@@ -489,6 +509,17 @@ public class StrategyBuilders {
   }
 
   /**
+   * Helper function to call the builder for MultiportWrPCStrategy.
+   * @param language The (Verilog) language object
+   * @param bNodes The BNode object for the node instantiation
+   * @param core The core nodes description
+   */
+  public final MultiNodeStrategy buildMultiportWrPCStrategy(Verilog language, BNode bNodes, Core core) {
+    return buildMultiNodeStrategy(UUID_MultiportWrPCStrategy,
+                                  Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core)));
+  }
+
+  /**
    * Helper function to call the builder for ValidMuxStrategy.
    * @param language The (Verilog) language object
    * @param bNodes The BNode object for the node instantiation
@@ -496,12 +527,31 @@ public class StrategyBuilders {
    * @param op_stage_instr The Node-Stage-ISAX mapping
    * @param allISAXes The ISAX descriptions
    */
-  public final SingleNodeStrategy buildValidMuxStrategy(Verilog language, BNode bNodes, Core core,
+  public final MultiNodeStrategy buildValidMuxStrategy(Verilog language, BNode bNodes, Core core,
                                                         HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
                                                         HashMap<String, SCAIEVInstr> allISAXes) {
-    return buildSingleNodeStrategy(UUID_ValidMuxStrategy,
+    return buildMultiNodeStrategy(UUID_ValidMuxStrategy,
+                                  Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core),
+                                                entry("op_stage_instr", op_stage_instr), entry("allISAXes", allISAXes)));
+  }
+
+  /**
+   * Helper function to call the builder for PortMuxStrategy.
+   * @param language The (Verilog) language object
+   * @param bNodes The BNode object for the node instantiation
+   * @param core The core nodes description
+   * @param op_stage_instr The Node-Stage-ISAX mapping
+   * @param allISAXes The ISAX descriptions
+   * @param cfg The SCAIE-V global config
+   */
+  public final SingleNodeStrategy buildPortMuxStrategy(Verilog language, BNode bNodes, Core core,
+                                                       HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr,
+                                                       HashMap<String, SCAIEVInstr> allISAXes,
+                                                       SCAIEVConfig cfg) {
+    return buildSingleNodeStrategy(UUID_PortMuxStrategy,
                                    Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core),
-                                                 entry("op_stage_instr", op_stage_instr), entry("allISAXes", allISAXes)));
+                                                 entry("op_stage_instr", op_stage_instr), entry("allISAXes", allISAXes),
+                                                 entry("cfg", cfg)));
   }
 
   /**
@@ -560,10 +610,14 @@ public class StrategyBuilders {
    * Helper function to call the builder for StallFlushDeqStrategy.
    * @param language The (Verilog) language object
    * @param bNodes The BNode object for the node instantiation
+   * @param core The core nodes description
+   * @param op_stage_instr The Node-Stage-ISAX mapping
    */
-  public final SingleNodeStrategy buildStallFlushDeqStrategy(Verilog language, BNode bNodes, Core core) {
+  public final SingleNodeStrategy buildStallFlushDeqStrategy(Verilog language, BNode bNodes, Core core,
+                                                             HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>> op_stage_instr) {
     return buildSingleNodeStrategy(UUID_StallFlushDeqStrategy,
-                                   Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core)));
+                                   Map.ofEntries(entry("language", language), entry("bNodes", bNodes), entry("core", core),
+                                                 entry("op_stage_instr", op_stage_instr)));
   }
 
   /**
@@ -985,14 +1039,26 @@ public class StrategyBuilders {
                                   (HashMap<String, SCAIEVInstr>)args.get("allISAXes"),
                                   (HashMap<SCAIEVNode, PipelineFront>)args.get("node_earliestStageValid"));
   }
+  private final MultiNodeStrategy default_buildMultiportWrPCStrategy(Map<String, Object> args) {
+    return new MultiportWrPCStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"));
+  }
   @SuppressWarnings("unchecked") /* Need to rely on the caller */
-  private final SingleNodeStrategy default_buildValidMuxStrategy(Map<String, Object> args) {
+  private final MultiNodeStrategy default_buildValidMuxStrategy(Map<String, Object> args) {
     return new ValidMuxStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"),
                                 (HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>>)args.get("op_stage_instr"),
                                 (HashMap<String, SCAIEVInstr>)args.get("allISAXes"));
   }
+  @SuppressWarnings("unchecked") /* Need to rely on the caller */
+  private final SingleNodeStrategy default_buildPortMuxStrategy(Map<String, Object> args) {
+    return new PortMuxStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"),
+                               (HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>>)args.get("op_stage_instr"),
+                               (HashMap<String, SCAIEVInstr>)args.get("allISAXes"),
+                               (SCAIEVConfig)args.get("cfg"));
+  }
+  @SuppressWarnings("unchecked") /* Need to rely on the caller */
   private final SingleNodeStrategy default_buildStallFlushDeqStrategy(Map<String, Object> args) {
-    return new StallFlushDeqStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"));
+    return new StallFlushDeqStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"),
+                                     (HashMap<SCAIEVNode, HashMap<PipelineStage, HashSet<String>>>)args.get("op_stage_instr"));
   }
   @SuppressWarnings("unchecked") /* Need to rely on the caller */
   private final MultiNodeStrategy default_buildRdIValidStrategy(Map<String, Object> args) {
@@ -1143,7 +1209,6 @@ public class StrategyBuilders {
         (Boolean)args.get("SETTINGenforceOrdering_Memory_Decoupled"), (Boolean)args.get("SETTINGenforceOrdering_User_Semicoupled"),
         (Boolean)args.get("SETTINGenforceOrdering_User_Decoupled"), (SCAIEVConfig)args.get("cfg"));
   }
-
   private final MultiNodeStrategy default_buildDefaultHandshakeRespStrategy(Map<String, Object> args) {
     return new DefaultHandshakeRespStrategy((Verilog)args.get("language"), (BNode)args.get("bNodes"), (Core)args.get("core"));
   }

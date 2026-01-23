@@ -5,7 +5,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
-import java.util.TreeMap;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -18,9 +18,9 @@ import scaiev.frontend.SCAIEVNode.NodeTypeTag;
 import scaiev.pipeline.PipelineFront;
 import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
+import scaiev.pipeline.PipelineStage.StageTag;
 import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeInstanceDesc.ExpressionType;
-import scaiev.scal.NodeInstanceDesc.Key;
 import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.NodeInstanceDesc.RequestedForSet;
 import scaiev.scal.NodeLogicBlock;
@@ -28,11 +28,12 @@ import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.NodeRegistry;
 import scaiev.scal.NodeRegistryRO;
 import scaiev.scal.SCALUtil;
-import scaiev.scal.strategy.SingleNodeStrategy;
+import scaiev.scal.strategy.MultiNodeStrategy;
+import scaiev.util.JavaUtil;
 import scaiev.util.Verilog;
 
-/** Strategy that MUXes a node from ISAXes. Also handles  */
-public class ValidMuxStrategy extends SingleNodeStrategy {
+/** Strategy that MUXes a node from ISAXes. Also handles spawn-to-non-spawn selection for semi-coupled. */
+public class ValidMuxStrategy extends MultiNodeStrategy {
 
   // logging
   protected static final Logger logger = LogManager.getLogger();
@@ -69,9 +70,9 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
    * @param ret the NodeLogicBlock to add the mux logic/declarations/outputs to
    * @param requestedFor the RequestedForSet to use in the MUX output node
    */
-  void CreateValidEncodingIValid(NodeRegistryRO registry, NodeInstanceDesc.Key nodeKey, HashSet<String> lookAtISAX,
-                                           SCAIEVNode baseNode, NodeLogicBlock ret,
-                                           RequestedForSet requestedFor) {
+  boolean CreateValidEncodingIValid(NodeRegistryRO registry, NodeInstanceDesc.Key nodeKey, HashSet<String> lookAtISAX,
+                                 SCAIEVNode baseNode, NodeLogicBlock ret,
+                                 RequestedForSet requestedFor) {
     PipelineStage stage = nodeKey.getStage();
     String tab = language.tab;
 
@@ -132,11 +133,11 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
       //Special case: semi-coupled spawn is scheduled before WrRD (maybe Mem) is allowed.
       // -> Need to pipeline from prior-stage ValidMuxStrategy.
       if (spawnNode_opt.isPresent() && spawnNode_opt.get().isInput &&
-          stage.getKind() == StageKind.Core && core.GetNodes().containsKey(baseNode) &&
-          core.TranslateStageScheduleNumber(core.GetNodes().get(baseNode).GetEarliest()).contains(stage) &&
+          stage.getKind() == StageKind.Core && core.getNodes().containsKey(baseNode) &&
+          core.translateStageScheduleNumber(core.getNodes().get(baseNode).getEarliest()).contains(stage) &&
           op_stage_instr.getOrDefault(spawnNode_opt.get(), new HashMap<>()).keySet().stream()
             .anyMatch(spawnStage -> new PipelineFront(stage).isAfter(spawnStage, false) &&
-                                    !core.StageIsInRange(core.GetNodes().get(baseNode), spawnStage))) {
+                                    !core.stageIsInRange(core.getNodes().get(baseNode), spawnStage))) {
         needsDefault = true; //Pipe from previous stage
       }
     }
@@ -146,7 +147,7 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
       }
     }
     if (lookAtISAXOrdered.isEmpty())
-      return;
+      return false;
 
     boolean isValidAdj = (checkAdj.getAdj() == AdjacentNode.validReq || checkAdj.getAdj() == AdjacentNode.addrReq);
     boolean defaultGeneratedBySCAL = (checkAdj.getAdj() == AdjacentNode.cancelReq);
@@ -228,7 +229,7 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
 
       // Create RdIValid = user valid for instr without encoding, else decode instr and create IValid
       if (orderEntry.aux != 0 || !orderEntry.isax.isEmpty() && allISAXes.get(orderEntry.isax).HasNoOp() ||
-          core.TranslateStageScheduleNumber(core.GetNodes().get(bNodes.RdInstr).GetEarliest()).isAfter(stage, false)) {
+          core.translateStageScheduleNumber(core.getNodes().get(bNodes.RdInstr).getEarliest()).isAfter(stage, false)) {
         assert (!baseNode.isAdj());
         SCAIEVNode baseOperation = baseNode;
 
@@ -272,7 +273,7 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
         else {
           // e.g. 'WrRD_<stage>_s = WrRD_<isax>_i;'
           assignSignal = registry.lookupExpressionRequired(
-              new Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, checkAdj, stage, orderEntry.isax, orderEntry.aux));
+              new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, checkAdj, stage, orderEntry.isax, orderEntry.aux));
         }
         conditionalAssigns.add(new ConditionalAssignEntry(false, RdIValid, assignSignal));
       } else if (isValidAdj &&
@@ -342,32 +343,34 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
     body += "end\n";
     if (conditionalAssigns.isEmpty()) {
       logger.warn("ValidMuxStrategy: Found no supported elements for " + nodeKey.toString(false));
-      return;
+      return false;
     }
 
     ret.declarations += (language.CreateDeclSig(assignNode.NodeNegInput(), stage, "", true, assignNodeName));
-    ret.outputs.add(new NodeInstanceDesc(new Key(assignNode, stage, ""), assignNodeName, ExpressionType.WireName, requestedFor));
+    ret.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(assignNode, stage, ""), assignNodeName, ExpressionType.WireName, requestedFor));
     ret.logic += body;
+    return true;
   }
+
   HashSet<NodeInstanceDesc.Key> implementedKeys = new HashSet<>();
-  @Override
-  public Optional<NodeLogicBuilder> implement(Key nodeKey) {
+  protected boolean implementSingle(Consumer<NodeLogicBuilder> out, NodeInstanceDesc.Key nodeKey) {
     // if (nodeKey.getNode().tags.contains(NodeTypeTag.supportsPortNodes))
     //	return Optional.empty();
     SCAIEVNode baseNode = bNodes.GetNonAdjNode(nodeKey.getNode());
     //Only operate on nodes listed as FNode (i.e., base nodes that can be used on the ISAX interface).
     if (baseNode.name.isEmpty() || !bNodes.HasSCAIEVFNode(baseNode.name))
-      return Optional.empty();
- 
+      return false;
+
     if (nodeKey.getPurpose().matches(NodeInstanceDesc.Purpose.REGULAR)
         && nodeKey.getNode().isInput                                    // Is an input node to the core (-> an output from SCAL to the core)
         && !nodeKey.getNode().isSpawn()                                 // Not MUXing to decoupled/spawn nodes
         && !nodeKey.getNode().tags.contains(NodeTypeTag.perStageStatus) // WrFlush, WrStall, etc. are handled by WrStallFlushStrategy
         //&& this.op_stage_instr.getOrDefault(lookupNode, new HashMap<>()).containsKey(nodeKey.getStage()) //Some ISAX uses the base node
         && nodeKey.getISAX().isEmpty() // This strategy MUXes between all ISAXes, outputting a node with an empty ISAX field
+        && nodeKey.getStage().getKind() != StageKind.ISAXMux
     ) {
       if (!implementedKeys.add(NodeInstanceDesc.Key.keyWithPurpose(nodeKey, Purpose.REGULAR)))
-        return Optional.empty(); // If this strategy already created a builder without any outputs, ignore it.
+        return false; // If this strategy already created a builder without any outputs, ignore it.
 
       // Lookup relevant ISAXes in op_stage_instr using the base node.
       SCAIEVNode lookupNode_ = baseNode;
@@ -382,37 +385,159 @@ public class ValidMuxStrategy extends SingleNodeStrategy {
 
       SCAIEVNode lookupNode = lookupNode_;
 
+      var logutil = new Object() { boolean loggedShiftupErr = false; };
+
       var requestedFor = new RequestedForSet();
-      return Optional.of(
+
+      out.accept(
           NodeLogicBuilder.fromFunction("ValidMuxStrategy (" + nodeKey.toString() + ")", (NodeRegistryRO registry, Integer aux) -> {
-            HashSet<String> relevantISAXes =
+            HashSet<String> relevantISAXes_ =
                 this.op_stage_instr.getOrDefault(lookupNode, new HashMap<>()).getOrDefault(nodeKey.getStage(), new HashSet<>());
+            HashSet<String> relevantISAXes = new HashSet<>(relevantISAXes_); //copy
+            if (bNodes.GetAllPortsByBaseName().containsKey(baseNode.name)) {
+              // We don't want to multiplex from a non-semi-coupled ISAX operation if:
+              //  the ISAX has this operation, but only actually a sub-port of it.
+              // -> op_stage_instr still lists the non-ported node,
+              //    while the ISAX's schedule is updated to just the ported nodes.
+              // Such ISAXes are handled by separate ValidMuxStrategy invocations already
+              //  (e.g., see SCALStateStrategy_PortMapping).
+              // The ValidMuxStrategy builder for this non-ported node still may have a use in this scenario,
+              //  specifically for semi-coupled results in this stage.
+              for (String isax : relevantISAXes_) {
+                if (allISAXes.containsKey(isax) && !allISAXes.get(isax).HasSchedWith(baseNode, sched->true)) {
+                  //Check: Does the ISAX use a port of baseNode?
+                  boolean uses_port_of_baseNode = false;
+                  for (SCAIEVNode nodeInSched : allISAXes.get(isax).GetSchedNodes().keySet()) {
+                    if (nodeInSched.nameParentNode.equals(baseNode.name) && bNodes.getPortName(nodeInSched).length() > 0) {
+                      //ISAX has a sub-port node
+                      // -> assert in case nameParentNode causes confusion (e.g. if 'nodes with nested port names' happen to be a thing)
+                      assert(!nodeInSched.isAdj() && !nodeInSched.isSpawn());
+                      uses_port_of_baseNode = true;
+                      break;
+                    }
+                  }
+                  if (uses_port_of_baseNode) {
+                    // If so, disregard it.
+                    relevantISAXes.remove(isax);
+                  }
+                }
+              }
+            }
+
+            if (nodeKey.getStage().getMultiportBase().getKind() == StageKind.CoreMultiport && nodeKey.getStage().getKind() == StageKind.Core) {
+              // For a port stage, consider all ISAXes where the operation is listed in the ISAXMux stage.
+              // PortMuxStrategy will handle creating the per-ISAX nodes in each port stage.
+              PipelineStage multiportBase = nodeKey.getStage().getMultiportBase();
+              Optional<PipelineStage> muxStage_opt = multiportBase.getChildren().stream().filter(st->st.getKind()==StageKind.ISAXMux).findAny();
+              if (muxStage_opt.isPresent()) {
+                relevantISAXes.addAll(this.op_stage_instr.getOrDefault(lookupNode, new HashMap<>()).getOrDefault(muxStage_opt.get(), new HashSet<>()));
+              }
+            }
 
             NodeLogicBlock updateBlock = new NodeLogicBlock();
 
             CreateValidEncodingIValid(registry, nodeKey, relevantISAXes, baseNode, updateBlock, requestedFor);
 
-            // for WrPC, we need to create an associated flush signal to the processor
-            // as writing the PC redirects program flow
-            // new node is only created if it does not already exist
-            if (nodeKey.getNode().equals(bNodes.WrPC_valid)) {
-              for (PipelineStage prevStage : nodeKey.getStage().getPrev()) {
-                // get the valid expression just generated
-                String validExpr = language.CreateLocalNodeName(nodeKey.getNode(), nodeKey.getStage(), "");
-                // add a WrFlush signal (equal to the wrPC_valid signal) as an output with aux != 0
-                // WrStallFlushStrategy will collect this flush signal
-                updateBlock.outputs.add(
-                    new NodeInstanceDesc(new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.REGULAR, bNodes.WrFlush, prevStage, "", aux),
-                                         validExpr, ExpressionType.AnyExpression, requestedFor));
-                // force a dependency for an overall flush signal with aux=0
-                // this does not yet create an output pin!
-                registry.lookupExpressionRequired(
-                    new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.REGULAR, bNodes.WrFlush, prevStage, "", 0));
-              }
-            }
             return updateBlock;
           }));
+
+      // - For WrPC, this builder creates an associated flush signal to the processor, as writing the PC redirects program flow
+      // - This also contains multiport handling - WrPC is shared across ports on the core interface
+      //  -> provides per-port MUX results to either the CoreMultiport stage or to MultiportWrPCStrategy
+      //  -> 'calls' MultiportWrPCStrategy as a workaround if per-port flushing is not supported but required
+      if (nodeKey.getNode().equals(bNodes.WrPC_valid)) {
+        out.accept(NodeLogicBuilder.fromFunction("ValidMuxStrategy_WrPC (" + nodeKey.toString() + ")", (NodeRegistryRO registry, Integer aux) -> {
+          var logicBlock = new NodeLogicBlock();
+          // get the valid expression just generated
+          String validExpr = registry.lookupExpressionRequired(new NodeInstanceDesc.Key(nodeKey.getNode(), nodeKey.getStage(), ""));
+
+          // Multiport considerations: Work around cores not supporting flushing from within a port
+          boolean mustWaitForShiftup = false;
+          Iterable<PipelineStage> portsToVisit = List.of();
+          if (nodeKey.getStage().getTags().contains(StageTag.MultiportPipe)) {
+            PipelineStage baseStage = nodeKey.getStage().getMultiportBase();
+            assert(baseStage.getKind() == StageKind.CoreMultiport);
+            var stallAttr = baseStage.getTagAttr(StageTag.MultiportStall, PipelineStage.MultiportStallAttributes.class);
+            assert(stallAttr != null);
+            int childIdx = baseStage.getChildren().indexOf(nodeKey.getStage());
+            assert(childIdx != -1);
+            if (!stallAttr.perPortFlush() && childIdx < (baseStage.getChildren().size() - 1)
+                && baseStage.getChildren().get(childIdx+1).getKind() == StageKind.Core) {
+              //No perPortFlush -> Cannot flush the later ports
+              // (not an issue if this is already the last port)
+              mustWaitForShiftup = true;
+              if (!stallAttr.shiftUp() && !logutil.loggedShiftupErr) {
+                logger.error("ValidMuxStrategy: Cannot handle WrPC flushing correctly for other ports:" +
+                             " Stage {} does not have the shiftUp attribute.", baseStage.getName());
+                logutil.loggedShiftupErr = true;
+              }
+            }
+            else {
+              portsToVisit = JavaUtil.iterableSkip(baseStage.getChildren(), childIdx + 1);
+
+              // Add WrPC,WrPC_validReq of this port as aux to the CoreMultiport stage
+              // -> If the core has !stallAttr.perPortFlush(),
+              //    the last port will still be handled directly and ignored for WrPCLate.
+
+              logicBlock.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrPC_valid, baseStage, "", aux),
+                                                          validExpr, ExpressionType.AnyExpression_Noparen, requestedFor));
+              registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.WrPC_valid, baseStage, ""));
+
+              // Reuse the WrPC_valid RequestedForSet for WrPC (should match).
+              var pcInst = registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.WrPC, nodeKey.getStage(), ""));
+              var pcExprType = (pcInst.getExpressionType()==ExpressionType.WireName)?ExpressionType.AnyExpression_Noparen:pcInst.getExpressionType();
+              logicBlock.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, bNodes.WrPC, baseStage, "", aux),
+                                                          pcInst.getExpression(), pcExprType, requestedFor));
+              registry.lookupExpressionRequired(new NodeInstanceDesc.Key(bNodes.WrPC, baseStage, ""));
+            }
+          }
+
+          Iterable<PipelineStage> prevStagesToVisit = nodeKey.getStage().getMultiportBase().getPrev();
+          if (mustWaitForShiftup) {
+            //Don't add WrFlush, let MultiportWrPCStrategy do that
+            prevStagesToVisit = List.of();
+            SCAIEVNode delayedWrPCNode = MultiportWrPCStrategy.makeDelayedWrPCNode(bNodes);
+            SCAIEVNode delayedWrPCValidNode = MultiportWrPCStrategy.makeDelayedWrPCValidNode(bNodes);
+            //Request WrPC handling logic
+            //Note: That pipelined WrPC should be applied regardless of whether the next stage is another multiport without perPortFlush.
+            registry.lookupExpressionRequired(new NodeInstanceDesc.Key(Purpose.MARKER_INTERNALIMPL_PIN,
+                delayedWrPCNode, nodeKey.getStage().getMultiportBase(), ""));
+            //Output delayedWrPCNode, delayedWrPCValidNode
+            NodeInstanceDesc pcInst = registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.WrPC, nodeKey.getStage(), ""));
+            ExpressionType pcExprType = (pcInst.getExpressionType() == ExpressionType.WireName)
+                                          ? ExpressionType.AnyExpression_Noparen
+                                          : pcInst.getExpressionType();
+            logicBlock.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, delayedWrPCNode, nodeKey.getStage(), ""),
+                                                         pcInst.getExpression(), pcExprType, requestedFor));
+            logicBlock.outputs.add(new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.REGULAR, delayedWrPCValidNode, nodeKey.getStage(), ""),
+                                                         validExpr, ExpressionType.AnyExpression_Noparen, requestedFor));
+          }
+          for (PipelineStage prevStage : JavaUtil.concatIterable(portsToVisit, prevStagesToVisit)) if (prevStage.getKind() != StageKind.ISAXMux) {
+            // add a WrFlush signal (equal to the wrPC_valid signal) as an output with aux != 0
+            // WrStallFlushStrategy will collect this flush signal
+            logicBlock.outputs.add(
+                new NodeInstanceDesc(new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.REGULAR, bNodes.WrFlush, prevStage, "", aux),
+                                     validExpr, ExpressionType.AnyExpression, requestedFor));
+            // force a dependency for an overall flush signal with aux=0
+            // this does not yet create an output pin!
+            registry.lookupExpressionRequired(
+                new NodeInstanceDesc.Key(NodeInstanceDesc.Purpose.REGULAR, bNodes.WrFlush, prevStage, "", 0));
+          }
+          return logicBlock;
+        }));
+      }
+      return true;
     }
-    return Optional.empty();
+    return false;
+  }
+
+  @Override
+  public void implement(Consumer<NodeLogicBuilder> out, Iterable<NodeInstanceDesc.Key> nodeKeys, boolean isLast) {
+    var nodeKeyIter = nodeKeys.iterator();
+    while (nodeKeyIter.hasNext()) {
+      NodeInstanceDesc.Key nodeKey = nodeKeyIter.next();
+      if (implementSingle(out, nodeKey))
+        nodeKeyIter.remove();
+    }
   }
 }

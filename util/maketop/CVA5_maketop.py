@@ -9,5 +9,7 @@ def translate_pin_name(name):
     return name
 
 template_filename = "CVA5_top_template_bram.v"
+if 'CVA5_USEGENERICBUS' in os.environ and os.environ['CVA5_USEGENERICBUS'] != '' and os.environ['CVA5_USEGENERICBUS'] != '0':
+    template_filename = "CVA5_top_template_genericbus.v"
 write_top(template_filename, "CVA5_top.v", translate_pin_name)
 

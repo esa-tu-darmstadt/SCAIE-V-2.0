@@ -34,6 +34,7 @@ import scaiev.scal.NodeInstanceDesc;
 import scaiev.scal.NodeLogicBlock;
 import scaiev.scal.NodeLogicBuilder;
 import scaiev.scal.NodeRegistry;
+import scaiev.scal.SCALUtil;
 import scaiev.scal.NodeInstanceDesc.ExpressionType;
 import scaiev.scal.NodeInstanceDesc.Purpose;
 import scaiev.scal.strategy.StrategyBuilders;
@@ -144,12 +145,13 @@ public class SCALStateStrategy_PortMapping {
         assert (this.getClass().equals(other.getClass()));
         assert (this.key.getNode().name.startsWith(BNode.rdPrefix) == other.key.getNode().name.startsWith(BNode.rdPrefix));
         assert (this.key.getNode().name.startsWith(BNode.wrPrefix) == other.key.getNode().name.startsWith(BNode.wrPrefix));
+        if (!this.key.getNode().equals(other.key.getNode()))
+          return false;
+        if (this.key.getStage() != other.key.getStage())
+          return false;
         if (this.key.getISAX().equals(other.key.getISAX()) && this.key.getAux() == other.key.getAux()) {
-          if (!this.key.getNode().equals(other.key.getNode()))
-            return false;
-          if (this.key.getStage() != other.key.getStage())
-            return false;
-          assert (false); // Two different RdInstanceInfo for the same node (maybe only differs by purpose)?
+          // Error: Two different RdInstanceInfo for the same node (maybe only differs by purpose)?
+          assert (false);
           return false;
         }
         if (!fromRegularISAX || !other.fromRegularISAX)
@@ -164,17 +166,18 @@ public class SCALStateStrategy_PortMapping {
       public WrInstanceInfo(List<NodeInstanceDesc.Key> fromList, int listIndex) {
         super(fromList, listIndex);
         boolean decoupled = key.getStage().getKind() == StageKind.Decoupled;
+        PipelineStage piperefStage = key.getStage().getMultiportBase();
         Predicate<PipelineStage> stageIsRelevant =
             (stage
              -> (!fromRegularISAX || !stage.getTags().contains(StageTag.NoISAX)) // Ignore NoISAX stages for regular ISAXes
                     && (decoupled || stage.getKind() != StageKind.Decoupled));   // Ignore decoupled stages for non-decoupled ISAXes
         this.relevantWritebackStages =
-            key.getStage()
+            piperefStage
                 .streamNext_bfs(nextStage
-                                -> !regfileInfo.writebackFront.contains(nextStage) &&
-                                       stageIsRelevant.test(nextStage)) // Stop iterating past each first one, apply relevance criteria
+                                -> !regfileInfo.writebackFront.asList().stream().anyMatch(st->st == nextStage || st.getMultiportBase() == nextStage)
+                                       && stageIsRelevant.test(nextStage)) // Stop iterating past each first one, apply relevance criteria
                 .filter(nextStage
-                        -> regfileInfo.writebackFront.contains(nextStage) &&
+                        -> regfileInfo.writebackFront.asList().stream().anyMatch(st->st == nextStage || st.getMultiportBase() == nextStage) &&
                                stageIsRelevant.test(nextStage)) // Only process writeback stages, apply relevance criteria
                 .sorted((a, b) -> Long.compare(a.getSortKey(), b.getSortKey()))
                 .toList();
@@ -198,13 +201,13 @@ public class SCALStateStrategy_PortMapping {
     //   -> NoOP ISAX keys are always put in a new group.
     //   -> same-ISAX different-stage keys are put in different groups.
     //   -> same-node different-writeback keys are put in different groups.
-    var relevantWrNodesByStage =
-        new TreeMap<PipelineStage, List<WrInstanceInfo>>((a, b) -> Integer.compare(a.getStagePos(), b.getStagePos()));
+    var relevantWrNodesByStage = new TreeMap<PipelineStage, List<WrInstanceInfo>>(
+            (a, b) -> Integer.compare(a.getMultiportBase().getStagePos(), b.getMultiportBase().getStagePos()));
     var util = new Object() {
       void addRelevantWrNode(List<NodeInstanceDesc.Key> fromList, int listIndex) {
         var entry = new WrInstanceInfo(fromList, listIndex);
         assert (!entry.key.getNode().isAdj()); // only base nodes expected
-        relevantWrNodesByStage.computeIfAbsent(entry.key.getStage(), stage_ -> new ArrayList<>()).add(entry);
+        relevantWrNodesByStage.computeIfAbsent(entry.key.getStage().getMultiportBase(), stage_ -> new ArrayList<>()).add(entry);
       }
       NodeInstanceDesc.Key renameToGroup(NodeInstanceDesc.Key groupKey, InstanceInfo instance) {
         var key = instance.key;
@@ -231,7 +234,8 @@ public class SCALStateStrategy_PortMapping {
         op_stage_instr.getOrDefault(addrNode, new HashMap<>())
             .entrySet()
             .stream()
-            .filter(stage_instr -> stage_instr.getKey() != renameToKey.getStage() && stage_instr.getValue().contains(key.getISAX()))
+            .filter(stage_instr -> stage_instr.getKey().getMultiportBase() != renameToKey.getStage().getMultiportBase()
+                                   && stage_instr.getValue().contains(key.getISAX()))
             .map(stage_instr -> stage_instr.getKey())
             .forEach(addrStage -> {
               regfileInfo.portRenames.add(
@@ -254,7 +258,7 @@ public class SCALStateStrategy_PortMapping {
           assert (!aFront.isBefore(b, false) || !aFront.isAfter(b, false));
         }
       for (PipelineStage b : relevantWrNodesByStage.keySet())
-        if (b != a && b.getStagePos() == a.getStagePos()) {
+        if (b != a && b.getMultiportBase().getStagePos() == a.getMultiportBase().getStagePos()) {
           var bFront = new PipelineFront(b);
           // No ordering between same-pos stages
           assert (!aFront.isBefore(b, false) && !bFront.isAfter(a, false));
@@ -308,10 +312,14 @@ public class SCALStateStrategy_PortMapping {
           writeMuxGroups.add(newMuxGroupEx);
           muxGroupEx = newMuxGroupEx;
 
-          for (PipelineStage writebackStage : writeInstance.relevantWritebackStages) {
-            regfileInfo.writeback_writes.add(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, newGroupKey.getNode(),
-                                                                   writebackStage, newGroupKey.getISAX(), newGroupKey.getAux()));
-          }
+          SCALUtil.flatmapIntoPorts(writeInstance.relevantWritebackStages.stream())
+              //Additional filter: prevents neighbouring issue stages from being added as writeback for this group
+              // For instance: In CVA6, the issue stage is treated as regfile writeback (actual write being handled by scoreboard logic)
+            .filter(st->st == writeInstance.key.getStage() || new PipelineFront(st).isAfter(writeInstance.key.getStage(), false))
+            .forEach(writebackStage -> {
+              regfileInfo.writeback_writes.add(new NodeInstanceDesc.Key(Purpose.match_REGULAR_WIREDIN_OR_PIPEDIN, newGroupKey.getNode(),
+                                                                     writebackStage, newGroupKey.getISAX(), newGroupKey.getAux()));
+          });
         }
 
         var groupKey = muxGroupEx.muxGroup.groupKey;
@@ -322,6 +330,14 @@ public class SCALStateStrategy_PortMapping {
       }
     }
     writeMuxGroups.stream().forEach(muxGroupEx -> regfileInfo.portMuxGroups.add(muxGroupEx.muxGroup));
+    if (logger.isTraceEnabled()) {
+      writeMuxGroups.stream().forEach(muxGroup ->
+        logger.trace("Write mux group mapping key {}: {}",
+                     muxGroup.muxGroup.groupKey.toString(false),
+                     muxGroup.muxGroup.sourceKeys.stream().map(k->k.toString(false))
+                         .reduce((a,b)->a+", "+b).orElse("(none)"))
+      );
+    }
 
     List<String> cannotReachWritebackKeyNames = relevantWrNodesByStage.entrySet()
                                                     .stream()
@@ -411,6 +427,14 @@ public class SCALStateStrategy_PortMapping {
     }
 
     readMuxGroups.stream().forEach(muxGroupEx -> regfileInfo.portMuxGroups.add(muxGroupEx.muxGroup));
+    if (logger.isTraceEnabled()) {
+      readMuxGroups.stream().forEach(muxGroup ->
+        logger.trace("Read mux group mapping key {}: {}",
+                     muxGroup.muxGroup.groupKey.toString(false),
+                     muxGroup.muxGroup.sourceKeys.stream().map(k->k.toString(false))
+                         .reduce((a,b)->a+", "+b).orElse("(none)"))
+      );
+    }
   }
   
 
@@ -436,7 +460,7 @@ public class SCALStateStrategy_PortMapping {
       if (nodeKey.getNode().isInput && !nodeKey.getPurpose().matches(Purpose.WIREDIN))
         continue;
       PipelineStage stageOverride = null;
-      if (regfile.issueFront.contains(nodeKey.getStage()) &&
+      if (regfile.issueFront.isAround(nodeKey.getStage()) &&
           (nodeKey.getNode().getAdj() == AdjacentNode.addr || nodeKey.getNode().getAdj() == AdjacentNode.addrReq)) {
         // Special handling for issueFront.
         stageOverride = nodeKey.getStage();
@@ -466,7 +490,7 @@ public class SCALStateStrategy_PortMapping {
           String assignToWireName = assignToKey.toString(false) + "_renamed_from_" + assignFromKey.toString(false) + "_s";
           ret.declarations += String.format("logic [%d-1:0] %s;\n", assignToKey.getNode().size, assignToWireName);
           NodeInstanceDesc assignFromNodeInst = null;
-          if (nodeKey.getNode().isInput) {
+          if (nodeKey.getNode().isInput && nodeKey.getNode().getAdj() != AdjacentNode.instrID) {
             assignFromNodeInst = registry.lookupRequired(NodeInstanceDesc.Key.keyWithPurpose(assignFromKey, Purpose.match_WIREDIN_OR_PIPEDIN));
             if (assignFromNodeInst.getExpression().startsWith(NodeRegistry.MISSING_PREFIX))
               assignFromNodeInst = null;
