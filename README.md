@@ -94,15 +94,17 @@ module SETADDR (
 endmodule 
 ```
 ### Step 3: 
-The third step implies generating the custom instructions interface using the SCAIE-V tool. Let us consider that the user decided to read operands in the third cycle (numbering starts at 0). He/She does not have to modify anything in the core, but just let SCAIE-V do the work: 
+The third step implies generating the custom instructions interface using the SCAIE-V tool. To tell the SCAIE-V tool which interfaces are required, we need to provide it a yaml file (TestMe.yaml is such an example). For the ISAX presented at step 2, the yaml file would be: 
 ```
-SCAIEV shim = new SCAIEV();
-SCAIEVInstr setaddr  = shim.addInstr("SETADDRGEN","-------", "000", "0001011", "I");  
-setaddr.PutSchedNode(FNode.RdRS1, 2);  
-setaddr.PutSchedNode(FNode.RdIValid, 2); // valid bit for updating the custom_addr register
-shim.Generate("VexRiscv_5s"); // generates all the code
+- instruction: SETADDR
+  mask: "0000000----------111-----1111011"
+  schedule:
+    - interface: RdRS1
+      stage: 2
+	- interface: RdIValid
+      stage: 2
 ```
-The files of the 5 stage VexRiscv core will be modified so that it supports the new interface. (to set the core, use: "VexRiscv_5s", "VexRiscv_4s", "PicoRV32", "ORCA")
+You can run the AutomaticDemoTest class to read the yaml file and automatically update the core such that it supports the SCAIE-V interface. In the AutomaticDemoTest class there are two important variables: the `testFilePath` (path to your yaml file) and the `core` (supported cores are "VexRiscv_5s", "PicoRV32", "ORCA").
 
 ## How can I try it out fast? 
 
@@ -175,7 +177,7 @@ public boolean SETTINGwithInputFIFO = true;  // true =  it may happen that multi
 ```
 
 ## What do I have to do to support internal states? 
-This is currently supported only in yaml file (see TestMe.yaml & AutomaticDemoTest.java, which reads the yaml and starts SCAIE-V tool based on it). 
+This is currently supported only by specifying the new register in a yaml file (see TestMe.yaml & AutomaticDemoTest.java, which reads the yaml and starts SCAIE-V tool based on it). 
 In the TestMe.yaml, define in the beginning the internal state, with its name, width and depth:
 ```
 - register: Myreg
@@ -195,7 +197,7 @@ In the instruction using this state, mention the scheduling of RdMyreg and WrMyr
 	- interface: WrMyreg.addr
       stage: 1
 ```
-The WrMyreg interface must provide the address in the earliest stage in which a read is allowed. Yet, the result may be returned also in later stages. Hence, data and address could be in different stages and their schedule is presented separately. Based on the above specification, the earliest stage in which a read is allowed is stage 1, the MY_INSTRUCTION reads the state in stage 2 and returns a result in stage 3. Address signal is mandatory for arrays. 
+The WrMyreg interface must provide the address in the earliest stage in which a read is allowed. Yet, the result may be returned also in later stages. Hence, data and address could be in different stages and their schedule is presented separately. Based on the above specification, the earliest stage in which a read is allowed is stage 1, the MY_INSTRUCTION reads the state in stage 2 and returns a result in stage 3. Address signal is mandatory for arrays. When selecting the name of the new state element, please select one such that the standard suported SCAIE-V interfaces don't contain this name.
 
 
 

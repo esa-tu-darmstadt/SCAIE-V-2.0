@@ -42,6 +42,8 @@ private HashSet<String> textInterface = new  HashSet<String>();
 		for(SCAIEVNode node : op_stage_instr.keySet()) 
 			if(allBNodes.IsUserBNode(node) && node.isInput && !node.isSpawn()) {
 				SCAIEVNode RdNode = allBNodes.GetSCAIEVNode(allBNodes.GetNameRdNode(node));
+				System.out.println(" RdNode = "+RdNode);
+				System.out.println(" this.core.GetNodes().get(RdNode).GetEarliest() = "+this.core.GetNodes().get(RdNode).GetEarliest());
 				node_stageValid.put(node,this.core.GetNodes().get(RdNode).GetEarliest()); // we need starting from read stage for DH
 			}
 		return node_stageValid;		
@@ -213,11 +215,13 @@ private HashSet<String> textInterface = new  HashSet<String>();
 		SCAIEVNode WrNode = allBNodes.GetSCAIEVNode(allBNodes.GetNameWrNode(RdNode));
 		String RdNode_validReq = allBNodes.GetAdjSCAIEVNode(RdNode, AdjacentNode.validReq).name;
 		String WrNode_validReq = allBNodes.GetAdjSCAIEVNode(WrNode, AdjacentNode.validReq).name;
-		System.out.println("WrNode"+WrNode);
 		String WrNode_validData = allBNodes.GetAdjSCAIEVNode(WrNode, AdjacentNode.validData).name;	
 		SCAIEVNode WrNode_spawn_node = allBNodes.GetMySpawnNode(WrNode);
 		String WrNode_spawn = WrNode_spawn_node.name;
-		String WrNode_spawn_addr = allBNodes.GetAdjSCAIEVNode(WrNode_spawn_node, AdjacentNode.addr).name;
+		
+		String WrNode_spawn_addr = "noaddrsig";
+		if(WrNode.elements>1) 
+			WrNode_spawn_addr = allBNodes.GetAdjSCAIEVNode(WrNode_spawn_node, AdjacentNode.addr).name;
 		String WrNode_spawn_validReq = allBNodes.GetAdjSCAIEVNode(WrNode_spawn_node, AdjacentNode.validReq).name;
 		
 		String RdStall = BNode.RdStall.name;
@@ -225,7 +229,9 @@ private HashSet<String> textInterface = new  HashSet<String>();
 		String RdInstr = BNode.RdInstr.name;
 		
 		int regW = WrNode.size;
-		int addrW = allBNodes.GetAdjSCAIEVNode(WrNode, AdjacentNode.addr).size;
+		int addrW = 1; 
+		if(WrNode.elements>1) 
+			addrW = allBNodes.GetAdjSCAIEVNode(WrNode, AdjacentNode.addr).size;
 				
 		int secondstage = firststage+1;
 		int thirdstage = firststage+2;
