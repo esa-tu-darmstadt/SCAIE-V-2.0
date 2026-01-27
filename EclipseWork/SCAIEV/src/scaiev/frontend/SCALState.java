@@ -120,10 +120,11 @@ private HashSet<String> textInterface = new  HashSet<String>();
 	
 	public String InstAllRegs() {
 		String moduleText = "";
-		
+		String interfText = "";
+		HashMap<Integer, String> stage_stalltext = new HashMap<Integer, String>();
 		// Any user nodes? 
 		boolean userNodePresent = false;
-		
+		boolean first = true; 
 		for(SCAIEVNode node: op_stage_instr.keySet()) {
 
 			// We found a user node 
@@ -139,8 +140,17 @@ private HashSet<String> textInterface = new  HashSet<String>();
 						lastRdStage = stage;
 				}
 				
-				// Module logic 
-				moduleText = ModuleLogic (node, earliest, writebackStage, lastRdStage);
+				// Module logic
+				String[] moduleinterflogic =  ModuleLogic (node, earliest, writebackStage, lastRdStage,first);
+				moduleText += moduleinterflogic[1];
+				interfText += moduleinterflogic[0];
+				for(int stage = earliest; stage <=lastRdStage; stage++) {
+					String current = ""; 
+					if(stage_stalltext.containsKey(stage)) current = stage_stalltext.get(stage)+ " || "; 
+					current += BNode.RdStall.name+node+"_"+stage+"_o";
+					stage_stalltext.put(stage, current);
+				}
+				first = false;
 				
 				// Interfaces needed in SCAL 
 				// input ["+regW+":0] "+WrNode+"_"+stage+"_i=0
@@ -166,7 +176,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				
 				// DH between read and write
 				if(op_stage_instr.containsKey(WrNode)) { // could also contain just spawn
-					for(int stage = earliest; stage < writebackStage; stage ++) 
+					for(int stage = earliest; stage <= lastRdStage; stage ++) 
 						if(stage<this.core.GetSpawnStage()) 
 							AddToInterface(allBNodes.RdStall,stage);// stall to create read reg 
 					
@@ -199,19 +209,28 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				
 			}
 		}
-				
+			
+		//Create the stalling signal from all internal regs DH 
+		for(int stage: stage_stalltext.keySet()) 
+			moduleText += "assign "+ myLanguage.CreateNodeName(BNode.RdStall, stage, "") + " = "+stage_stalltext.get(stage)+";\n";
+		
+			
 		
 		// Any user nodes so that we return entire module?
 		if(userNodePresent)
-			return moduleText;
+			return "module "+myModuleName +"(\n"
+					+interfText
+					+"input "+myLanguage.clk+",\n"
+					+"input "+myLanguage.reset+");\n"
+					+ moduleText
+					+ "\n"
+					+ "endmodule\n"; 
 		else 
 			return "";
 	}
 	
 	
-	
-	
-	private String ModuleLogic (SCAIEVNode RdNode, int firststage, int writebackstage, int lastread) {
+	private String[] ModuleLogic (SCAIEVNode RdNode, int firststage, int writebackstage, int lastread, boolean commonsigs) {
 		SCAIEVNode WrNode = allBNodes.GetSCAIEVNode(allBNodes.GetNameWrNode(RdNode));
 		String RdNode_validReq = allBNodes.GetAdjSCAIEVNode(RdNode, AdjacentNode.validReq).name;
 		String WrNode_validReq = allBNodes.GetAdjSCAIEVNode(WrNode, AdjacentNode.validReq).name;
@@ -219,7 +238,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 		SCAIEVNode WrNode_spawn_node = allBNodes.GetMySpawnNode(WrNode);
 		String WrNode_spawn = WrNode_spawn_node.name;
 		
-		String WrNode_spawn_addr = "noaddrsig";
+		String WrNode_spawn_addr = "noaddrsig"+WrNode;
 		if(WrNode.elements>1) 
 			WrNode_spawn_addr = allBNodes.GetAdjSCAIEVNode(WrNode_spawn_node, AdjacentNode.addr).name;
 		String WrNode_spawn_validReq = allBNodes.GetAdjSCAIEVNode(WrNode_spawn_node, AdjacentNode.validReq).name;
@@ -237,29 +256,28 @@ private HashSet<String> textInterface = new  HashSet<String>();
 		int thirdstage = firststage+2;
 		int spawn = this.core.GetSpawnStage();
 		
-		String WRSECOND = "";
+		String WRSECOND = "WRSECOND"+RdNode;
+		String WRTHIRD = "WRTHIRD"+RdNode;
+		String RDSECOND = "RDSECOND"+RdNode;
+		String RDTHIRD = "RDTHIRD"+RdNode;
+		String MULTIPLEREGS="MULTIPLEREGS"+RdNode;
+
+		String WRSECONDDEF = "";
 		if(writebackstage>firststage)
-			WRSECOND = "`define WRSECOND";
-		String WRTHIRD = "";
+			WRSECONDDEF = "`define "+WRSECOND;
+		String WRTHIRDDEF = "";
 		if(writebackstage>secondstage)
-			WRTHIRD = "`define WRTHIRD";
-		String RDSECOND ="";
+			WRTHIRDDEF = "`define "+WRTHIRD;
+		String RDSECONDDEF ="";
 		if(lastread>firststage)	
-			RDSECOND = "`define RDSECOND";
-		String RDTHIRD="";
+			RDSECONDDEF ="`define "+RDSECOND;
+		String RDTHIRDDEF="";
 		if(lastread>secondstage)	
-			RDTHIRD = "`define RDTHIRD";
-		String MULTIPLEREGS = "";
+			RDTHIRDDEF ="`define "+RDTHIRD;
+		String MULTIPLEREGSDEF = "";
 		if(WrNode.elements>1)
-			MULTIPLEREGS="`define MULTIPLEREGS";
-		String module  = ""
-				+ WRSECOND+"\n"
-				+ WRTHIRD+"\n"
-				+ RDSECOND+"\n"
-				+ RDTHIRD+"\n"
-				+ MULTIPLEREGS+"\n"
-				+ "module InternalRegs(input clk_i,input rst_i,\n"
-				+ "    input  "+RdNode_validReq+"_"+firststage+"_i,\n"
+			MULTIPLEREGSDEF="`define "+MULTIPLEREGS;
+		String interf = "    input  "+RdNode_validReq+"_"+firststage+"_i,\n"
 				+ "	   input ["+regW+"-1:0] "+WrNode+"_"+firststage+"_i=0,\n"
 				+ "	   input  "+WrNode_validReq+"_"+firststage+"_i=0,\n"
 				+ "	   input "+WrNode_validData+"_"+firststage+"_i=0,\n"
@@ -279,8 +297,9 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "	   input ["+addrW+" -1 : 0] "+WrNode_spawn_addr+"_"+spawn+"_i,\n"
 				+ "	   input ["+regW+" -1 : 0] "+WrNode_spawn+"_"+spawn+"_i,\n"
 				+ "	   input  "+WrNode_spawn_validReq+"_"+spawn+"_i=0,\n"
-				+ "	\n"
-				+ "	   input [32 -1 : 0] "+RdInstr+"_"+thirdstage+"_i, \n"
+				+ "	\n";
+	if(commonsigs)
+		interf += "	   input [32 -1 : 0] "+RdInstr+"_"+thirdstage+"_i, \n"
 				+ "    input [32 -1 : 0] "+RdInstr+"_"+secondstage+"_i, \n"
 				+ "	   input [32 -1 : 0] "+RdInstr+"_"+firststage+"_i,	\n"
 				+ "	\n"
@@ -289,10 +308,15 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "    input  "+WrStall+"_"+secondstage+"_i,\n"
 				+ "    input  "+WrStall+"_"+thirdstage+"_i, \n"
 				+ "	\n"
-				+ "    output reg "+RdStall+"_"+firststage+"_o,\n"
-				+ "    output reg "+RdStall+"_"+secondstage+"_o,\n"
-				+ "    output reg "+RdStall+"_"+thirdstage+"_o);\n"
-				+ "	\n"
+				+ "    output  "+RdStall+"_"+firststage+"_o,\n"
+				+ "    output  "+RdStall+"_"+secondstage+"_o,\n"
+				+ "    output  "+RdStall+"_"+thirdstage+"_o,\n";
+		String module  = ""
+				+ WRSECONDDEF+"\n"
+				+ WRTHIRDDEF+"\n"
+				+ RDSECONDDEF+"\n"
+				+ RDTHIRDDEF+"\n"
+				+ MULTIPLEREGSDEF+"\n"
 				+ "// DRC \n"
 				+ "always @(*) begin \n"
 				+ "if ("+RdNode_validReq+"_"+firststage+"_i === 1'bz) begin\n"
@@ -305,7 +329,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "  $display(\"Signal Wr Intenal Reg valid request not connected\");\n"
 				+ "end\n"
 				+ "\n"
-				+ "`ifdef WRSECOND\n"
+				+ "`ifdef "+WRSECOND+"\n"
 				+ "	if ("+WrNode_validReq+"_"+secondstage+"_i === 1'bz) begin\n"
 				+ "	  $display(\"Signal Wr Intenal Reg valid request not connected\");\n"
 				+ "	end\n"
@@ -314,7 +338,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "	end\n"
 				+ "`endif\n"
 				+ "\n"
-				+ "`ifdef WRTHIRD\n"
+				+ "`ifdef "+WRTHIRD+"\n"
 				+ "	if ("+WrNode_validReq+"_"+thirdstage+"_i === 1'bz) begin\n"
 				+ "	  $display(\"Signal Wr Intenal Reg valid request in stage "+thirdstage+" not connected\");\n"
 				+ "	end\n"
@@ -327,10 +351,10 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "`endif\n"
 				+ "end\n"
 				+ "\n"
-				+ "`ifdef RDSECOND\n"
-				+ "	parameter RDSEC = 1; \n"
+				+ "`ifdef "+RDSECOND+"\n"
+				+ "	parameter RDSEC"+RdNode+" = 1; \n"
 				+ "`else \n"
-				+ "	parameter RDSEC = 0; \n"
+				+ "	parameter RDSEC"+RdNode+" = 0; \n"
 				+ "`endif\n"
 				+ "\n"
 				+ "\n"
@@ -344,7 +368,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "assign  "+WrNode_validData+"_"+firststage+"_s =  "+WrNode_validData+"_"+firststage+"_i;\n"
 				+ "assign "+WrNode_validData+"_"+secondstage+"_s = "+WrNode_validData+"_"+secondstage+"_reg || "+WrNode_validData+"_"+secondstage+"_i;\n"
 				+ "assign "+WrNode_validData+"_"+thirdstage+"_s = "+WrNode_validData+"_"+thirdstage+"_reg || "+WrNode_validData+"_"+thirdstage+"_i;\n"
-				+ "`ifdef WRSECOND\n"
+				+ "`ifdef "+WRSECOND+"\n"
 				+ "	always @(posedge clk_i) begin \n"
 				+ "		if(rst_i)\n"
 				+ "			"+WrNode_validData+"_"+secondstage+"_reg <= 1'b0;\n"
@@ -356,7 +380,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "		"+WrNode_validData+"_"+secondstage+"_reg = 0;\n"
 				+ "`endif\n"
 				+ "\n"
-				+ "`ifdef WRTHIRD\n"
+				+ "`ifdef "+WRTHIRD+"\n"
 				+ "	always @(posedge clk_i) begin \n"
 				+ "		if(rst_i)\n"
 				+ "			"+WrNode_validData+"_"+thirdstage+"_reg <= 1'b0;\n"
@@ -368,10 +392,10 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "		"+WrNode_validData+"_"+thirdstage+"_reg = 0;\n"
 				+ "`endif\n"
 				+ "\n"				
-				+ "// Regfile \n"
-				+ "reg ["+regW+"-1: 0] "+WrNode+"_"+(writebackstage+1)+"_reg [(1<<"+addrW+") -1:0];\n"
+				+ "// Regfile \n"				
 				+ "wire ["+regW+"-1: 0]"+  WrNode+"_"+writebackstage+"_s;\n"
-				+ "`ifdef MULTIPLEREGS\n"
+				+ "`ifdef "+MULTIPLEREGS+"\n"
+				+ "reg ["+regW+"-1: 0] "+WrNode+"_"+(writebackstage+1)+"_reg [(1<<"+addrW+") -1:0];\n"
 				+ "always@(posedge clk_i) begin\n"
 				+ "    if (rst_i) begin \n"
 				+ "        for (int i = 0 ; i< (1 << "+addrW+") ; i= i+1 )\n"
@@ -380,6 +404,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "        "+WrNode+"_"+(writebackstage+1)+"_reg["+WrNode_spawn_validReq+"_"+spawn+"_i ? "+WrNode_spawn_addr+"_"+spawn+"_i : "+RdInstr+"_"+writebackstage+"_i[8+"+addrW+"-1:8]] <= "+WrNode_spawn_validReq+"_"+spawn+"_i ? "+WrNode_spawn+"_"+spawn+"_i : "+WrNode+"_"+writebackstage+"_s;\n"
 				+ "end;\n"
 				+ "`else\n"
+				+ "reg ["+regW+"-1: 0] "+WrNode+"_"+(writebackstage+1)+"_reg;\n"
 				+ "always@(posedge clk_i) begin\n"
 				+ "    if (rst_i) begin \n"
 				+ "        "+WrNode+"_"+(writebackstage+1)+"_reg <= '0;\n"
@@ -393,7 +418,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "always @(*)\n"
 				+ "	 "+WrNode+"_"+firststage+"_reg = 0;\n"
 				+ "	 \n"
-				+ "`ifdef WRSECOND\n"
+				+ "`ifdef "+WRSECOND+"\n"
 				+ "	reg ["+regW+"-1: 0]  "+WrNode+"_"+secondstage+"_reg;\n"
 				+ "	always @(posedge clk_i) begin \n"
 				+ "		if(rst_i)\n"
@@ -403,7 +428,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "	end\n"
 				+ "`endif	\n"
 				+ "	\n"
-				+ "`ifdef WRTHIRD\n"
+				+ "`ifdef "+WRTHIRD+"\n"
 				+ "	reg ["+regW+"-1: 0]  "+WrNode+"_"+thirdstage+"_reg;\n"
 				+ "	always @(posedge clk_i) begin \n"
 				+ "		if(rst_i)\n"
@@ -417,97 +442,104 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "assign "+WrNode+"_"+writebackstage+"_s = "+WrNode_validData+"_"+writebackstage+"_reg ?  "+WrNode+"_"+writebackstage+"_reg : "+WrNode+"_"+writebackstage+"_i;\n"
 				+ " \n"			
 				+ " // Datahazard?\n"
-				+ "wire DH_in_second,DH_in_third,DH_fr_second_to_third;\n"
+				+ "wire DH_in_second"+RdNode+",DH_in_third"+RdNode+",DH_fr_second_to_third"+RdNode+";\n"
 				+ "generate \n"
-				+ "	if("+writebackstage+" > 0)\n"
-				+ "		assign DH_in_second = ("+RdInstr+"_"+firststage+"_i[15+"+addrW+"-1:15] == "+RdInstr+"_"+secondstage+"_i[15+"+addrW+"-1:15]) && "+RdNode_validReq+"_"+firststage+"_i && "+WrNode_validReq+"_"+secondstage+"_i;\n"
+				+ "	if("+(writebackstage-firststage)+" > 0)\n"
+				+ "		assign DH_in_second"+RdNode+" = ("+RdInstr+"_"+firststage+"_i[15+"+addrW+"-1:15] == "+RdInstr+"_"+secondstage+"_i[15+"+addrW+"-1:15]) && "+RdNode_validReq+"_"+firststage+"_i && "+WrNode_validReq+"_"+secondstage+"_i;\n"
 				+ "	else \n"
-				+ "		assign DH_in_second = 0;\n"
+				+ "		assign DH_in_second"+RdNode+" = 0;\n"
 				+ "	\n"
-				+ "	if("+writebackstage+" > 1)\n"
-				+ "		assign DH_in_third = ("+RdInstr+"_"+firststage+"_i[15+"+addrW+"-1:15] == "+RdInstr+"_"+thirdstage+"_i[15+"+addrW+"-1:15]) && "+RdNode_validReq+"_"+firststage+"_i && "+WrNode_validReq+"_"+thirdstage+"_i;\n"
+				+ "	if("+(writebackstage-firststage)+" > 1)\n"
+				+ "		assign DH_in_third"+RdNode+" = ("+RdInstr+"_"+firststage+"_i[15+"+addrW+"-1:15] == "+RdInstr+"_"+thirdstage+"_i[15+"+addrW+"-1:15]) && "+RdNode_validReq+"_"+firststage+"_i && "+WrNode_validReq+"_"+thirdstage+"_i;\n"
 				+ "	else \n"
-				+ "		assign DH_in_third = 0;\n"
+				+ "		assign DH_in_third"+RdNode+" = 0;\n"
 				+ "	\n"
-				+ "	if("+writebackstage+" > 1 && RDSEC >0)\n"
-				+ "		assign DH_fr_second_to_third = ("+RdInstr+"_"+secondstage+"_i[15+"+addrW+"-1:15] == "+RdInstr+"_"+thirdstage+"_i[15+"+addrW+"-1:15]) && "+RdNode_validReq+"_"+secondstage+"_i && "+WrNode_validReq+"_"+thirdstage+"_i;\n"
+				+ "	if("+(writebackstage-firststage)+" > 1 && RDSEC"+RdNode+" >0)\n"
+				+ "		assign DH_fr_second_to_third"+RdNode+" = ("+RdInstr+"_"+secondstage+"_i[15+"+addrW+"-1:15] == "+RdInstr+"_"+thirdstage+"_i[15+"+addrW+"-1:15]) && "+RdNode_validReq+"_"+secondstage+"_i && "+WrNode_validReq+"_"+thirdstage+"_i;\n"
 				+ "	else \n"
-				+ "		assign DH_fr_second_to_third = 0;	\n"
+				+ "		assign DH_fr_second_to_third"+RdNode+" = 0;	\n"
 				+ "endgenerate\n"
 				+ "\n"
 				+ "\n"
-				+ "wire ["+regW+"-1:0] data_from_reg;\n"
-				+ "`ifdef MULTIPLEREGS\n"
-				+ "	assign data_from_reg = "+WrNode+"_"+(writebackstage+1)+"_reg["+RdInstr+"_"+firststage+"_i[15+"+addrW+"-1:15]];\n"
+				+ "wire ["+regW+"-1:0] data_from_reg"+RdNode+";\n"
+				+ "`ifdef "+MULTIPLEREGS+"\n"
+				+ "	assign data_from_reg"+RdNode+" = "+WrNode+"_"+(writebackstage+1)+"_reg["+RdInstr+"_"+firststage+"_i[15+"+addrW+"-1:15]];\n"
 				+ "`else\n"
-				+ "	assign data_from_reg = "+WrNode+"_"+(writebackstage+1)+"_reg;\n"
+				+ "	assign data_from_reg"+RdNode+" = "+WrNode+"_"+(writebackstage+1)+"_reg;\n"
 				+ "`endif\n"
 				+ "\n"
 				+ "\n"
 				+ " // First stage read\n"
+				+ "reg "+RdStall+RdNode+"_"+firststage+"_o;\n"
 				+ "always@(*) begin\n"
-				+ "	"+RdNode+"_"+firststage+"_o = data_from_reg;\n"
-				+ "	"+RdStall+"_"+firststage+"_o = 0;\n"
-				+ "	`ifdef WRSECOND\n"
-				+ "		if(DH_in_second) begin \n"
+				+ "	"+RdNode+"_"+firststage+"_o = data_from_reg"+RdNode+";\n"
+				+ "	"+RdStall+RdNode+"_"+firststage+"_o = 0;\n"
+				+ "	`ifdef "+WRSECOND+"\n"
+				+ "		if(DH_in_second"+RdNode+") begin \n"
 				+ "			if("+WrNode_validData+"_"+secondstage+"_i && !"+WrNode_validData+"_"+secondstage+"_reg)\n"
 				+ "				"+RdNode+"_"+firststage+"_o = "+WrNode+"_"+secondstage+"_i;\n"
 				+ "			else if("+WrNode_validData+"_"+secondstage+"_reg) \n"
 				+ "				"+RdNode+"_"+firststage+"_o = "+WrNode+"_"+secondstage+"_reg;\n"
 				+ "			else \n"
-				+ "				"+RdStall+"_"+firststage+"_o = 1;\n"
+				+ "				"+RdStall+RdNode+"_"+firststage+"_o = 1;\n"
 				+ "		end\n"
 				+ "	`endif	\n"
-				+ "	`ifdef WRTHIRD\n"
-				+ "		if(DH_in_third) begin \n"
+				+ "	`ifdef "+WRTHIRD+"\n"
+				+ "		if(DH_in_third"+RdNode+") begin \n"
 				+ "			if("+WrNode_validData+"_"+thirdstage+"_i && !"+WrNode_validData+"_"+thirdstage+"_reg)\n"
 				+ "				"+RdNode+"_"+firststage+"_o = "+WrNode+"_"+thirdstage+"_i;\n"
 				+ "			else if("+WrNode_validData+"_"+thirdstage+"_reg) \n"
 				+ "				"+RdNode+"_"+firststage+"_o = "+WrNode+"_"+thirdstage+"_reg;\n"
 				+ "			else \n"
-				+ "				"+RdStall+"_"+firststage+"_o = 1;\n"
+				+ "				"+RdStall+RdNode+"_"+firststage+"_o = 1;\n"
 				+ "		end\n"
 				+ "	`endif			\n"
 				+ "end\n"
 				+ "\n"
 				+ "\n"
-				+ "`ifdef RDSECOND\n"
+				+ "reg "+RdStall+RdNode+"_"+secondstage+"_o;\n"
+				+ "`ifdef "+RDSECOND+"\n"
 				+ "// Second stage read\n"
+				+ "reg [31:0] data_from_reg"+RdNode+"_"+secondstage+"_reg;\n"
 				+ "always@(*) begin\n"
-				+ "	"+RdNode+"_"+secondstage+"_o = data_from_reg_"+secondstage+"_reg;\n"
-				+ "	"+RdStall+"_"+secondstage+"_o = 0;\n"
-				+ "	`ifdef WRTHIRD\n"
-				+ "		if(DH_in_third) begin \n"
+				+ "	"+RdNode+"_"+secondstage+"_o = data_from_reg"+RdNode+"_"+secondstage+"_reg;\n"
+				+ "	"+RdStall+RdNode+"_"+secondstage+"_o = 0;\n"
+				+ "	`ifdef "+WRTHIRD+"\n"
+				+ "		if(DH_fr_second_to_third"+RdNode+") begin \n"
 				+ "			if("+WrNode_validData+"_"+thirdstage+"_i && !"+WrNode_validData+"_"+thirdstage+"_reg)\n"
 				+ "				"+RdNode+"_"+secondstage+"_o = "+WrNode+"_"+thirdstage+"_i;\n"
 				+ "			else if("+WrNode_validData+"_"+thirdstage+"_reg) \n"
 				+ "				"+RdNode+"_"+secondstage+"_o = "+WrNode+"_"+thirdstage+"_reg;\n"
 				+ "			else \n"
-				+ "				"+RdStall+"_"+secondstage+"_o = 1;\n"
+				+ "				"+RdStall+RdNode+"_"+secondstage+"_o = 1;\n"
 				+ "		end\n"
 				+ "	always @(posedge clk_i) begin \n"
 				+ "		if(rst_i)\n"
-				+ "			data_from_reg_"+secondstage+"_reg <= '0;\n"
+				+ "			data_from_reg"+RdNode+"_"+secondstage+"_reg <= '0;\n"
 				+ "		else if(!"+WrStall+"_"+firststage+"_i)\n"
-				+ "			data_from_reg_"+secondstage+"_reg <= data_from_reg;\n"
+				+ "			data_from_reg"+RdNode+"_"+secondstage+"_reg <= data_from_reg"+RdNode+";\n"
 				+ "	end\n"
 				+ "	`endif			\n"
 				+ "end\n"
-				+ "	`endif			\n"
-				+ "`ifdef RDTHIRD\n"
-				+ "// Third stage read\n"
+				+ "`else \n"
 				+ "always@(*)\n"
-				+ "	"+RdNode+"_"+thirdstage+"_o = data_from_reg_"+thirdstage+"_reg;\n"
+				+ "	"+RdStall+RdNode+"_"+secondstage+"_o = 0;\n"
+				+ "	`endif			\n"
+				+ "`ifdef "+RDTHIRD+"\n"
+				+ "// Third stage read ("+RDSECOND+" should be defined)\n"
+				+ "reg [31:0] data_from_reg"+RdNode+"_"+thirdstage+"_reg;\n"
+				+ "always@(*)\n"
+				+ "	"+RdNode+"_"+thirdstage+"_o = data_from_reg"+RdNode+"_"+thirdstage+"_reg;\n"
 				+ "	always @(posedge clk_i) begin \n"
 				+ "		if(rst_i)\n"
-				+ "			data_from_reg_"+thirdstage+"_reg <= '0;\n"
+				+ "			data_from_reg"+RdNode+"_"+thirdstage+"_reg <= '0;\n"
 				+ "		else if(!"+WrStall+"_"+secondstage+"_i)\n"
-				+ "			data_from_reg_"+thirdstage+"_reg <= data_from_reg;\n"
+				+ "			data_from_reg"+RdNode+"_"+thirdstage+"_reg <= data_from_reg"+RdNode+"_"+secondstage+"_reg;\n"
 				+ "	end\n"
 				+ "`endif			\n"
-				+ "\n"
-				+ "endmodule"	;
-		return module;
+				+ "\n";
+		String[] arr = { interf, module };
+		return arr;
 		
 	}
 }
