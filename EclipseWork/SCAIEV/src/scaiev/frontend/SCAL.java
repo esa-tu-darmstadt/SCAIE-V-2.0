@@ -848,9 +848,11 @@ public class SCAL implements SCALBackendAPI {
 	    			if(donStallISAX.containsKey(startSpawnStage))
 	    				dontStallPrevNodes = donStallISAX.get(startSpawnStage);
 	    			donStallISAX.put(startSpawnStage, dontStallPrevNodes + " && !stall_multicycle_"+node+"_"+ISAX+"_s");
-	    			// Send Result
-	    			declarations += myLanguage.CreateDeclSig(nonSpawnNode, (startSpawnStage), ISAX, false, myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage), ISAX));
-	    			logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage), ISAX), myLanguage.CreateNodeName(node, this.core.GetSpawnStage(), ISAX));
+	    			// Send Result ( for rd nodes such as rdmem_spawn this is done automatically via the default assign logic when creating the interf)
+	    			if(node.isInput) {
+		    			declarations += myLanguage.CreateDeclSig(nonSpawnNode, (startSpawnStage), ISAX, false, myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage), ISAX));
+		    			logic += myLanguage.CreateAssign(myLanguage.CreateNodeName(nonSpawnNode, (startSpawnStage), ISAX), myLanguage.CreateNodeName(node, this.core.GetSpawnStage(), ISAX));
+	    			}
 	    			if(this.ISAXes.get(ISAX).GetNodes(nonSpawnNode).get(0).HasAdjSig(AdjacentNode.validReq)) {
 	    				SCAIEVNode validNonSpawnReq =BNode.GetAdjSCAIEVNode(nonSpawnNode, AdjacentNode.validReq);
 	    				declarations += myLanguage.CreateDeclSig(validNonSpawnReq, (startSpawnStage), ISAX, false, myLanguage.CreateNodeName(validNonSpawnReq, (startSpawnStage), ISAX));
@@ -1180,7 +1182,7 @@ public class SCAL implements SCALBackendAPI {
 				int addStage = stage;
 				SCAIEVNode addOperation = operation; 
 				SCAIEVNode spawnOperation = this.BNode.GetMySpawnNode(operation);
-				if(this.spawn_instr_stage.containsKey(spawnOperation) &&  this.spawn_instr_stage.get(spawnOperation).containsKey(instruction) && !this.ISAXes.get(instruction).GetRunsAsDecoupled() && operation.isInput) { // only spawn for write nodes
+				if(this.spawn_instr_stage.containsKey(spawnOperation) &&  this.spawn_instr_stage.get(spawnOperation).containsKey(instruction) && !this.ISAXes.get(instruction).GetRunsAsDecoupled() ) { //was, but buggy for rdmem spawn: && operation.isInput) { // only spawn for write nodes
 					addOperation = spawnOperation;
 					addStage = this.core.GetSpawnStage();
 				}
@@ -1193,7 +1195,7 @@ public class SCAL implements SCALBackendAPI {
 					if(!operation.isInput &&  operation.oneInterfToISAX && !operation.isSpawn() && !operation.equals(BNode.RdStall) ) {// TODO split wrstall and rdstall in core and put it in SCAL
 						if(this.addRdNodeReg.containsKey(operation) && addRdNodeReg.get(operation).contains(stage))
 							assigns += this.myLanguage.CreateAssign(scalPinName,this.myLanguage.CreateRegNodeName(operation, stage, instrName));
-						else
+						else 
 							assigns += this.myLanguage.CreateAssign(scalPinName,this.myLanguage.CreateNodeName(operation.NodeNegInput(), stage, instrName));
 					}
 				}
