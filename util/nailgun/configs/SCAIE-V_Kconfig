@@ -1,0 +1,21 @@
+menu "SCAIE-V configuration"
+    depends on !NO_ISAX_ENTRY_POINT
+    config SCV_INTERNAL_CONTEXTS_AMOUNT
+        int "Internally implemented contexts (register banks)"
+        default 1
+    config SCV_DISABLE_DECOUPLED_HAZARD_HANDLING
+        bool "Disable hazard handling for decoupled instructions"
+        default n
+    config SCV_DISABLE_DECOUPLED_INPUT_FIFO
+        bool "Disable instruction FIFO for decoupled and risk loss of instructions"
+        default n
+    config SCV_DISABLE_DECOUPLED_ISAXKILL
+        bool "Disable disaxkill instruction"
+        default n
+    config SCV_DISABLE_DECOUPLED_ISAXFENCE
+        bool "Disable disaxfence instruction"
+        default n
+    config SCV_RT_LIFE_SUPPORT
+        bool "Generate RT-Life / DExIE interface"
+        default n
+endmenu

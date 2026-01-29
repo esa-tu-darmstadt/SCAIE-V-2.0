@@ -1,0 +1,23 @@
+config LL_ENABLE
+	bool "Run LibreLane"
+	default n
+
+menu "LibreLane configuration"
+	depends on LL_ENABLE
+	config LL_DSE
+		bool "Run DSE"
+		default n
+	config LL_CONFIG_TEMPLATE
+		string "config template"
+		default "plugins/librelane/config_templates/minimal_config.json"
+	config LL_TARGET_FREQ
+		int "MHz = target frequency"
+		default 20
+	config LL_TARGET_UTIL
+		int "%   = target utilization"
+		default 20
+	config LL_ONLY_SYN_ISAX
+		depends on !NO_ISAX_ENTRY_POINT
+		bool "Only synthesize the ISAX"
+		default n
+endmenu

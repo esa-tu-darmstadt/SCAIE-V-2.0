@@ -1,0 +1,11 @@
+__pycache__
+.config*
+build
+outputs
+test_results
+*.elf
+*.axf
+*.bin
+*.png
+*.mlir
+*.csv

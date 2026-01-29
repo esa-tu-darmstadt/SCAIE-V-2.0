@@ -1,0 +1,9 @@
+mainmenu "NailGun ISAX integration config"
+
+source "build/cores_Kconfig"
+source "build/ISAX/Kconfig"
+source "configs/LN_Kconfig"
+source "configs/SCAIE-V_Kconfig"
+source "configs/sim_Kconfig"
+source "plugins/*/config/Kconfig"
+source "configs/advanced_Kconfig"

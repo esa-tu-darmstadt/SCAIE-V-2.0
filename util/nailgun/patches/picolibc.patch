@@ -1,0 +1,40 @@
+diff --git a/meson.build b/meson.build
+index a8f025e..18f5847 100644
+--- a/meson.build
++++ b/meson.build
+@@ -138,7 +138,7 @@ enable_picocrt = get_option('picocrt')
+ enable_picocrt_lib = get_option('picocrt-lib')
+ picocrt_enable_mmu = get_option('picocrt-enable-mmu')
+ test_machine = get_option('test-machine')
+-enable_semihost = get_option('semihost')
++enable_semihost = get_option('semihost') or get_option('fake-semihost')
+ enable_tests = get_option('tests')
+ if get_option('tests-cdefs') == 'auto'
+   enable_cdefs_tests = enable_tests
+diff --git a/semihost/fake/fake_io.c b/semihost/fake/fake_io.c
+index eec906d..0bf791e 100644
+--- a/semihost/fake/fake_io.c
++++ b/semihost/fake/fake_io.c
+@@ -40,8 +40,8 @@
+ static int
+ fake_putc(char c, FILE *file)
+ {
++	*((volatile char*)NAILGUN_UART_BASE) = c;
+ 	(void) file;
+-        (void) c;
+ 	return c;
+ }
+ 
+diff --git a/semihost/meson.build b/semihost/meson.build
+index b74db2c..740d345 100644
+--- a/semihost/meson.build
++++ b/semihost/meson.build
+@@ -38,7 +38,7 @@ has_arm_semihost = false
+ src_semihost = []
+ 
+ machine_dir = 'machine' / host_cpu_family
+-if fs.is_dir(machine_dir)
++if has_semihost and fs.is_dir(machine_dir)
+   subdir(machine_dir)
+ endif
+ 

@@ -1,0 +1,12 @@
+bsc-source.sh
+ghdl-yosys-source.sh
+verilator-source.sh
+bsc-prefix
+bsc-sources
+ghdl-prefix
+ghdl-sources
+ghdl-yosys-plugin-sources
+riscv-gnu
+riscv-prefix
+sim-prefix
+verilator

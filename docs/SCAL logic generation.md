@@ -30,5 +30,3 @@ The revised implementation has two main goals:
 
   While the predefined Purpose objects represent semantic concepts, there are no hard rules on their use. However, it is strongly recommended to adhere to these concepts so strategies can easily interoperate without errors.
 
-## Examples
-TODO

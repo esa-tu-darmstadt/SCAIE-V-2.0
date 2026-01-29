@@ -1,0 +1,99 @@
+menu "Longnail HLS configuration"
+    depends on !SV_ENTRY_POINT && !NO_ISAX_ENTRY_POINT
+	config LN_CELL_LIBRARY
+		string "Longnail cell library"
+	choice
+		prompt "Longnail operator type model"
+		default LN_OPTY_NO_MODEL
+
+		config LN_OPTY_NO_MODEL
+			bool "No operator type model"
+
+		config LN_OPTY_OL2_MODEL
+			bool "OpenLANE 2 SKY130 operator type model"
+
+		config LN_OPTY_CUSTOM_MODEL
+			bool "Custom operator type model"
+
+		config LN_OPTY_CUSTOM_MODEL_PATH
+			depends on LN_OPTY_CUSTOM_MODEL
+			string "Custom operator type model path"
+	endchoice
+	config LN_CLOCK_PERIOD
+		string "Longnail target clock period"
+		default "20.0"
+	config LN_MAX_LOOP_UNROLL_FACTOR
+		int "Longnail max loop unroll factor"
+		default 16
+	config LN_SCHEDULE_TIMEOUT
+		int "Longnail scheduling timeout in seconds"
+		default 10
+	config LN_REFINE_TIMEOUT
+		int "Longnail schedule refinement timeout in seconds"
+		default 10
+
+	choice
+		prompt "ILP Solver"
+		default LN_SOLVER_USE_CBC
+
+		config LN_SOLVER_USE_CBC
+			bool "Use CBC"
+		config LN_SOLVER_USE_GLPK
+			bool "Use GLPK"
+		config LN_SOLVER_USE_SCIP
+			bool "Use SCIP"
+		config LN_SOLVER_USE_HIGHS
+			bool "Use HiGHS"
+		config LN_SOLVER_USE_GUROBI
+			bool "Use Gurobi (license required)"
+		# config LN_SOLVER_USE_CPLEX
+		# 	bool "Use CPLEX (license required)"
+		config LN_SOLVER_USE_XPRESS
+			bool "Use XPRESS (license required)"
+		config LN_SOLVER_USE_COPT
+			bool "Use COPT (license required)"
+	endchoice
+	config LN_FORCE_MIN_II_SOLUTIONS
+		bool "Longnail always use min II solution"
+		default n
+	config LN_PREDEFINED_SOLUTION_SELECTION
+		depends on !LN_FORCE_MIN_II_SOLUTIONS
+		string "Longnail apply predefined solution selection"
+	menu "Scheduling Algorithm"
+		config LN_SCHED_ALGO_MS
+			bool "Modulo Scheduling"
+			default n
+		config LN_SCHED_ALGO_PA
+			depends on LN_SCHED_ALGO_MS
+			bool "Predicate-aware"
+			default n
+		config LN_SCHED_ALGO_RA
+			depends on LN_SCHED_ALGO_MS
+			bool "Resource-aware"
+			default n
+		config LN_SCHED_ALGO_MI
+			depends on LN_SCHED_ALGO_MS
+			bool "Inter-Instruction sharing"
+			default n
+	endmenu
+	config LN_PREDEFINED_SG_SELECTION
+		depends on LN_SCHED_ALGO_MI
+		string "Longnail apply predefined sharing group selection"
+	menu "Debugging"
+		config LN_ALWAYS_SHOW_OUTPUT
+			bool "Always show the full output of Longnail invocations"
+			default n
+		config LN_DEBUG_SCHEDULING
+			bool "Enable scheduling debug messages"
+			default n
+		config LN_VERBOSE_SCHEDULING
+			bool "Enable verbose ILP solver messages"
+			default n
+		config LN_DEBUG_HWGEN
+			bool "Enable hw-gen debug messages"
+			default n
+		config LN_DEBUG_PRINT_STATS
+			bool "Enable print-stats debug messages"
+			default n
+	endmenu
+endmenu

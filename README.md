@@ -15,22 +15,22 @@ On top of the original 2.0 release, logic generation has seen a rework (SCAL 2.0
 
 ## Which cores do you support?
 We currently support
-- CVA5
-- CVA6 (see configurations in Cores directory)
+- CVA5 (SCAIE-V fork: https://github.com/esa-tu-darmstadt/cva5-sv.git)
+- CVA6 (SCAIE-V fork: https://github.com/esa-tu-darmstadt/cva6-sv.git)
 - VexRiscv (https://github.com/SpinalHDL/VexRiscv)
 - ORCA (https://github.com/cahz/orca)
 - Piccolo (https://github.com/bluespec/Piccolo)
 - PicoRV32 (https://github.com/YosysHQ/picorv32)
 
 These cores provide different configurations. While testing & evaluating our tool we used the following setup: 
-| Core        | Nr. of pipeline stages | Interface |
-|-------------|------------------------|-----------|
-| ORCA        | 5                      | AXI       |
-| VexRiscv_4s | 5                      | AHB       |
-| Piccolo     | 3                      | AXI       |
-| PicoRV32    | non-pipelined          | Native    |
-| CVA5        | 3,4+ (EU-based)        | AXI,BRAM  |
-| CVA6        | 5+ (EU-based)          | AXI       |
+| Core        | Nr. of pipeline stages                        | Interface  |
+|-------------|-----------------------------------------------|------------|
+| CVA5        | 3,4+ (EU-based)                               | AXI,BRAM   |
+| CVA6        | 5+ (EU-based), optionally dual-issue          | AXI (Cache)|
+| ORCA        | 5                                             | AXI        |
+| VexRiscv_4s | 5                                             | AHB        |
+| Piccolo     | 3                                             | AXI        |
+| PicoRV32    | non-pipelined                                 | Native     |
 
 ## What is the design structure?
 Let us consider that user wants to develop a new instruction  ISAX1, which must be integrated in the VexRiscv core. The design will have the following hierarchy: 
@@ -56,6 +56,8 @@ SCAIE-V generates the CommonLogicModule (SCAL) and updates the design files of t
 
 
 ## How can I use the SCAIE-V tool for my custom instructions?
+For a fully-contained example flow, see the [examples](examples) subdirectory.
+
 You can build the SCAIE-V software using Maven (`cd EclipseWork/SCAIEV; ./run.sh`) or Eclipse on fairly modern versions of Java (e.g., Java 17). `SCAIEVCmd` contains the application entry point.
 
 Run `git submodule update --init` to download the supported core sources. Note: SCAIE-V currently targets an older version of VexRiscv; there is a patch file in CoresSrc to fix build support on more recent Java versions.
@@ -248,62 +250,68 @@ The WrMyreg interface must provide the address in the earliest stage in which a 
 
 
 ## What do I have to consider when extending SCAIE-V for new cores? 
-Here are some examples that must be considered when adding SCAIE-V to a core: 
+See [docs/Core interface.md](docs/Core interface.md) for details on the required interfaces.
+
+Here are some examples that must be considered when adding SCAIE-V to a core:
 - Generate SCAIE-V IOs
 - Create a core datasheet for use by SCAIE-V. For complex cores (multiple execution units, multi-issue, etc.), a pipeline description has to be provided.
-- make sure no illegal instruction is generated when an ISAX is in the pipeline
-- make sure no result is commited when user valid bit is not set & ensure that core's data hazard mechanism does not take the result if valid = 0
-- make sure no illegal addr exception is generated when memory transfer uses user addr 
-- make sure WrPC in later stages does not happen while Rd/WrMem results in prev stages were commited
-- if needed, override the SCAL NodeRegPipelineStrategy for stage transitions that are not plain registers. IDBasedPipelineStrategy can be used to represent circular buffers (e.g., FIFOs).
-- no RdIValid required on core's side. This is handled by SCAL 
-- no RdInstr/RdRS/RdPC required in stages where not present (within core). This is handled by SCAL 
+- Make sure the core recognizes SCAIE-V custom instructions. This can be done by adding an interface to the core's decoder and driving it based on the RdIValid signals from SCAL.
+- Make sure that WrRD results are only applied when the WrRD_validReq signal is set and the stage is not stalling.
+- Suppress illegal address exceptions when a memory transfer uses an address from the ISAX.
+- Make sure that WrPC in later stages does not run into hazards with already-committed data, such as with LSU accesses from prior stages.
+- If needed, override the SCAL NodeRegPipelineStrategy for stage transitions that are not plain registers. IDBasedPipelineStrategy can be used to represent circular buffers (e.g., FIFOs).
+- There is no strict need to provide RdInstr/RdRS/RdPC for more than the first stage, since SCAL can feed the signals into later stages on its own.
 
 ## Which versions of the cores were used for testing? 
 - Piccolo: RV32ACIMU_Piccolo_verilator 
 - PicoRV32: core with default params and interface (no AXI..) 
 - Vex: VexRiscvAhbLite3 version from demo folder
 - ORCA: please check the Demo folder where it is instantiated
+- CVA5: RV32IM, see `core/cva5_config.sv` in [CoresSrc/CVA5](CoresSrc/CVA5)
+- CVA6: RV32IMAC_Zicsr_..., dual-issue and single-issue; additional testing for RV64. See `core/include/*_scaiev_config_pkg.sv` in [CoresSrc/CVA6](CoresSrc/CVA6).
 
-For ORCA Verilog was generated for testing & area evaluation: 
+For ORCA, Verilog was generated for testing & area evaluation:
 ```
 docker run -it -t   -v $(pwd):/src   -w /src    hdlc/ghdl:yosys   yosys -m ghdl -p 'ghdl -fsynopsys --std=08  all_orca_files_pasted.vhd -e orca; write_verilog ORCAMem.v'
 ```
 
-## How is the tool structured? Main concepts: 
-- **ISAX**: instruction set architecture extension (within tool denotes a new instr)
-- **SCAL**: module between core and ISAX
-- **node/operation**: these 2 terms are currently used within tool to denote one interfance-bundle. So for exp. WrRD is a SCAIE-V node which writes the register file. WrRD_valid is a SCAIE-V node which signals whether the result may be commited to the register file or not. 
+## How is the tool structured?
+
+To build the Javadoc, use `mvn javadoc:javadoc` to generate `target/reports/apidocs`.
+
+Main concepts:
+- **ISAX**: instruction set architecture extension. Refers to a collection of custom instructions and custom registers in a yaml file; however, within the tool, ISAX refers to a single instruction or 'always'-mode block.
+- **SCAL**: module between core and ISAX, performing arbitration and services such as hazard handling
+- **node (= operation)**: one interfance bundle or signal. E.g., WrRD is a SCAIE-V node which writes the register file. WrRD_valid is a SCAIE-V node which signals whether the result may be commited to the register file or not.
 - **AdjacentNode** - while WrRD is a main node for writing register file, signals like address and valid are considered adjacent nodes (adjacent to WrRD). WrRD is considered to be a parent of WrRD_addr and WrRd_valid
-- **FNode/BNode**: SCAIE-V is made of multiple interfaces between ISAX and core. One such interface is for writing data to RegFile. Another one is for writing the memory, and so on. Only for writing the memory, the interface is actually made of multiple signals: data, addr, valid. FNode in this case is WrMem. BNode also includes the adjacent signals (addr, valid). BNode may also include signals required between SCAL and core, that are not visible to user. 
-- **frontend/backend**: frontend is used by all cores, backend is more core-specific 
+- **FNode/BNode**: SCAIE-V is made of multiple interfaces between ISAX and core. One such interface is for writing data to the register file. Another one is for writing the memory, and so on. In some cases, such as WrMem, there are several associated nodes: data, addr, valid. FNode in this case is WrMem. BNode also includes the adjacent signals (addr, valid). BNode may also include signals required between SCAL and the core, that are not visible to the ISAX.
+- **NodeInstanceDesc**: an instance of a node, identified with further properties such as the stage (NodeInstanceDesc.Key), associated with an expression string (e.g. HDL code)
+- **MultiNodeStrategy** and **NodeLogicBuilder**: Key components in the construction of SCAL. See [docs/SCAL logic generation.md](docs/SCAL logic generation.md).
 - **op_stage_instr**: hash map containing all operations required by user, with their stage number in which they were required and the instructions for each they were required. This is used across the entire tool to generate logic. Initially set just from the ISAX schedule without adjacent nodes, then regenerated after SCAL elaboration, based on the required core-SCAL interfaces (now including adjacent nodes).
-- **instrSet/ISAXes** - while op_stage_instr has as value only a string of the instruction name, this hashmap contains all metadata for each instruction. It has as key a String with the instruction name, and as value a SCAIEVInstr object. This is also an important hash map used across the tool. It's a database which stores all requirements for each instruction. For exp, op_stage_instr does not contain info like: for instr ISAX_new, does the user require a valid signal for WrRd? 
-- **file parsing**: currently, the tool greps for certain words and can replace the line before/after the grep-ed text. It's also able to replace the line with grep. 
+- **instrSet/ISAXes**: map containing metadata for each instruction. It has as key a String with the instruction name, and as value a SCAIEVInstr object.
+- **CoreBackend**: base class for all core backends. A core implementation usually modifies the core's RTL files or, in the case of the CVA5 and CVA6 integrations, produces just configuration and an interface shim on top of a modified fork of the core.
+- **file parsing**: the tool greps for certain words and can replaces the line before/after the grep-ed text. It's also able to replace the line with grep.
 
 **Package: scaiev** 
-Class: SCAIEV - This is the "glue" of the tool. This class is instantiated within demo. User adds new instructions through "addInstr" function. After adding all instructions, the "Generate" function is called and this generates the entire SCAIE-V logic. This means, it instantiates the SCAL class to generate the middle layer and then instantiates the correct backend core to update the core's logic. 
+Class: SCAIEV - Core logic: Calls into ISAX scheduling, SCAL and the selected core backend.
 
 **Package: scaiev.frontend**
-Class SCAIEVNode - it's the "core" of a SCAIE-V node. It defines the main properties of a SCAIE-V node and this is instantiated then within FNode and BNode classes to define actual interface nodes like WrRD or WrMem. This class also defines all possible adjacent signals within AdjacentNode enum. 
-Class FNode - contains main nodes for all interfaces, without their adjacent nodes (valid request, valid response, address...). 
-Class Scheduled - defines the schedule desired by the user for a specific node. Schedule = in which cycle the user wants this node (for WrRD for exp, in which cycle the user wants to write the result to register file). This class also stores info like: for this node, which adjacent signals are required by user? Each node desired by user must have a schedule. 
-Class SCAIEVInstr -  it's a class corresponding to a single new instruction. For each new instruction, this object stores its name, its encoding and all the nodes (interfaces) which it requires. For each such node (interface), a "Schedule" object is instantiated to store in which cycle this interface is required.
-Class SCAL - generates SCAL logic (between core and ISAX).  
-Class SCALState - this generates a module for all ISAX new registers. This new module is instantiated within the SCAL Module. The interface is similar to a WrRD interface, just that the address must be given by user. 
+Class SCAIEVNode - defines the properties of a SCAIE-V node, instantiated within FNode and BNode. The AdjacentNode enum defines all possible adjacent signals.
+Class FNode - contains main nodes for all interfaces that can be used by ISAXes, without their adjacent nodes (validReq, addr, ...).
+Class Scheduled - defines the ISAX-requested stage schedule for a specific node, and the adjacent signals on the ISAX interface.
+Class SCAIEVInstr - instruction definition: name, encoding and all the nodes (interfaces) with Scheduled objects.
+Class SCAL - generates SCAL logic (between core and ISAX).
 
-**Package: scaiev.backend**: this contains BNode and all classes for each supported core 
-Clas BNode contains all adjacent nodes of FNode. It also contains nodes that represent interfaces between core and SCAL. These are not visible to user.
-Classes Piccolo/ORCA/picorv32/VexRiscv - each of this class updates the design files of the core to support the new instructions. 
+**Package: scaiev.backend**: BNode, and the CoreBackend classes for each supported core
 
-**Package: scaiev.util** - package containing classes able to generate text/update files 
-Class GenerateText - extended by all language classes. It contains basic functionality for all languages. It uses a dictionary that is then defined in each specific language class. Based on this dictionary it creates text which is required by all languages, like signal name for a node.
-Class FileWriter - this class is able to parse/update files. For example, function "UpdateContent" is useful to update a file. It has 3 parameters: name of file to be updated, the "grep" text which must be searched in order to make the update. An object of type ToWrite which contains the information about the text to be added. 
-Class ToWrite - this stores information about the new text to be added within the file. "text" is the new String to be added; "prereq" is a boolean and if it's set to true it implies that the tool is not allowed to add "text", unless "prereq_text" was already seen once during parsing; "before" is a boolean saying that "text" must be added before "grep"; "replace" is a boolean which states that "text" will replace "grep". 
+**Package: scaiev.util** - Utility classes, largely to manipulate HDL text files
+Class GenerateText - extended by all HDL language classes. It contains basic functionality for all languages, such as producing signal names.
+Class FileWriter - this class is able to parse/update files. For example, function "UpdateContent" adds lines to the file.
+Class ToWrite - describes the change to apply to a line, where to insert it (before/after) and how to search for it.
 
-**Package: scaiev.coreconstr** - this package contains metadata of cores. This metadata is stored in yaml datasheets in folder "Cores". CoreDatab class reads all these yaml files and parses this info so that each core becomes an object of "Core" class.
+**Package: scaiev.coreconstr** - this package handles metadata of cores. This metadata is read from yaml datasheets in the [Cores](Cores) directory.
 
-**Package: scaiev.scal** - this package contains the SCAL logic generator implementation. The strategy sub-packages comprises all logic-generating strategy objects for the different SCAL features.
+**Package: scaiev.scal** - this package contains the SCAL logic generator implementation. The strategy packages comprise all logic-generating strategy objects for the different SCAL features.
 
 
 ## What is the current status of the project? 

@@ -1,0 +1,93 @@
+menu "Advanced Options"
+	config SCAIEV_DO_NOT_REBUILD
+		bool "Build SCAIE-V only once"
+		default n
+	config ONLY_PATCH_CC
+		bool "ONLY run HLS and add compiler support for the ISAXes"
+		default n
+	config SIM_SKIP_AWESOME_LLVM
+		depends on SIM_ENABLE
+		bool "Skip patching and rebuilding clang / gcc"
+		default n
+	config SIM_SKIP_GDB
+		depends on !SIM_SKIP_AWESOME_LLVM
+		bool "Skip patching and rebuilding gdb"
+		default n
+	config SIM_AWESOME_LLVM_VERSION
+		depends on SIM_ENABLE || ONLY_PATCH_CC
+		string "LLVM / clang version to use"
+		default "17"
+	config SIM_AWESOME_LLVM_OVERWRITE_ISAX_NAME
+		depends on SIM_ENABLE
+		bool "Overwrite the clang ISAX extension name"
+		default n
+	config SIM_AWESOME_LLVM_ISAX_NAME
+		depends on SIM_AWESOME_LLVM_OVERWRITE_ISAX_NAME
+		string "ISAX name"
+		default "merged"
+
+	choice
+		prompt "Alternate Entrypoint"
+		default DEFAULT_ENTRY_POINT
+
+		config DEFAULT_ENTRY_POINT
+			bool "None"
+
+		config NO_ISAX_ENTRY_POINT
+			bool "No ISAX"
+
+		config MLIR_ENTRY_POINT
+			bool "Use a MLIR file as entrypoint"
+
+		config SV_ENTRY_POINT
+			bool "Use (System-)Verilog ISAX as entrypoint"
+	endchoice
+
+	menu "MLIR entrypoint settings"
+		depends on MLIR_ENTRY_POINT
+		config MLIR_ENTRY_POINT_IS_SCHEDULED
+			bool "Instructions are already scheduled?"
+			default n
+		config MLIR_ENTRY_POINT_PATH
+			string "Path to mlir file"
+	endmenu
+
+	menu "SV entrypoint settings"
+		depends on SV_ENTRY_POINT
+		config SV_ENTRY_POINT_PATH
+			string "Path to SV file"
+		config SV_ENTRY_POINT_ISAX_YAML_PATH
+			string "Path to ISAX YAML file"
+	endmenu
+
+	menu "GCC/Binutils opcode settings (assembly tests)"
+		depends on !SIM_SKIP_AWESOME_LLVM
+		config SIM_GCC_USE_PATCHGEN
+			bool "Use automatic patch generator"
+			default y
+		config SIM_GCC_OPCODES_DIR
+			depends on !SIM_GCC_USE_PATCHGEN
+			string "Directory with custom opcode patches"
+	endmenu
+
+	config USE_PREBUILT_LN
+		bool "Use prebuilt Longnail binaries"
+		default n
+	menu "Longnail prebuilt settings"
+		depends on USE_PREBUILT_LN
+		config LN_BINARY
+			string "Path to Longnail binary"
+			default "deps/longnail/build/bin/longnail-opt"
+	endmenu
+
+	config USE_PREBUILT_AWESOME
+		bool "Use prebuilt Awesome LLVM binaries"
+		default n
+	menu "Awesome LLVM prebuilt settings"
+		depends on USE_PREBUILT_AWESOME
+		config AWESOME_BINARY
+			string "Path to Awesome LLVM binary"
+			default "deps/awesome_llvm/build/bin/longnail-opt"
+	endmenu
+
+endmenu

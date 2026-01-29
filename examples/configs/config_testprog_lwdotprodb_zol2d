@@ -1,0 +1,3 @@
+CONFIG_SIM_TB_PATH="../../examples/test_programs/lwdotprodb_zol2d_matmul_16x16.S"
+CONFIG_SIM_TB_EXPECTED_PATH="../../examples/test_programs/testmatrix_16x16_each_expected.txt"
+CONFIG_SIM_GCC_OPCODES_DIR="../../examples/test_programs/opcodes_lwdotprodb_zol2d"

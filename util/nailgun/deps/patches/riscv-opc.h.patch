@@ -1,0 +1,12 @@
+diff --git a/include/opcode/riscv-opc.h b/include/opcode/riscv-opc.h
+index 253148b50be..07f87d936ee 100644
+--- a/include/opcode/riscv-opc.h
++++ b/include/opcode/riscv-opc.h
+@@ -20,6 +20,7 @@
+ 
+ #ifndef RISCV_ENCODING_H
+ #define RISCV_ENCODING_H
++#include "isax_defs.h"
+ /* Instruction opcode macros.  */
+ #define MATCH_SLLI_RV32 0x1013
+ #define MASK_SLLI_RV32  0xfe00707f

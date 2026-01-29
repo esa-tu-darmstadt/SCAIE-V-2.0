@@ -1,0 +1,40 @@
+diff --git a/build.sbt b/build.sbt
+index 0206cff..a2fdf24 100644
+--- a/build.sbt
++++ b/build.sbt
+@@ -12,6 +12,7 @@ lazy val root = (project in file(".")).
+       "com.github.spinalhdl" % "spinalhdl-lib_2.11" % spinalVersion,
+       compilerPlugin("com.github.spinalhdl" % "spinalhdl-idsl-plugin_2.11" % spinalVersion),
+       "org.scalatest" %% "scalatest" % "3.2.5",
++      "org.scalactic" %% "scalactic" % "3.2.10",
+       "org.yaml" % "snakeyaml" % "1.8"
+     ),
+     name := "VexRiscv"
+diff --git a/project/build.properties b/project/build.properties
+index 0b2e09c..04267b1 100644
+--- a/project/build.properties
++++ b/project/build.properties
+@@ -1 +1 @@
+-sbt.version=1.4.7
++sbt.version=1.9.9
+From 4b3af464dcbe88eee5408b74afb8e7cb065ca610 Mon Sep 17 00:00:00 2001
+From: 7FM <41307817+7FM@users.noreply.github.com>
+Date: Mon, 11 Nov 2024 15:27:27 +0100
+Subject: [PATCH] Fix undriven signal
+
+---
+ src/main/scala/vexriscv/plugin/IBusSimplePlugin.scala | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/main/scala/vexriscv/plugin/IBusSimplePlugin.scala b/src/main/scala/vexriscv/plugin/IBusSimplePlugin.scala
+index dc19d434..c11d2643 100644
+--- a/src/main/scala/vexriscv/plugin/IBusSimplePlugin.scala
++++ b/src/main/scala/vexriscv/plugin/IBusSimplePlugin.scala
+@@ -371,6 +371,7 @@ class IBusSimplePlugin(    resetVector : BigInt,
+         }
+ 
+         val fetchRsp = FetchRsp()
++        fetchRsp.isRvc := False
+         fetchRsp.pc := stages.last.output.payload
+         fetchRsp.rsp := rspBuffer.output.payload
+         fetchRsp.rsp.error.clearWhen(!rspBuffer.output.valid) //Avoid interference with instruction injection from the debug plugin

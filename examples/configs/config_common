@@ -1,0 +1,82 @@
+# CONFIG_CORE_CVA5 is not set
+# CONFIG_CORE_CVA6 is not set
+# CONFIG_CORE_CVA6_64 is not set
+# CONFIG_CORE_CVA6_DUAL is not set
+# CONFIG_CORE_CVA6_64_DUAL is not set
+
+#
+# SCAIE-V configuration
+#
+CONFIG_SCV_INTERNAL_CONTEXTS_AMOUNT=1
+# CONFIG_SCV_DISABLE_DECOUPLED_HAZARD_HANDLING is not set
+# CONFIG_SCV_DISABLE_DECOUPLED_INPUT_FIFO is not set
+CONFIG_SCV_DISABLE_DECOUPLED_ISAXKILL=y
+CONFIG_SCV_DISABLE_DECOUPLED_ISAXFENCE=y
+# CONFIG_SCV_RT_LIFE_SUPPORT is not set
+# end of SCAIE-V configuration
+
+CONFIG_SIM_ENABLE=y
+
+#
+# Simulation configuration
+#
+# CONFIG_SIM_TB_PATH is not set
+# CONFIG_SIM_TB_EXPECTED_PATH is not set
+CONFIG_SIM_TB_COMPILE_FLAGS=""
+CONFIG_SIM_TB_DISASSEMBLE_ELF=y
+CONFIG_SIM_CYCLE_TIMEOUT="75000"
+
+#
+# Lock-step
+#
+# CONFIG_SIM_ENABLE_ISS_LOCKSTEP is not set
+# CONFIG_SIM_ISS_RENODE_OVERRIDE_ENABLED is not set
+# CONFIG_SIM_ISS_RENODE_OVERRIDE is not set
+# CONFIG_SIM_ISS_PREDEFINED_ISAXES is not set
+# end of Lock-step
+
+#
+# Verbosity
+#
+CONFIG_SIM_PRINT_CLK=y
+CONFIG_SIM_PRINT_IMEM=y
+CONFIG_SIM_PRINT_DMEM=y
+CONFIG_SIM_PRINT_BRAM=y
+CONFIG_SIM_PRINT_AXI=y
+CONFIG_SIM_PRINT_ISS=y
+# end of Verbosity
+# end of Simulation configuration
+
+# CONFIG_OL2_ENABLE is not set
+
+#
+# Advanced Options
+#
+# CONFIG_SCAIEV_DO_NOT_REBUILD is not set
+# CONFIG_ONLY_PATCH_CC is not set
+# CONFIG_SIM_SKIP_AWESOME_LLVM is not set
+CONFIG_SIM_SKIP_GDB=y
+# CONFIG_SIM_AWESOME_LLVM_VERSION is not set
+# CONFIG_SIM_AWESOME_LLVM_OVERWRITE_ISAX_NAME is not set
+# CONFIG_DEFAULT_ENTRY_POINT is not set
+# CONFIG_NO_ISAX_ENTRY_POINT is not set
+# CONFIG_MLIR_ENTRY_POINT is not set
+# CONFIG_SV_ENTRY_POINT is not set
+
+#
+# SV entrypoint settings
+#
+# CONFIG_SV_ENTRY_POINT_PATH is not set
+# CONFIG_SV_ENTRY_POINT_ISAX_YAML_PATH is not set
+# end of SV entrypoint settings
+
+#
+# GCC/Binutils opcode settings (assembly tests)
+#
+# CONFIG_SIM_GCC_USE_PATCHGEN is not set
+# CONFIG_SIM_GCC_OPCODES_DIR is not set
+# end of GCC/Binutils opcode settings (assembly tests)
+
+# CONFIG_USE_PREBUILT_LN is not set
+# CONFIG_USE_PREBUILT_AWESOME is not set
+# end of Advanced Options

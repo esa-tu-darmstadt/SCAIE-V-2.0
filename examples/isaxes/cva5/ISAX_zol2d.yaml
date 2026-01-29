@@ -1,0 +1,80 @@
+- register: ZOL2DPCSOUTER
+  width: 64
+  elements: 1
+- register: ZOL2DPCSINNER
+  width: 64
+  elements: 1
+- register: ZOL2DBOUNDINNER
+  width: 8
+  elements: 1
+- register: ZOL2DCOUNTERS
+  width: 16
+  elements: 1
+- instruction: setup_zol2dinner
+  mask: "0000000----------110000000001011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdRS1
+      stage: 2
+    - interface: RdRS2
+      stage: 2
+    - interface: RdIValid
+      stage: 2
+    - interface: RdStall
+      stage: 2
+    - interface: WrZOL2DPCSINNER.addr
+      stage: 2
+    - interface: WrZOL2DPCSINNER.data
+      stage: 2
+      has valid: 1
+- instruction: setup_zol2d
+  mask: "-------00000-----101-----0001011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdInstr
+      stage: 2
+    - interface: RdRS1
+      stage: 2
+    - interface: RdPC
+      stage: 2
+    - interface: RdIValid
+      stage: 2
+    - interface: RdStall
+      stage: 2
+    - interface: WrZOL2DCOUNTERS.addr
+      stage: 2
+    - interface: WrZOL2DCOUNTERS.data
+      stage: 2
+      has valid: 1
+    - interface: WrZOL2DPCSOUTER.addr
+      stage: 2
+    - interface: WrZOL2DPCSOUTER.data
+      stage: 2
+      has valid: 1
+    - interface: WrZOL2DBOUNDINNER.addr
+      stage: 2
+    - interface: WrZOL2DBOUNDINNER.data
+      stage: 2
+      has valid: 1
+- always: zol2d
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdPC
+      stage: 0
+    - interface: WrPC
+      stage: 0
+      has valid: 1
+    - interface: RdZOL2DCOUNTERS
+      stage: 0
+    - interface: WrZOL2DCOUNTERS.addr
+      stage: 0
+    - interface: WrZOL2DCOUNTERS.data
+      stage: 0
+      has valid: 1
+    - interface: RdZOL2DPCSOUTER
+      stage: 0
+    - interface: RdZOL2DPCSINNER
+      stage: 0
+    - interface: RdZOL2DBOUNDINNER
+      stage: 0
+- last stage: 3

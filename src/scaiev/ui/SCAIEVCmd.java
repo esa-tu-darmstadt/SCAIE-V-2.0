@@ -250,7 +250,7 @@ public class SCAIEVCmd {
       }
 
       core = line.getOptionValue("c");
-      String isaxYamlFileName = line.getOptionValue("i");
+      String[] isaxYamlFileNames = line.getOptionValues("i");
       // set output directory
       outputDir = (line.hasOption("o") ? line.getOptionValue("o") : "results");
       if (outputDir.endsWith("/"))
@@ -258,7 +258,7 @@ public class SCAIEVCmd {
       else
         outputDir += "/" + core;
       if (line.hasOption("i")) {
-        isaxYamlFiles = Stream.of(new File(isaxYamlFileName));
+        isaxYamlFiles = List.of(isaxYamlFileNames).stream().map(fileName -> new File(fileName));
       } else {
         // Search for ISAX_*.yaml files in the isaxes subdirectory and one subdirectory below that.
         // Skip subdirectories starting with "." or "skip_".

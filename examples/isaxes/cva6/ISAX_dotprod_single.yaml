@@ -1,0 +1,15 @@
+- instruction: DOTP
+  mask: "0001010----------000-----0001011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdRS1
+      stage: 4
+    - interface: RdRS2
+      stage: 4
+    - interface: RdIValid
+      stage: 4
+    - interface: RdStall
+      stage: 4
+    - interface: WrRD
+      stage: 4
+- last stage: 4

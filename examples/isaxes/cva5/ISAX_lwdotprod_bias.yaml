@@ -1,0 +1,91 @@
+- register: BIASES
+  width: 16
+  elements: 1
+- register: ADDR
+  width: 32
+  elements: 1
+- instruction: DOTPBSET
+  mask: "-----------------001000000001011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdRS1
+      stage: 2
+    - interface: RdRS2
+      stage: 2
+    - interface: RdIValid
+      stage: 2
+    - interface: RdStall
+      stage: 2
+    - interface: WrBIASES.addr
+      stage: 2
+    - interface: WrBIASES.data
+      stage: 2
+      has valid: 1
+- instruction: DOTPBSETADDR
+  mask: "-------00000-----010000000001011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdRS1
+      stage: 2
+    - interface: WrADDR.addr
+      stage: 2
+    - interface: WrADDR.data
+      stage: 2
+      has valid: 1
+- instruction: DOTPBINCRADDR
+  mask: "------------00000011000000001011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdInstr
+      stage: 2
+    - interface: RdIValid
+      stage: 2
+    - interface: RdStall
+      stage: 2
+    - interface: RdADDR
+      stage: 2
+    - interface: WrADDR.addr
+      stage: 2
+    - interface: WrADDR.data
+      stage: 2
+      has valid: 1
+- instruction: LWDOTPB
+  mask: "-----------------000-----0001011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdIValid
+      stage: 2
+    - interface: RdStall
+      stage: 2
+    - interface: RdFlush
+      stage: 2
+    - interface: RdADDR
+      stage: 2
+    - interface: RdIValid
+      stage: 3
+    - interface: RdStall
+      stage: 3
+    - interface: WrStall
+      stage: 3
+    - interface: RdBIASES
+      stage: 2
+    - interface: RdRS1
+      stage: 2
+    - interface: RdInstr
+      stage: 2
+    - interface: RdAnyValid
+      stage: 4
+    - interface: RdMem
+      stage: 4
+      has valid: 1
+      has validResp: 1
+      has addr: 1
+      has size: 1
+      is dynamic decoupled: true
+    - interface: WrRD
+      stage: 4
+      is dynamic decoupled: true
+    - interface: WrCommit
+      stage: 4
+      is dynamic decoupled: true
+- last stage: 3

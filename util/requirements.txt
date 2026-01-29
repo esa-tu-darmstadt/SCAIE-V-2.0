@@ -1,0 +1,9 @@
+find_libpython==0.4.0
+cocotb==1.9.2
+cocotb-bus==0.2.1
+capstone==5.0.6
+numpy==2.3.5
+PyYAML==6.0.2
+pytest==8.3.3
+kconfiglib==14.1.0
+pyelftools==0.31
