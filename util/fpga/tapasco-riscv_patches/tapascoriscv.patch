@@ -1,0 +1,37 @@
+--- a/Makefile
++++ b/Makefile
+@@ -42,6 +42,8 @@ list:
+ 	@PE_ID=$$(($$(echo $(PE_LIST) | sed s/$@.*// | wc -w) + 1742)); \
+ 	tapasco -v import IP/$@/esa.informatik.tu-darmstadt.de_tapasco_$@_1.0.zip as $$PE_ID ${TAPASCO_PLATFORM}
+ 
++cva6sv_%_setup: riscv/cva6sv/setup.sh
++	$< $*
+ %_setup: riscv/%/setup.sh
+ 	$<
+ 
+--- a/common/cpu_vlnv.tcl
++++ b/common/cpu_vlnv.tcl
+@@ -13,3 +13,7 @@ set cpu_vlnv [list \
+   "swerv_eh2_pe"                {wdc:swerv_eh2:swerv_eh2:1.4} \
+   "cva5_pe"                     {openhwgroup:cva5:cva5} \
+ ]
++foreach cva6svdesign [glob -directory IP/riscv/CVA6SV -tails -nocomplain */] {
++  set cva6svdesign [string trim $cva6svdesign /]
++  dict set cpu_vlnv "${cva6svdesign}_pe" "user.org:cva6sv:$cva6svdesign"
++}
+--- a/riscv_pe_project.tcl
++++ b/riscv_pe_project.tcl
+@@ -138,7 +138,12 @@ proc cr_bd_riscv_pe { parentCell lmem } {
+ 
+   source common/place_local_memory.tcl
+ 
+-  source specific_tcl/${project_name}_project.tcl
++  if {[file exists specific_tcl/${project_name}_project.tcl]} {
++    source specific_tcl/${project_name}_project.tcl
++  } else {
++    set superproject_name [lindex [split ${project_name} "_"] 0]
++    source specific_tcl/${superproject_name}_pe_project.tcl
++  }
+ 
+   source common/connect_common_interfaces.tcl
+   

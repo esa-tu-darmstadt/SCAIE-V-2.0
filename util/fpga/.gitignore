@@ -1,0 +1,5 @@
+tapasco/
+tapasco-riscv/
+tapasco_workdir/
+host/build
+device/build

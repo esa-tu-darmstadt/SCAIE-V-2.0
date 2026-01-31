@@ -1,0 +1,357 @@
+--- core/acc_dispatcher.sv
++++ core/acc_dispatcher.sv
+@@ -86,7 +86,7 @@ module acc_dispatcher
+     input acc_resp_t acc_resp_i
+ );
+ 
+-  `include "common_cells/registers.svh"
++  `include "registers.svh"
+ 
+   import cf_math_pkg::idx_width;
+ 
+--- core/frontend/btb.sv
++++ core/frontend/btb.sv
+@@ -60,7 +60,7 @@ module btb #(
+   // number of bits par word in the bram
+   localparam BRAM_WORD_BITS = $bits(btb_prediction_t);
+   // we are not interested in all bits of the address
+-  unread i_unread (.d_i(|vpc_i));
++  //unread i_unread (.d_i(|vpc_i));
+ 
+ 
+   logic [$clog2(NR_ROWS)-1:0] index, update_pc;
+--- core/frontend/instr_queue.sv
++++ core/frontend/instr_queue.sv
+@@ -572,8 +572,8 @@ module instr_queue
+       .pop_i     (pop_address)
+   );
+ 
+-  unread i_unread_branch_mask (.d_i(|branch_mask_extended));
+-  unread i_unread_fifo_pos (.d_i(|fifo_pos_extended));  // we don't care about the lower signals
++  //unread i_unread_branch_mask (.d_i(|branch_mask_extended));
++  //unread i_unread_fifo_pos (.d_i(|fifo_pos_extended));  // we don't care about the lower signals
+ 
+   if (CVA6Cfg.RVC) begin : gen_pc_q_with_c
+     always_ff @(posedge clk_i or negedge rst_ni) begin
+--- core/include/cv32a6_imac_sv32_scaiev_config_pkg.sv
++++ core/include/cv32a6_imac_sv32_scaiev_config_pkg.sv
+@@ -129,14 +129,14 @@ package cva6_config_pkg;
+       PMPNapotEn: bit'(1),
+       NOCType: config_pkg::NOC_TYPE_AXI4_ATOP,
+       NrNonIdempotentRules: unsigned'(1),
+-      NonIdempotentAddrBase: 1024'({64'h6000_0000}),
+-      NonIdempotentLength: 1024'({64'h1000}),
+-      NrExecuteRegionRules: unsigned'(3),
+-      ExecuteRegionAddrBase: 1024'({64'h8000_0000, 64'h1_0000, 64'h0}),
+-      ExecuteRegionLength: 1024'({64'h40000000, 64'h10000, 64'h1000}),
++      NonIdempotentAddrBase: 1024'({64'h1100_0000}),
++      NonIdempotentLength: 1024'({64'h1_0000}),
++      NrExecuteRegionRules: unsigned'(1),
++      ExecuteRegionAddrBase: 1024'({64'h8000_0000}), //assuming no local instruction memory at address 0 (BRAM)
++      ExecuteRegionLength: 1024'({64'h80000000}),
+       NrCachedRegionRules: unsigned'(1),
+       CachedRegionAddrBase: 1024'({64'h8000_0000}),
+-      CachedRegionLength: 1024'({64'h40000000}),
++      CachedRegionLength: 1024'({64'h80000000}),
+       MaxOutstandingStores: unsigned'(7),
+       DebugEn: bit'(1),
+       AxiBurstWriteEn: bit'(0),
+--- core/include/cv64a6_imac_sv39_scaiev_config_pkg.sv
++++ core/include/cv64a6_imac_sv39_scaiev_config_pkg.sv
+@@ -129,14 +129,14 @@ package cva6_config_pkg;
+       PMPNapotEn: bit'(1),
+       NOCType: config_pkg::NOC_TYPE_AXI4_ATOP,
+       NrNonIdempotentRules: unsigned'(1),
+-      NonIdempotentAddrBase: 1024'({64'h6000_0000}),
+-      NonIdempotentLength: 1024'({64'h1000}),
+-      NrExecuteRegionRules: unsigned'(3),
+-      ExecuteRegionAddrBase: 1024'({64'h8000_0000, 64'h1_0000, 64'h0}),
+-      ExecuteRegionLength: 1024'({64'h40000000, 64'h10000, 64'h1000}),
++      NonIdempotentAddrBase: 1024'({64'h1100_0000}),
++      NonIdempotentLength: 1024'({64'h1_0000}),
++      NrExecuteRegionRules: unsigned'(1),
++      ExecuteRegionAddrBase: 1024'({64'h1_0000_0000_0000}), //assuming no local instruction memory at address 0 (BRAM)
++      ExecuteRegionLength: 1024'({64'h1_0000_0000_0000}),
+       NrCachedRegionRules: unsigned'(1),
+-      CachedRegionAddrBase: 1024'({64'h8000_0000}),
+-      CachedRegionLength: 1024'({64'h40000000}),
++      CachedRegionAddrBase: 1024'({64'h1_0000_0000_0000}),
++      CachedRegionLength: 1024'({64'h1_0000_0000_0000}),
+       MaxOutstandingStores: unsigned'(7),
+       DebugEn: bit'(1),
+       AxiBurstWriteEn: bit'(0),
+--- vendor/pulp-platform/axi/src/axi_burst_splitter.sv
++++ vendor/pulp-platform/axi/src/axi_burst_splitter.sv
+@@ -14,7 +14,7 @@
+ // - Andreas Kurth <akurth@iis.ee.ethz.ch>
+ 
+ `include "axi/typedef.svh"
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ /// Split AXI4 bursts into single-beat transactions.
+ ///
+--- vendor/pulp-platform/axi/src/axi_demux.sv
++++ vendor/pulp-platform/axi/src/axi_demux.sv
+@@ -12,7 +12,7 @@
+ // - Wolfgang Roenninger <wroennin@iis.ee.ethz.ch>
+ // - Andreas Kurth <akurth@iis.ee.ethz.ch>
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ // axi_demux: Demultiplex an AXI bus from one slave port to multiple master ports.
+ // See `doc/axi_demux.md` for the documentation, including the definition of parameters and ports.
+--- vendor/pulp-platform/axi/src/axi_id_remap.sv
++++ vendor/pulp-platform/axi/src/axi_id_remap.sv
+@@ -13,7 +13,7 @@
+ // Florian Zaruba <zarubaf@iis.ee.ethz.ch>
+ // Wolfgang Roenninger <wroennin@iis.ee.ethz.ch>
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ /// Remap AXI IDs from wide IDs at the slave port to narrower IDs at the master port.
+ ///
+--- vendor/pulp-platform/axi/src/axi_isolate.sv
++++ vendor/pulp-platform/axi/src/axi_isolate.sv
+@@ -28,7 +28,7 @@
+ // signals in `mst_req_o` are silenced to `'0`. When isolated, new transactions initiated on the
+ // slave port are stalled until the isolation is terminated by deasserting `isolate_i`.
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ module axi_isolate #(
+   parameter int unsigned NumPending = 32'd16, // Number of pending requests per channel
+--- vendor/pulp-platform/axi/src/axi_lite_demux.sv
++++ vendor/pulp-platform/axi/src/axi_lite_demux.sv
+@@ -12,7 +12,7 @@
+ // - Wolfgang Roenninger <wroennin@iis.ee.ethz.ch>
+ // - Andreas Kurth <akurth@iis.ee.ethz.ch>
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ // axi_lite_demux: Demultiplex an AXI4-Lite bus from one slave port to multiple master ports.
+ //                 The selection signal at the AW and AR channel has to follow the same
+--- vendor/pulp-platform/axi/src/axi_lite_mailbox.sv
++++ vendor/pulp-platform/axi/src/axi_lite_mailbox.sv
+@@ -16,7 +16,7 @@
+ //              See `doc/axi_lite_mailbox.md` for the documentation, including the definition
+ //              of parameters and ports.
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ module axi_lite_mailbox #(
+   parameter int unsigned MailboxDepth = 32'd0,
+--- vendor/pulp-platform/axi/src/axi_lite_mux.sv
++++ vendor/pulp-platform/axi/src/axi_lite_mux.sv
+@@ -18,7 +18,7 @@
+ //                        sent back in order.
+ 
+ // register macros
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ module axi_lite_mux #(
+   // AXI4-Lite parameter and channel types
+--- vendor/pulp-platform/axi/src/axi_lite_regs.sv
++++ vendor/pulp-platform/axi/src/axi_lite_regs.sv
+@@ -13,7 +13,7 @@
+ // - Andreas Kurth <akurth@iis.ee.ethz.ch>
+ 
+ `include "axi/typedef.svh"
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ /// AXI4-Lite registers with optional read-only and protection features.
+ ///
+--- vendor/pulp-platform/axi/src/axi_lite_to_apb.sv
++++ vendor/pulp-platform/axi/src/axi_lite_to_apb.sv
+@@ -45,7 +45,7 @@
+ // routes the response depending on the `apb_req.psel` bit and `apb_req.pwrite` either to the
+ // AXI4Lite B channel for writes and to the R channel for reads.
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ module axi_lite_to_apb #(
+   parameter int unsigned NoApbSlaves = 32'd1,  // Number of connected APB slaves
+--- vendor/pulp-platform/axi/src/axi_mux.sv
++++ vendor/pulp-platform/axi/src/axi_mux.sv
+@@ -22,7 +22,7 @@
+ // a response with ID `6'b100110` will be forwarded to slave port 2 (`2'b10`).
+ 
+ // register macros
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ module axi_mux #(
+   // AXI parameter and channel types
+--- vendor/pulp-platform/axi/src/axi_serializer.sv
++++ vendor/pulp-platform/axi/src/axi_serializer.sv
+@@ -12,7 +12,7 @@
+ // - Wolfgang Roenninger <wroennin@iis.ee.ethz.ch>
+ // - Andreas Kurth <akurth@iis.ee.ethz.ch>
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ /// Serialize all AXI transactions to a single ID (zero).
+ ///
+--- vendor/pulp-platform/common_cells/src/cdc_fifo_gray.sv
++++ vendor/pulp-platform/common_cells/src/cdc_fifo_gray.sv
+@@ -71,7 +71,7 @@
+ ///     -through [get_pins -hierarchical -filter async]
+ /// ```
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ (* no_ungroup *)
+ (* no_boundary_optimization *)
+--- vendor/pulp-platform/common_cells/src/isochronous_4phase_handshake.sv
++++ vendor/pulp-platform/common_cells/src/isochronous_4phase_handshake.sv
+@@ -38,7 +38,7 @@
+ /// There are _no_ restrictions on which clock domain should be the faster, any integer
+ /// ratio will work.
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ module isochronous_4phase_handshake (
+   input  logic src_clk_i,
+--- vendor/pulp-platform/common_cells/src/isochronous_spill_register.sv
++++ vendor/pulp-platform/common_cells/src/isochronous_spill_register.sv
+@@ -11,7 +11,7 @@
+ //
+ // Florian Zaruba <zarubaf@iis.ee.ethz.ch>
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ /// A register with handshakes that completely cuts any combinatorial paths
+ /// between the input and output in isochronous clock domains.
+--- vendor/pulp-platform/common_cells/src/stream_to_mem.sv
++++ vendor/pulp-platform/common_cells/src/stream_to_mem.sv
+@@ -13,7 +13,7 @@
+ 
+ /// `stream_to_mem`: Allows to use memories with flow control (`valid`/`ready`) for requests but without flow
+ /// control for output data to be used in streams.
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ module stream_to_mem #(
+   /// Memory request payload type, usually write enable, write data, etc.
+   parameter type         mem_req_t  = logic,
+--- core/cvfpu/src/common_cells/src/cdc_fifo_gray.sv
++++ core/cvfpu/src/common_cells/src/cdc_fifo_gray.sv
+@@ -71,7 +71,7 @@
+ ///     -through [get_pins -hierarchical -filter async]
+ /// ```
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ (* no_ungroup *)
+ (* no_boundary_optimization *)
+--- core/cvfpu/src/common_cells/src/isochronous_spill_register.sv
++++ core/cvfpu/src/common_cells/src/isochronous_spill_register.sv
+@@ -11,7 +11,7 @@
+ //
+ // Florian Zaruba <zarubaf@iis.ee.ethz.ch>
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ /// A register with handshakes that completely cuts any combinatorial paths
+ /// between the input and output in isochronous clock domains.
+--- core/cvfpu/src/common_cells/src/stream_to_mem.sv
++++ core/cvfpu/src/common_cells/src/stream_to_mem.sv
+@@ -13,7 +13,7 @@
+ 
+ /// `stream_to_mem`: Allows to use memories with flow control (`valid`/`ready`) for requests but without flow
+ /// control for output data to be used in streams.
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ module stream_to_mem #(
+   /// Memory request payload type, usually write enable, write data, etc.
+   parameter type         mem_req_t  = logic,
+--- core/cvfpu/src/fpnew_cast_multi.sv
++++ core/cvfpu/src/fpnew_cast_multi.sv
+@@ -13,7 +13,7 @@
+ 
+ // Author: Stefan Mach <smach@iis.ee.ethz.ch>
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ module fpnew_cast_multi #(
+   parameter fpnew_pkg::fmt_logic_t   FpFmtConfig  = '1,
+--- core/cvfpu/src/fpnew_divsqrt_multi.sv
++++ core/cvfpu/src/fpnew_divsqrt_multi.sv
+@@ -13,7 +13,7 @@
+ 
+ // Author: Stefan Mach <smach@iis.ee.ethz.ch>
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ module fpnew_divsqrt_multi #(
+   parameter fpnew_pkg::fmt_logic_t   FpFmtConfig  = '1,
+--- core/cvfpu/src/fpnew_fma.sv
++++ core/cvfpu/src/fpnew_fma.sv
+@@ -13,7 +13,7 @@
+ 
+ // Author: Stefan Mach <smach@iis.ee.ethz.ch>
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ module fpnew_fma #(
+   parameter fpnew_pkg::fp_format_e   FpFormat    = fpnew_pkg::fp_format_e'(0),
+--- core/cvfpu/src/fpnew_fma_multi.sv
++++ core/cvfpu/src/fpnew_fma_multi.sv
+@@ -13,7 +13,7 @@
+ 
+ // Author: Stefan Mach <smach@iis.ee.ethz.ch>
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ module fpnew_fma_multi #(
+   parameter fpnew_pkg::fmt_logic_t   FpFmtConfig = '1,
+--- core/cvfpu/src/fpnew_noncomp.sv
++++ core/cvfpu/src/fpnew_noncomp.sv
+@@ -13,7 +13,7 @@
+ 
+ // Author: Stefan Mach <smach@iis.ee.ethz.ch>
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ module fpnew_noncomp #(
+   parameter fpnew_pkg::fp_format_e   FpFormat    = fpnew_pkg::fp_format_e'(0),
+--- core/cvfpu/src/fpnew_opgroup_multifmt_slice.sv
++++ core/cvfpu/src/fpnew_opgroup_multifmt_slice.sv
+@@ -13,7 +13,7 @@
+ 
+ // Author: Stefan Mach <smach@iis.ee.ethz.ch>
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ module fpnew_opgroup_multifmt_slice #(
+   parameter fpnew_pkg::opgroup_e     OpGroup       = fpnew_pkg::CONV,
+--- corev_apu/register_interface/src/reg_to_mem.sv
++++ corev_apu/register_interface/src/reg_to_mem.sv
+@@ -11,7 +11,7 @@
+ // Florian Zaruba <zarubaf@iis.ee.ethz.ch>
+ // Fabian Schuiki <fschuiki@iis.ee.ethz.ch>
+ 
+-`include "common_cells/registers.svh"
++`include "registers.svh"
+ 
+ /// Register bus to SRAM interface.
+ module reg_to_mem #(
