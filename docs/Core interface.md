@@ -126,6 +126,7 @@ The following table lists the pins of the low-level interface for CVA6. The full
 | pipeInto_scaievfu | 1 | - | - | in | Issue | Instruction issues into scaiev_fu (1) or other (0) |
 | stall | 1 | - | - | out | Fetch - Execute | Stall the given stage |
 | flush | 1 | - | - | out | Decode - Issue | Flush the given stage and its predecessors |
+| id_pipeinto | 5 | - | - | in | Decode, Issue | Bits that indicate stage&port transitions of Decode/Issue: <br/> D1 → D0 <br/> D0 → I0, D0 → I1 <br/> D1 → I1 <br/> I1 → I0 |
 | rdInstr | 32 | - | - | in | Decode - Execute | Provides the instruction word |
 | rdRS1/rdRS2 | 32/64 | - | - | in | Execute | Provides the specified register operand |
 | wrRD       | 32/64 | y | - / - | out | Execute | Write destination register |
@@ -149,7 +150,7 @@ The following table lists the pins of the low-level interface for CVA6. The full
 | transID | typ. 3 | y | - | in | Commit (all ports) | Scoreboard index of the instruction being committed |
 | drop | 1 | - | - | in | Commit (all ports) | Instruction is cancelled (e.g. mispredict) |
 | isFlushing | 1 | - | - | in | Scoreboard | Entire scoreboard is being cleared (e.g. exception) |
-| reqID, instrqueueID | 2, typ. 3 | - | - | in | Fetch-Realign, Realign-Decode | Internal stage buffer index of the instruction |
+| reqID, instrqueueID | 2, typ. 5 | - | - | in | Fetch-Realign, Realign-Decode | Internal stage buffer index of the instruction |
 | reqID_flushFrom, reqID_flushCount | 2, 3 |  |  | in | Fetch | Indicates the range of I$ requests that the core is flushing |
 | isReplaying | 1 | - | - | in | Fetch | Indicates a 'fetch replay' by the core, if an instruction was dropped due to buffer constraints. If active, glue undoes ZOL (zero-overhead loop) jumps, ensuring  |consistency | with flushed custom register updates
 | fully_unaligned | 1 | - | - | in | Realign | Indicates fully unaligned Fetch result, only half of the next instruction was read |
