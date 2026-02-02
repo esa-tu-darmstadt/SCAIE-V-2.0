@@ -11,7 +11,7 @@ interface for custom instructions for RISC-V processors.
 
 ## Why 2.0?
 The original SCAIE-V repo was updated to support more features, and now it becomes SCAIE-V 2.0.
-On top of the original 2.0 release, logic generation has seen a rework (SCAL 2.0) in preparation for application-class cores and, further down the line, multi-issue and out-of-order execution cores.
+On top of the original 2.0 release, logic generation has seen a rework (SCAL 2.0) to be able to handle application-class cores and, further down the line, out-of-order Issue cores.
 
 ## Which cores do you support?
 We currently support
@@ -56,7 +56,7 @@ SCAIE-V generates the CommonLogicModule (SCAL) and updates the design files of t
 
 
 ## How can I use the SCAIE-V tool for my custom instructions?
-For a fully-contained example flow, see the [examples](examples) subdirectory.
+For a fully contained example flow, see the [examples](examples) subdirectory.
 
 You can build the SCAIE-V software using Maven (`cd EclipseWork/SCAIEV; ./run.sh`) or Eclipse on fairly modern versions of Java (e.g., Java 17). `SCAIEVCmd` contains the application entry point.
 
