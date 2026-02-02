@@ -105,7 +105,56 @@ The instantiation of each core backend is done by the `SCAIEV` class. It calls t
 Note that SCAL may change `op_stage_instr` between the `Prepare` and `Generate` calls of the core backend. For instance, SCAL may register static data from previous stages or request additional stall and flush signals.
 
 The backend can use a language utility class such as `Verilog` (`UpdateInterface` and `GenerateAllInterfaces` methods) to add the required pins to the interface and, optionally, assign values to output pins (or assign local signals from input pins) in the innermost HDL module.
-The `FileWriter#ReplaceContent` and `FileWriter#UpdateContent` methods provide a measure to replace or insert HDL code by matching for existing code locations. 
+The `FileWriter#ReplaceContent` and `FileWriter#UpdateContent` methods provide a measure to replace or insert HDL code by matching for existing code locations.
+
+It is recommended to minimize any code patching in the core's RTL. Instead, the CoreBackend class should only generate configuration files indicating the used features and, as needed, add interfacing glue logic to a separate module. The low-level extension interface would be statically integrated into the core, for instance as a fork of the original repository, greatly simplifying maintenance.
+
+#### Example: CVA6 low-level interface
+Initially, `scaiev_glue` is an empty module in CVA6 that receives all low-level interface pins for SCAIE-V. `scaiev_glue` is only instantiated if the `SCAIEV_ENABLE` definition is set. If `SCAIEV_ENABLE` is set, the core also instantiates a functional unit for all SCAIE-V custom instructions. The functional unit module is a small adapter that accepts results from SCAL, and is represented to SCAIE-V as the Execute stage.
+
+The `CoreBackend` for CVA6 adds the actual SCIF pins to the module and adds the wiring logic to the low-level interface. For decoding, the glue module collects the RdIValid results from SCAL and sets the `scaiev_decode_isScaiev[port][<bit>]` bits depending on whether an ISAX is present, which operand registers it uses and if it uses the LSU. SCAL uses the stage status signals (isStalling / RdStall, isFlushing / RdFlush) as well as the buffer enqueue/dequeue IDs (`reqID` between Fetch and Realign, `instrqueueID` between Realign and Decode) and flushing information (`reqID_flushFrom`, `reqID_flushCount`) to pass its state in parallel to the processor pipeline.
+
+The following table lists the pins of the low-level interface for CVA6. The full pin names are constructed as follows: scaiev_[STAGE]_[NAME](_valid, _addr, ...)
+
+| Name | Width | Valid | Address/Size | SCAIE-V In/Out | Stage | Description |
+| ---- | ----- | ----- | ------------ | -------------- | ----- | ----------- |
+| wrPC | 32/64 | y | - | out | Fetch | Write PC |
+| rdPC | 32/64 | - | - | in | Fetch | Read PC |
+| isStalling | 1 | - | - | in | Fetch - Execute | Indicates a pipeline stall  |
+| isValid | 1 | - | - | in | Issue -Execute | Indicates a valid instruction (even if stalled) |
+| isFlushing | 1 | - | - | in | Fetch - Execute | Indicates a flush |
+| pipeInto_scaievfu | 1 | - | - | in | Issue | Instruction issues into scaiev_fu (1) or other (0) |
+| stall | 1 | - | - | out | Fetch - Execute | Stall the given stage |
+| flush | 1 | - | - | out | Decode - Issue | Flush the given stage and its predecessors |
+| rdInstr | 32 | - | - | in | Decode - Execute | Provides the instruction word |
+| rdRS1/rdRS2 | 32/64 | - | - | in | Execute | Provides the specified register operand |
+| wrRD       | 32/64 | y | - / - | out | Execute | Write destination register |
+| wrRD_spawn | 32/64 | y | y / - | out | Execute | Write destination register |
+| rdMem | - | y | (y / y) | out | Execute | Read from memory at specified address (address/size: memAddr, memSize)  |
+| rdMem_transID | typ. 3 | y | - | out | Execute | Scoreboard index for rdMem |
+| rdMem_result, rdMem_result_transID | 32/64, typ. 3 | y | - | in | Spawn | Result of read from memory |
+| wrMem | 32/64 | y | (y / y) | out | Execute | Write to memory at specified address (address/size: memAddr, memSize) |
+| wrMem_transID | typ. 3 | - | - | out | Execute | Scoreboard index for wrMem |
+| memAddr | 32/64 | - | - / - | out | Execute | Address for the current memory operation |
+| memSize | 3 | - | - / - | out | Execute | Size of the current memory operation, using the `sw`/`lw` funct3 encoding |
+| mem_ready | 1 | - | - | in | Execute | Handshake response for rdMem/wrMem |
+| mem_stall | 1 | - | - | out | Issue | Stall issue into LSU |
+| isScaiev | 7 | - | - | out | Decode | SCAIE-V decoding flag and the use of rs1,rs2,rd, and memory. |
+| decInstr | 25 | - | - | in | Decode | Decoded rs1,rs2,rs3,rd fields and address space |
+| isNew | 1 | - | - | in | Execute | An new instruction has entered scaiev_fu |
+| lsuValid | 1 | - | - | in | Execute | a Load/Store instruction enters the LSU (SCAIE-V  should hold any decoupled accesses) |
+| hasWriteback | 1 | - | - | out | Execute | scaiev_fu should wait for writeback |
+| semicoupled_(deq,reenq) | 1,1 | - | - | out | Execute | Passes multi-cycle instruction to SCAIE-V / commits result to scaiev_fu |
+| transID | typ. 3 | - | - | in | Issue-Execute | Scoreboard index of the active instruction |
+| transID | typ. 3 | y | - | in | Commit (all ports) | Scoreboard index of the instruction being committed |
+| drop | 1 | - | - | in | Commit (all ports) | Instruction is cancelled (e.g. mispredict) |
+| isFlushing | 1 | - | - | in | Scoreboard | Entire scoreboard is being cleared (e.g. exception) |
+| reqID, instrqueueID | 2, typ. 3 | - | - | in | Fetch-Realign, Realign-Decode | Internal stage buffer index of the instruction |
+| reqID_flushFrom, reqID_flushCount | 2, 3 |  |  | in | Fetch | Indicates the range of I$ requests that the core is flushing |
+| isReplaying | 1 | - | - | in | Fetch | Indicates a 'fetch replay' by the core, if an instruction was dropped due to buffer constraints. If active, glue undoes ZOL (zero-overhead loop) jumps, ensuring  |consistency | with flushed custom register updates
+| fully_unaligned | 1 | - | - | in | Realign | Indicates fully unaligned Fetch result, only half of the next instruction was read |
+| pcOverride | 32/64 | y | - | out | Decode | Corrects the instruction PC in the core’s Decode stage, to be used following a wrPC without concurrent flush (e.g., ZOL). |
+
 
 #### Decoding
 To use the RdIValid signals from SCAL, the core backend should first request each RdIValid in its `Prepare` method. Use `SCALBackendAPI#RequestToCorePin(<BNode obj>.RdIValid, <decode stage>, <isax name>)` with the passed `SCALBackendAPI` object.
@@ -117,3 +166,6 @@ Then, in the decode logic, generate HDL for a logical OR across `language.Create
 The core can also request RdIValid in later stages, if it needs to track certain hazards. For instance, if the core's branch speculation window ends in the Execute stage but an ISAX uses `WrPC` in a later stage (as listed in `op_stage_instr`, if allowed in the core datasheet), the core's Decode stage may need to be stalled until the ISAX is complete. Using `RdIValid_<isax>_<execute>`, the core backend can construct the stall condition.
 
 Advanced: For application-class cores, which support multiple instructions running in each execution unit, the `RdAnyValid` node indicates whether any instruction of a given ISAX is currently running inside the execution unit. This is only relevant if the core supports the `WrDeqInstr, RdInStageID, RdInStageValid, WrInStageID` operations for SCAIE-V's semi-coupled mode; otherwise, SCAL defaults to running only one instruction in the execution stage/unit.
+
+### Application-class cores
+For cores with dedicated functional unit pipelines (CVA5, CVA6, and OoO cores), a dedicated execution unit should be provided for SCAIE-V. 

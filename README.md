@@ -117,7 +117,7 @@ Additionally, an encoding (opcode, funct3, funct7) must be provided. Here, it is
       stage: 3
 ```
 
-For details on the ISAX description format, see [docs/ISAX description format.md](docs/ISAX description format.md).
+For details on the ISAX description format, see [docs/ISAX description format.md](docs/ISAX%20description%20format.md).
 
 If the user needs to optimize more for clock frequency or area, a higher-latency implementation of the ISAX may become necessary.
 In case the processor pipeline does not have enough stages for an ISAX, the semi-coupled or decoupled execution modes are an easy way to accomodate larger ISAX pipelines.
@@ -199,7 +199,6 @@ We currently support three different execution modes that are not tightly couple
   - Semi-coupled: A long-running ISAX is transparently mapped to an Execution Unit (EU) with pipelining support. If the core does not support variable-latency EUs, only one ISAX can run at a time. This is the default version for high-latency ISAXes, so you may leave the default settings as they are.
 
 ## From which stage is an interface considered decoupled? 
-This subsection does NOT describe the "Continuous" mode. If you are interested for that strategy, go to the next subsection. 
 Definitions: 
 - max (stage of core) = from all nodes which define a latest parameter, max stage = max(latest) 
 - spawn stage = max+1 
@@ -209,10 +208,10 @@ From which stage is it considered to be decoupled:
 - WrMem/RdMem - earliest of WrMem/RdMem + 1. Yet, the interface contains max +1 in its naming
 - internal state - max+1
 
-## How to use the "Continuous" decoupled mode? 
-In this strategy, a write may happen at any given time, and this write is not associated with any instruction. Yet, it must still be synchronized with stall-flush mechanism. Hence, if the last stage is stalled, a continuous write is also stalled, and the write is not committed. ISAX must hold that valid bit stable until stalling is removed. If another write happens in the pipeline, the "continuous" variant has priority. Be aware that a "continuous" mechanism for WrRD uses as destination the address given in the instruction field. Hence, a  write may happen, but the destination address is given by the current instruction in the pipeline. 
+## How to use the "Continuous" mode? 
+In this strategy, a write can be set to any valid stage where the operation is available, and this write is not associated with any instruction in particular. Still, the write is bound to the progression in the pipeline and will only have an effect once the stage is neither stalling nor flushing. The ISAX may use the `WrPC` and `WrCustomReg` operations.
 
-This was currently tested only by using the yaml file as input. To use this strategy, you must define an "always" block in yaml like: 
+To use this mode, you must define an "always" block in yaml like: 
 ``` 
 - always: my_continous_write
   schedule:
@@ -250,7 +249,7 @@ The WrMyreg interface must provide the address in the earliest stage in which a 
 
 
 ## What do I have to consider when extending SCAIE-V for new cores? 
-See [docs/Core interface.md](docs/Core interface.md) for details on the required interfaces.
+See [docs/Core interface.md](docs/Core%20interface.md) for details on the required interfaces.
 
 Here are some examples that must be considered when adding SCAIE-V to a core:
 - Generate SCAIE-V IOs
@@ -286,7 +285,7 @@ Main concepts:
 - **AdjacentNode** - while WrRD is a main node for writing register file, signals like address and valid are considered adjacent nodes (adjacent to WrRD). WrRD is considered to be a parent of WrRD_addr and WrRd_valid
 - **FNode/BNode**: SCAIE-V is made of multiple interfaces between ISAX and core. One such interface is for writing data to the register file. Another one is for writing the memory, and so on. In some cases, such as WrMem, there are several associated nodes: data, addr, valid. FNode in this case is WrMem. BNode also includes the adjacent signals (addr, valid). BNode may also include signals required between SCAL and the core, that are not visible to the ISAX.
 - **NodeInstanceDesc**: an instance of a node, identified with further properties such as the stage (NodeInstanceDesc.Key), associated with an expression string (e.g. HDL code)
-- **MultiNodeStrategy** and **NodeLogicBuilder**: Key components in the construction of SCAL. See [docs/SCAL logic generation.md](docs/SCAL logic generation.md).
+- **MultiNodeStrategy** and **NodeLogicBuilder**: Key components in the construction of SCAL. See [docs/SCAL logic generation.md](docs/SCAL%20logic%20generation.md).
 - **op_stage_instr**: hash map containing all operations required by user, with their stage number in which they were required and the instructions for each they were required. This is used across the entire tool to generate logic. Initially set just from the ISAX schedule without adjacent nodes, then regenerated after SCAL elaboration, based on the required core-SCAL interfaces (now including adjacent nodes).
 - **instrSet/ISAXes**: map containing metadata for each instruction. It has as key a String with the instruction name, and as value a SCAIEVInstr object.
 - **CoreBackend**: base class for all core backends. A core implementation usually modifies the core's RTL files or, in the case of the CVA5 and CVA6 integrations, produces just configuration and an interface shim on top of a modified fork of the core.
@@ -312,10 +311,6 @@ Class ToWrite - describes the change to apply to a line, where to insert it (bef
 **Package: scaiev.coreconstr** - this package handles metadata of cores. This metadata is read from yaml datasheets in the [Cores](Cores) directory.
 
 **Package: scaiev.scal** - this package contains the SCAL logic generator implementation. The strategy packages comprise all logic-generating strategy objects for the different SCAL features.
-
-
-## What is the current status of the project? 
-The project is quite new and we are constantly working on improving it & testing it with different configurations. We already evaluated multiple configurations through automatic testing (cocotb). 
 
 ## How can I cite this work? 
 You can cite the following paper, which used the first SCAIE-V version of the tool:
