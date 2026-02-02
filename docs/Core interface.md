@@ -166,6 +166,3 @@ Then, in the decode logic, generate HDL for a logical OR across `language.Create
 The core can also request RdIValid in later stages, if it needs to track certain hazards. For instance, if the core's branch speculation window ends in the Execute stage but an ISAX uses `WrPC` in a later stage (as listed in `op_stage_instr`, if allowed in the core datasheet), the core's Decode stage may need to be stalled until the ISAX is complete. Using `RdIValid_<isax>_<execute>`, the core backend can construct the stall condition.
 
 Advanced: For application-class cores, which support multiple instructions running in each execution unit, the `RdAnyValid` node indicates whether any instruction of a given ISAX is currently running inside the execution unit. This is only relevant if the core supports the `WrDeqInstr, RdInStageID, RdInStageValid, WrInStageID` operations for SCAIE-V's semi-coupled mode; otherwise, SCAL defaults to running only one instruction in the execution stage/unit.
-
-### Application-class cores
-For cores with dedicated functional unit pipelines (CVA5, CVA6, and OoO cores), a dedicated execution unit should be provided for SCAIE-V. 
