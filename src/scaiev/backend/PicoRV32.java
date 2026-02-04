@@ -306,9 +306,10 @@ public class PicoRV32 extends CoreBackend {
     if (this.op_stage_instr.containsKey(BNode.WrRD))
       for (PipelineStage stage : this.op_stage_instr.get(BNode.WrRD).keySet()) {
         toFile.UpdateContent(this.ModFile("picorv32"), "case (1'b1)",
-                             new ToWrite(language.CreateNodeName(BNode.WrRD_valid, stage, "") + ": begin\n" + tab + "cpuregs_wrdata = " +
-                                             language.CreateNodeName(BNode.WrRD, stage, "") + ";\n" + tab + "cpuregs_write = 1;\n"
-                                             + "end ",
+                             new ToWrite(language.CreateNodeName(BNode.WrRD_valid, stage, "") + ": begin\n"
+                                         + tab + "cpuregs_wrdata = " + language.CreateNodeName(BNode.WrRD, stage, "") + ";\n"
+                                         + tab + "cpuregs_write = 1;\n"
+                                         + "end",
                                          true, false, "cpuregs_wrdata = 'bx;"));
       }
 
@@ -534,28 +535,37 @@ public class PicoRV32 extends CoreBackend {
 
     if (this.ContainsOpInStage(BNode.WrPC, 1)) {
       addToStallCond(1, String.format("(%s && mem_do_prefetch && !mem_done)", language.CreateNodeName(BNode.WrPC_valid, stages[1], "")));
-      String textToAdd = "if(" + language.CreateNodeName(BNode.WrPC_valid, stages[1], "") + " )begin \n" + tab +
-                         "reg_next_pc <= " + language.CreateNodeName(BNode.WrPC, stages[1], "") + "; \n" + tab +
-                         "reg_out <= " + language.CreateNodeName(BNode.WrPC, stages[1], "") + ";\n" + tab + "decoder_trigger <= 0;\n" +
-                         tab + "//Two uses of setting mem_do_rinst here:\n" + tab +
-                         "//a) if prefetch is set, make sure the mem FIFO will commit it and get ready for the actual transfer;\n" + tab +
-                         "//b) once the prefetched read is done, start the new read at the WrPC destination.\n" + tab +
-                         "set_mem_do_rinst = 1;\n" + tab + "if (!mem_do_prefetch || mem_done) begin\n" + tab + tab +
-                         "latched_rd <= 0;\n" + tab + tab + "latched_branch <= 1;\n" + tab + tab + "latched_stalu <= 0;\n" + tab + tab +
-                         "cpu_state <= cpu_state_fetch; \n" + tab + "end\n"
+      String textToAdd = "if(" + language.CreateNodeName(BNode.WrPC_valid, stages[1], "") + " )begin \n"
+                         + tab + "reg_next_pc <= " + language.CreateNodeName(BNode.WrPC, stages[1], "") + ";\n"
+                         + tab + "reg_out <= " + language.CreateNodeName(BNode.WrPC, stages[1], "") + ";\n"
+                         + tab + "decoder_trigger <= 0;\n"
+                         + tab + "//Two uses of setting mem_do_rinst here:\n"
+                         + tab + "//a) if prefetch is set, make sure the mem FIFO will commit it and get ready for the actual transfer;\n"
+                         + tab + "//b) once the prefetched read is done, start the new read at the WrPC destination.\n"
+                         + tab + "set_mem_do_rinst = 1;\n"
+                         + tab + "if (!mem_do_prefetch || mem_done) begin\n"
+                         + tab + tab + "latched_rd <= 0;\n"
+                         + tab + tab + "latched_branch <= 1;\n"
+                         + tab + tab + "latched_stalu <= 0;\n"
+                         + tab + tab + "cpu_state <= cpu_state_fetch; \n"
+                         + tab + "end\n"
                          + "end else";
       toFile.ReplaceContent(this.ModFile("picorv32"), "(* parallel_case *)",
                             new ToWrite(textToAdd, true, false, "cpu_state_ld_rs1: ", true));
     }
     if (this.ContainsOpInStage(BNode.WrPC, 2)) {
-      String textToAdd = "if((cpu_state != cpu_state_ldmem && cpu_state != cpu_state_stmem) | (!mem_do_prefetch && mem_done)) begin\n" +
-                         tab + "if(" + language.CreateNodeName(BNode.WrPC_valid, stages[2], "") +
-                         " )begin // we don't need to check if we are in correct stage. This is done by SCAL \n" + tab + tab +
-                         "reg_next_pc <= " + language.CreateNodeName(BNode.WrPC, stages[2], "") + "; \n" + tab + tab +
-                         "reg_out <= " + language.CreateNodeName(BNode.WrPC, stages[2], "") + ";\n" + tab + tab +
-                         "decoder_trigger <= 0;\n" + tab + tab + "set_mem_do_rinst = 1;\n" + tab + tab + "latched_rd <= 0;\n" + tab +
-                         tab + "latched_branch <= 1;\n" + tab + tab + "latched_stalu <= 0;\n" + tab + tab +
-                         "cpu_state <= cpu_state_fetch; \n" + tab + "end\n  "
+      String textToAdd = "if((cpu_state != cpu_state_ldmem && cpu_state != cpu_state_stmem) | (!mem_do_prefetch && mem_done)) begin\n"
+                         + tab + "if(" + language.CreateNodeName(BNode.WrPC_valid, stages[2], "") +
+                         " )begin // we don't need to check if we are in correct stage. This is done by SCAL \n"
+                         + tab + tab + "reg_next_pc <= " + language.CreateNodeName(BNode.WrPC, stages[2], "") + ";\n"
+                         + tab + tab + "reg_out <= " + language.CreateNodeName(BNode.WrPC, stages[2], "") + ";\n"
+                         + tab + tab + "decoder_trigger <= 0;\n"
+                         + tab + tab + "set_mem_do_rinst = 1;\n"
+                         + tab + tab + "latched_rd <= 0;\n"
+                         + tab + tab + "latched_branch <= 1;\n"
+                         + tab + tab + "latched_stalu <= 0;\n"
+                         + tab + tab + "cpu_state <= cpu_state_fetch;\n"
+                         + tab + "end\n"
                          + "end\n";
       String grepText = "if (CATCH_MISALIGN && resetn && (mem_do_rdata || mem_do_wdata)) begin";
       toFile.UpdateContent(this.ModFile("picorv32"), grepText, new ToWrite(textToAdd, false, true, "", true));

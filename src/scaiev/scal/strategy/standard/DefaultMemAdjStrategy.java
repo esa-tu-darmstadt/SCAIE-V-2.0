@@ -1,13 +1,20 @@
 package scaiev.scal.strategy.standard;
 
+import java.util.HashSet;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import scaiev.backend.BNode;
 import scaiev.coreconstr.Core;
 import scaiev.frontend.SCAIEVNode;
+import scaiev.frontend.SCAIEVNode.AdjacentNode;
+import scaiev.frontend.SCAIEVNode.NodeTypeTag;
 import scaiev.pipeline.PipelineFront;
+import scaiev.pipeline.PipelineStage;
 import scaiev.pipeline.PipelineStage.StageKind;
 import scaiev.scal.InterfaceRequestBuilder;
 import scaiev.scal.NodeInstanceDesc;
@@ -36,6 +43,8 @@ public class DefaultMemAdjStrategy extends MultiNodeStrategy {
 
   protected MultiNodeStrategy pipelinedMemSizeStrategy;
   protected MultiNodeStrategy regularPipelinedMemAddrStrategy;
+  protected MultiNodeStrategy rdMemValidRespStrategy;
+  protected MultiNodeStrategy wrMemValidRespStrategy;
   protected MultiNodeStrategy spawnPipelinedMemAddrStrategy;
 
   /**
@@ -66,6 +75,8 @@ public class DefaultMemAdjStrategy extends MultiNodeStrategy {
     this.regularPipelinedMemAddrStrategy = makePipelinedMemAddrStrategy(bNodes.RdMem_defaultAddr, bNodes.WrMem_defaultAddr).orElse(null);
     this.spawnPipelinedMemAddrStrategy =
         makePipelinedMemAddrStrategy(bNodes.RdMem_spawn_defaultAddr, bNodes.WrMem_spawn_defaultAddr).orElse(null);
+    this.rdMemValidRespStrategy = makeMemValidRespStrategy(bNodes.RdMem).orElse(null);
+    this.wrMemValidRespStrategy = makeMemValidRespStrategy(bNodes.WrMem).orElse(null);
   }
 
   protected Optional<MultiNodeStrategy> makePipelinedMemAddrStrategy(SCAIEVNode readDefaultAddrNode, SCAIEVNode writeDefaultAddrNode) {
@@ -112,6 +123,7 @@ public class DefaultMemAdjStrategy extends MultiNodeStrategy {
     return Optional.empty();
   }
 
+  /** Computes the default memory size, assuming lw-/sw-like funct3 encoding */
   protected class DefaultMemSizeStrategy extends SingleNodeStrategy {
     @Override
     public Optional<NodeLogicBuilder> implement(NodeInstanceDesc.Key nodeKey) {
@@ -133,6 +145,7 @@ public class DefaultMemAdjStrategy extends MultiNodeStrategy {
     }
   }
 
+  /** Computes the default memory address, assuming lw-/sw-like instruction encoding */
   protected class DefaultMemAddrStrategy extends SingleNodeStrategy {
     SCAIEVNode readDefaultAddrNode;
     SCAIEVNode writeDefaultAddrNode;
@@ -163,6 +176,7 @@ public class DefaultMemAdjStrategy extends MultiNodeStrategy {
     }
   }
 
+  /** Requests the node from the core, bounded by latestFront */
   protected class RequestMemAddrFromCoreStrategy extends SingleNodeStrategy {
     SCAIEVNode readDefaultAddrNode;
     SCAIEVNode writeDefaultAddrNode;
@@ -181,9 +195,107 @@ public class DefaultMemAdjStrategy extends MultiNodeStrategy {
     }
   }
 
+  /** Produces (RdMem|WrMem)_validResp from _validReq && !RdStall */
+  protected class DefaultMemValidRespStrategy extends SingleNodeStrategy {
+    SCAIEVNode validRespNode;
+    Optional<SCAIEVNode> validReqNode_opt;
+    PipelineFront earliestFront;
+    PipelineFront latestFront;
+    public DefaultMemValidRespStrategy(SCAIEVNode validRespNode, PipelineFront earliestFront, PipelineFront latestFront) {
+      this.validRespNode = validRespNode;
+      this.validReqNode_opt = bNodes.GetAdjSCAIEVNode(bNodes.GetNonAdjNode(validRespNode), AdjacentNode.validReq);
+      this.earliestFront = earliestFront;
+      this.latestFront = latestFront;
+    }
+    @Override
+    public Optional<NodeLogicBuilder> implement(NodeInstanceDesc.Key nodeKey) {
+      if (!nodeKey.getNode().equals(validRespNode) ||
+          !nodeKey.getISAX().isEmpty() ||
+          !nodeKey.getPurpose().matches(Purpose.WIREDIN_FALLBACK) ||
+          !earliestFront.isAroundOrBefore(nodeKey.getStage(), false) ||
+          !latestFront.isAroundOrAfter(nodeKey.getStage(), false))
+        return Optional.empty();
+      var requestedFor = new RequestedForSet(nodeKey.getISAX());
+      return Optional.of(NodeLogicBuilder.fromFunction("DefaultMemValidRespStrategy_" + nodeKey.toString(), registry -> {
+        var ret = new NodeLogicBlock();
+        String validReq = "1'b1";
+        if (validReqNode_opt.isPresent())
+          validReq = registry.lookupRequired(new NodeInstanceDesc.Key(validReqNode_opt.get(), nodeKey.getStage(), ""), requestedFor).getExpressionWithParens();
+        String rdStall = registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdStall, nodeKey.getStage(), ""), requestedFor).getExpressionWithParens();
+        String wireName = language.CreateLocalNodeName(nodeKey.getNode(), nodeKey.getStage(), nodeKey.getISAX());
+        ret.declarations += String.format("logic %s;\n", wireName);
+        ret.logic += String.format("assign %s = %s && !%s;\n", wireName, validReq, rdStall);
+        ret.outputs.add(
+            new NodeInstanceDesc(new NodeInstanceDesc.Key(Purpose.WIREDIN_FALLBACK, nodeKey.getNode(), nodeKey.getStage(), nodeKey.getISAX()),
+                                 wireName, ExpressionType.WireName, requestedFor));
+        return ret;
+      }));
+    }
+  }
+
+  /** Requests a node from the core, bounded by earliestFront and latestFront */
+  protected class RequestNodeFromCoreStrategy extends SingleNodeStrategy {
+    SCAIEVNode node;
+    PipelineFront earliestFront;
+    PipelineFront latestFront;
+    public RequestNodeFromCoreStrategy(SCAIEVNode node, PipelineFront earliestFront, PipelineFront latestFront) {
+      this.node = node;
+      this.earliestFront = earliestFront;
+      this.latestFront = latestFront;
+    }
+    Set<NodeInstanceDesc.Key> handledKeys = new HashSet<>();
+    @Override
+    public Optional<NodeLogicBuilder> implement(NodeInstanceDesc.Key nodeKey) {
+      if (!nodeKey.getNode().equals(node) ||
+          !nodeKey.getISAX().isEmpty() || nodeKey.getAux() != 0 ||
+          !nodeKey.getPurpose().matches(Purpose.WIREDIN) ||
+          !earliestFront.isAroundOrBefore(nodeKey.getStage(), false) ||
+          !latestFront.isAroundOrAfter(nodeKey.getStage(), false))
+        return Optional.empty();
+      if (handledKeys.add(new NodeInstanceDesc.Key(node,  nodeKey.getStage(), "")))
+        return Optional.of(new InterfaceRequestBuilder(Purpose.MARKER_FROMCORE_PIN, nodeKey));
+      return Optional.empty();
+    }
+  }
+
+  protected Optional<MultiNodeStrategy> makeMemValidRespStrategy(SCAIEVNode memNode) {
+    SCAIEVNode validRespNode = bNodes.GetAdjSCAIEVNode(memNode, AdjacentNode.validResp).orElseThrow();
+
+    boolean coreProvidesValidResp = !validRespNode.tags.contains(NodeTypeTag.defaultNotprovidedByCore) || core.getNodes().containsKey(validRespNode);
+    var relevantCoreNode = (core.getNodes().containsKey(validRespNode) ? core.getNodes().get(validRespNode) : core.getNodes().get(memNode));
+    if (relevantCoreNode == null)
+      return Optional.empty();
+    PipelineFront earliestFront = core.translateStageScheduleNumber(relevantCoreNode.getEarliest());
+    PipelineFront latestFront = core.translateStageScheduleNumber(relevantCoreNode.getLatest());
+    PipelineFront earliestFront_validResp = earliestFront;
+    PipelineFront latestFront_validResp = latestFront;
+    if (!core.getNodes().containsKey(validRespNode)) {
+      //Advance earliestFront_validResp by latency
+      for (int iLatency = 0; iLatency < relevantCoreNode.getLatency(); ++iLatency) {
+        PipelineFront earliestFront_validResp_ = earliestFront_validResp;
+        PipelineFront latestFront_validResp_ = latestFront_validResp;
+        Stream<PipelineStage> nextStages = earliestFront_validResp
+                                               .streamNext_bfs(successor -> earliestFront_validResp_.contains(successor))
+                                               .filter(successor -> !earliestFront_validResp_.contains(successor));
+        earliestFront_validResp = new PipelineFront(nextStages);
+        if (earliestFront_validResp.asList().stream().anyMatch(earliestStage -> !latestFront_validResp_.isAroundOrAfter(earliestStage, coreProvidesValidResp)))
+          latestFront_validResp = earliestFront_validResp; //Move along the latest front
+      }
+    }
+    if (coreProvidesValidResp) {
+      // Request directly from core
+      return Optional.of(new RequestNodeFromCoreStrategy(validRespNode, earliestFront_validResp, latestFront_validResp));
+    }
+    return Optional.of(new DefaultMemValidRespStrategy(validRespNode, earliestFront_validResp, latestFront_validResp));
+  }
+
   @Override
   public void implement(Consumer<NodeLogicBuilder> out, Iterable<NodeInstanceDesc.Key> nodeKeys, boolean isLast) {
     this.pipelinedMemSizeStrategy.implement(out, nodeKeys, isLast);
+    if (this.rdMemValidRespStrategy != null)
+      this.rdMemValidRespStrategy.implement(out, nodeKeys, isLast);
+    if (this.wrMemValidRespStrategy != null)
+      this.wrMemValidRespStrategy.implement(out, nodeKeys, isLast);
     if (this.regularPipelinedMemAddrStrategy != null)
       this.regularPipelinedMemAddrStrategy.implement(out, nodeKeys, isLast);
     if (this.spawnPipelinedMemAddrStrategy != null)

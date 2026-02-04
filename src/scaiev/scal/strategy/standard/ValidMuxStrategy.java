@@ -122,8 +122,14 @@ public class ValidMuxStrategy extends MultiNodeStrategy {
       boolean spawnNodeIsUsed = op_stage_instr.containsKey(spawnNode_opt.get()) &&
           op_stage_instr.get(spawnNode_opt.get()).containsKey(stage);
       //Select the appropriate adjacent node
-      spawnNode_opt = spawnNode_opt.flatMap(
-          spawnNode -> checkAdj.isAdj() ? bNodes.GetAdjSCAIEVNode(spawnNode, checkAdj.getAdj()) : Optional.of(spawnNode));
+      if (checkAdj.isAdj()) {
+        Optional<SCAIEVNode> spawnAdjNode_opt = bNodes.GetAdjSCAIEVNode(spawnNode_opt.get(), checkAdj.getAdj());
+        if (spawnAdjNode_opt.isEmpty() && checkAdj.getAdj() == AdjacentNode.addrReq) {
+          //RdMem_spawn_addr_valid does not exist -> use RdMem_spawn_validReq
+          spawnAdjNode_opt = bNodes.GetAdjSCAIEVNode(spawnNode_opt.get(), AdjacentNode.validReq);
+        }
+        spawnNode_opt = spawnAdjNode_opt;
+      }
       if (spawnNode_opt.isPresent() && spawnNodeIsUsed) { //semi-coupled spawn
         // Semi-coupled spawn needs to be checked first for correct instruction ordering,
         //  since tightly-coupled (e.g. single-cycle) instructions in <stage> (currently) prevent new spawn instructions from entering

@@ -72,14 +72,42 @@ public class DefaultHandshakeRespStrategy extends SingleNodeStrategy {
     }));
   }
 
+  private Optional<NodeLogicBuilder> implementHandshakeRespSemicoupled(Key nodeKey) {
+    assert(nodeKey.getISAX().isEmpty() && nodeKey.getAux() == 0);
+
+    assert(nodeKey.getNode().getAdj() == AdjacentNode.validHandshakeResp);
+    SCAIEVNode baseNode = bNodes.GetNonAdjNode(nodeKey.getNode());
+    //SCAIEVNode validReqNode = bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.validReq).orElseThrow();
+    SCAIEVNode validRespNode = bNodes.GetAdjSCAIEVNode(baseNode, AdjacentNode.validResp).orElseThrow();
+
+    var requestedFor = new RequestedForSet();
+    String wireName = nodeKey.toString(false) + "_default_r";
+    return Optional.of(NodeLogicBuilder.fromFunction("DefaultHandshakeRespStrategy~semicoupled_" + nodeKey.toString(), registry -> {
+      var ret = new NodeLogicBlock();
+      //String validReqExpr = registry.lookupRequired(new NodeInstanceDesc.Key(validReqNode, nodeKey.getStage(), "")).getExpressionWithParens();
+      //String rdstallExpr = registry.lookupRequired(new NodeInstanceDesc.Key(bNodes.RdStall, nodeKey.getStage(), "")).getExpressionWithParens();
+      String validRespExpr = registry.lookupRequired(new NodeInstanceDesc.Key(validRespNode, nodeKey.getStage(), "")).getExpressionWithParens();
+      ret.declarations += String.format("logic %s;\n", wireName);
+      //ret.logic += "assign %s = %s && !%s;\n".formatted(wireName, validReqExpr, rdstallExpr);
+      ret.logic += "assign %s = %s;\n".formatted(wireName, validRespExpr);
+      ret.outputs.add(new NodeInstanceDesc(NodeInstanceDesc.Key.keyWithPurpose(nodeKey, Purpose.WIREDIN_FALLBACK), wireName,
+                                           ExpressionType.WireName, requestedFor));
+      return ret;
+    }));
+  }
+
   @Override
   public Optional<NodeLogicBuilder> implement(Key nodeKey) {
     if (!nodeKey.getPurpose().matches(Purpose.WIREDIN_FALLBACK) || nodeKey.getAux() != 0)
       return Optional.empty();
-    if (nodeKey.getNode().isSpawn() && nodeKey.getStage().getKind() == StageKind.Decoupled &&
+    if (nodeKey.getNode().isSpawn() &&
         nodeKey.getISAX().isEmpty() &&
-        nodeKey.getNode().getAdj() == AdjacentNode.validHandshakeResp)
-      return implementHandshakeResp(nodeKey);
+        nodeKey.getNode().getAdj() == AdjacentNode.validHandshakeResp) {
+      if (nodeKey.getStage().getKind() == StageKind.Decoupled)
+        return implementHandshakeResp(nodeKey);
+      else if (nodeKey.getStage().getKind() == StageKind.Core)
+        return implementHandshakeRespSemicoupled(nodeKey);
+    }
     return Optional.empty();
   }
 

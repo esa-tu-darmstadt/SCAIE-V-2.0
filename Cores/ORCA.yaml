@@ -63,6 +63,11 @@ operations:
   latency: 0
   latest: 4
   costly: 5
+- operation: RdAnyValid
+  earliest: 1
+  latency: 0
+  latest: 4
+  costly: 5
 - operation: RdInstr
   earliest: 1
   latency: 0

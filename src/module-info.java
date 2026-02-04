@@ -1,7 +1,7 @@
 /** SCAIE-V */
 module scaiev {
   requires org.yaml.snakeyaml;
-  requires commons.cli;
+  requires org.apache.commons.cli;
   requires org.apache.logging.log4j;
   requires org.apache.logging.log4j.core;
 

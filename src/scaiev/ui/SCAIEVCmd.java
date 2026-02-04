@@ -10,14 +10,20 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
-import org.apache.commons.cli.*;
+
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.DefaultParser;
+import org.apache.commons.cli.Option;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
+import org.apache.commons.cli.help.HelpFormatter;
 import org.apache.logging.log4j.*;
 import org.apache.logging.log4j.core.appender.*;
 import org.apache.logging.log4j.core.config.Configurator;
@@ -34,7 +40,6 @@ import scaiev.frontend.SCAIEVInstr.InstrTag;
 import scaiev.frontend.SCAIEVNode;
 import scaiev.frontend.SCAIEVNode.AdjacentNode;
 import scaiev.frontend.Scheduled.ScheduledNodeTag;
-import scaiev.ui.SCAIEVConfig;
 
 public class SCAIEVCmd {
   // logging
@@ -46,14 +51,14 @@ public class SCAIEVCmd {
   static Options options = new Options();
 
   // object and function for help text generation
-  private static HelpFormatter helper = new HelpFormatter();
-  private static void printHelpAndExit(Options options) {
-    helper.printHelp("scaievcmd - generate SCAIE-V SCAL layer and integrate SCAIE-V interface for core", options);
+  private static HelpFormatter helper = HelpFormatter.builder().get();
+  private static void printHelpAndExit(Options options) throws IOException {
+    helper.printHelp("scaievcmd", "generate SCAIE-V SCAL layer and integrate SCAIE-V interface for core", options, "", true);
     System.exit(-1);
   };
 
   // entrypoint
-  public static void main(String[] args) throws FrontendNodeException {
+  public static void main(String[] args) throws FrontendNodeException, IOException {
     // initialize logging
     // get builder to create new appender
     ConfigurationBuilder<BuiltConfiguration> builder = ConfigurationBuilderFactory.newConfigurationBuilder();
@@ -87,14 +92,14 @@ public class SCAIEVCmd {
                           .hasArg()
                           .required(true)
                           .desc("RISC-V core to patch. Must be one of: " + coreDatab.GetCoreNames())
-                          .build());
+                          .get());
     options.addOption(Option.builder("i")
                           .longOpt("isax")
                           .argName("ISAX.yaml")
                           .hasArg()
                           .required(false)
                           .desc("YAML-file describing the ISAX interface as created by Longnail")
-                          .build());
+                          .get());
     options.addOption(Option.builder("o")
                           .longOpt("outdir")
                           .argName("directory")
@@ -102,77 +107,75 @@ public class SCAIEVCmd {
                           .required(false)
                           .desc("Directory to generate output-files; isaxes subdirectory will be scanned unless isax parameter is set; "
                                 + "will use <core> subdirectory by default, trail path with / to disable")
-                          .build());
-    options.addOption(Option.builder("h").longOpt("help").required(false).desc("Print this message").build());
-    options.addOption(Option.builder("q").longOpt("quiet").required(false).desc("Turn off all messages").build());
-    options.addOption(Option.builder("v").longOpt("verbose").required(false).desc("Verbose printing").build());
-    options.addOption(Option.builder("vv").longOpt("vverbose").required(false).desc("Print debug information and enable -v").build());
+                          .get());
+    options.addOption(Option.builder("h").longOpt("help").required(false).desc("Print this message").get());
+    options.addOption(Option.builder("q").longOpt("quiet").required(false).desc("Turn off all messages").get());
+    options.addOption(Option.builder("v").longOpt("verbose").required(false).desc("Verbose printing").get());
+    options.addOption(Option.builder("vv").longOpt("vverbose").required(false).desc("Print debug information and enable -v").get());
     options.addOption(Option.builder("ctx")
                           .longOpt("contexts")
                           .argName("amount")
                           .hasArg()
                           .required(false)
                           .desc("Amount of internally-implemented contexts for ISAX registers")
-                          .build());
+                          .get());
     options.addOption(Option.builder("decoupled_without_DH")
                           .required(false)
                           .desc("Disable data hazard handling for decoupled instructions")
-                          .build());
+                          .get());
     options.addOption(Option.builder("decoupled_without_input_fifo")
                           .required(false)
                           .desc("Do not buffer decoupled instruction results in FIFOs and drop them instead during collisions")
-                          .build());
+                          .get());
     options.addOption(Option.builder("decoupled_without_retire_handling")
                           .required(false)
                           .desc("Do not delay decoupled operations until full instruction retire (only affects cores with out of order completion)")
-                          .build());
+                          .get());
     options.addOption(Option.builder("spawn_input_fifo_depth")
                           .required(false)
                           .argName("infifo_depth")
                           .hasArg()
                           .desc("The maximum depth of the FIFO for decoupled instruction results (may be larger due to decoupled_parallel_max)"
                                 +"(disabled by -decoupled_without_input_fifo true)")
-                          .build());
+                          .get());
     options.addOption(Option.builder("semicoupled_fifo_depth")
                           .required(false)
                           .argName("orderfifo_depth")
                           .hasArg()
                           .desc("The depth of the FIFOs tracking each semi-coupled instruction")
-                          .build());
+                          .get());
     options.addOption(Option.builder("decoupled_parallel_max")
                           .required(false)
                           .argName("decparallel")
                           .hasArg()
                           .desc("The maximum supported count of in-flight instr per decoupled ISAX; for non-dynamic ISAXes, limited by latency")
-                          .build());
+                          .get());
     options.addOption(Option.builder("decoupled_disable_disaxkill")
-                           .required(false)
-                           .argName("decnokill")
-                           .hasArg()
-                           .desc("Disable conditional generation of the disaxkill instruction")
-                           .build());
+                          .required(false)
+                          .argName("decnokill")
+                          .desc("Disable conditional generation of the disaxkill instruction")
+                          .get());
     options.addOption(Option.builder("decoupled_disable_disaxfence")
-                           .required(false)
-                           .argName("decnofence")
-                           .hasArg()
-                           .desc("Disable conditional generation of the disaxfence instruction")
-                           .build());
+                          .required(false)
+                          .argName("decnofence")
+                          .desc("Disable conditional generation of the disaxfence instruction")
+                          .get());
     if (coreDatab.GetCoreNames().contains("CVA5")) {
       options.addOption(Option.builder("cva5_wrrdspawn_injectmode")
                             .required(false)
                             .desc("CVA5-specific: Use injection into the Decode stage for decoupled writebacks")
-                            .build());
+                            .get());
       options.addOption(Option.builder("cva5_fetchdecodepipe_wideid")
                             .required(false)
                             .desc("CVA5-specific: Always use MAX_IDS-deep buffers for fetch-decode pipelining")
-                            .build());
+                            .get());
     }
     options.addOption(Option.builder("portmux_limit")
         .required(false)
         .argName("portmuxmax")
         .hasArg()
         .desc("Number of stage ports to multiplex from. Only applies to multi-issue cores.")
-        .build());
+        .get());
     
 
     //////////   collect options   //////////
@@ -332,7 +335,9 @@ public class SCAIEVCmd {
       }
     } catch (FileNotFoundException e) {
       logger.error("ISAX yaml file could not be opened");
-      printHelpAndExit(options);
+      try {
+        printHelpAndExit(options);
+      } catch (IOException e1) {}
       return;
     }
     if (readData != null)

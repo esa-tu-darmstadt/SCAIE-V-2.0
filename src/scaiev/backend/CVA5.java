@@ -183,6 +183,7 @@ public class CVA5 extends CoreBackend {
         .flatMap(node -> Stream.ofNullable(op_stage_instr.get(node)).flatMap(map -> map.entrySet().stream()))
         .filter(stage_instrs -> !stage_instrs.getKey().equals(pseudostage_spawn))
         .flatMap(stage_instrs -> stage_instrs.getValue().stream().map(instr -> instr))
+        .filter(instr -> !instr.isEmpty())
         .distinct()
         .flatMap(instr -> Stream.of(
             new NodeInstanceDesc.Key(BNode.RdIValid, stage_issue, instr),
