@@ -490,13 +490,19 @@ public class Orca extends CoreBackend {
 	        //			lsu_select <= '1';
 	        //		end if;
 			String textToAdd = "";
+			String textToGrep = "";
 			String reads = "";
 			if(readRequired) {
 				textToAdd =  "if("+language.CreateNodeName(BNode.RdMem_validReq, stage, "")+" = '1') then -- ISAX load \n" // CreateValidEncoding generates text to decode instructions in op_stage_instr.get(BNode.RdMem).get(stage)
 								+ tab+"lsu_select <= '1';\n"
 								+"end if;\n";
-				toFile.UpdateContent(this.ModFile("load_store_unit"),Parse.behav,new ToWrite(language.CreateText1or0("read_s", language.CreateNodeName(BNode.RdMem_validReq,stage,"")+" = '1' or ((opcode(5) = LOAD_OP(5)) and ("+language.CreateNodeName(is_ISAX, 3, "")+" = '0'))"), false,true,""));
+			// was duplicate	toFile.UpdateContent(this.ModFile("load_store_unit"),Parse.behav,new ToWrite(language.CreateText1or0("read_s", language.CreateNodeName(BNode.RdMem_validReq,stage,"")+" = '1' or ((opcode(5) = LOAD_OP(5)) and ("+language.CreateNodeName(is_ISAX, 3, "")+" = '0'))"), false,true,""));
 				reads = language.CreateNodeName(BNode.RdMem_validReq,stage,"")+" = '1' or";
+				
+				String textToReplacewith = "from_lsu_data  : inout std_logic_vector(REGISTER_SIZE-1 downto 0);";
+				textToGrep = "from_lsu_data  : out";
+				toFile.ReplaceContent(this.ModFile("load_store_unit"),textToGrep,  new ToWrite(textToReplacewith,false,true,""));
+				toFile.ReplaceContent(pathORCA+"/components.vhd",textToGrep,  new ToWrite(textToReplacewith,false,true,""));
 			}
 			toFile.UpdateContent(this.ModFile("load_store_unit"),Parse.declare,new ToWrite("signal read_s :std_logic; -- ISAX, signaling a read", false, true,""));
 			toFile.UpdateContent(this.ModFile("load_store_unit"),Parse.behav,new ToWrite(language.CreateText1or0("read_s", reads+" ((opcode(5) = LOAD_OP(5)) and ("+language.CreateNodeName(is_ISAX, 3, "")+" = '0'))"), false,true,""));
