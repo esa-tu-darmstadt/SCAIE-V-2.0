@@ -440,7 +440,7 @@ public class Orca extends CoreBackend {
 				String replace = "if to_alu_valid = '1' and from_alu_ready = '1'";
 				newText = "if ( to_alu_valid = '1' and from_alu_ready = '1') or ("+ language.CreateNodeName(ISAX_FWD_ALU, 3, "")+" = '1') then";
 				toFile.ReplaceContent(this.ModFile("execute"),replace, new ToWrite(newText,false,true,""));				
-				language.UpdateInterface("orca_core",ISAX_FWD_ALU, "",3,false,false);
+				language.UpdateInterface("orca_core",ISAX_FWD_ALU, "",3,false,true);
 			}
 			if(this.ContainsOpInStage(BNode.WrRD, 4)) {
 				String replace = "";
