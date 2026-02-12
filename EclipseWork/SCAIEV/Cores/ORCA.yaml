@@ -21,10 +21,19 @@
   latency: 0
   latest: 4
   costly: 4
+- operation: RdInternal
+  earliest: 2
+  latency: 0
+  latest: 4
+  costly: 4
 - operation: WrRD
   earliest: 2
   latency: 1
   costly: 5
+- operation: WrInternal
+  earliest: 2
+  latency: 1
+  costly: 5  
 - operation: RdPC
   latency: 0
   costly: 3
@@ -58,8 +67,8 @@
 - operation: WrStall
   earliest: 0
   latency: 0
-  latest: 2
-  costly: 3
+  latest: 4
+  costly: 5
 - operation: RdFlush
   earliest: 1
   latency: 0
