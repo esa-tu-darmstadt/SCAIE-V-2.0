@@ -130,9 +130,11 @@ private HashSet<String> textInterface = new  HashSet<String>();
 			// We found a user node 
 			if(allBNodes.IsUserBNode(node) && !node.isInput) { // generate logic once (for exp when we find the rd node)
 				userNodePresent = true;
+				
 				SCAIEVNode WrNode = allBNodes.GetSCAIEVNode(allBNodes.GetNameWrNode(node));
 				int earliest = this.core.GetNodes().get(node).GetEarliest();
-				int writebackStage = this.core.GetNodes().get(WrNode).GetLatest();	
+				
+				int writebackStage = this.core.GetNodes().get(WrNode).GetExpensive()-1; //spawn -1. Write nodes that support spawn don.t have latest	
 				
 				int lastRdStage = -1;
 				for (int stage : this.op_stage_instr.get(node).keySet()) {
@@ -140,8 +142,12 @@ private HashSet<String> textInterface = new  HashSet<String>();
 						lastRdStage = stage;
 				}
 				
+				boolean justSpawn = false; 
+				if(!op_stage_instr.containsKey(WrNode))
+					justSpawn = true;
+				
 				// Module logic
-				String[] moduleinterflogic =  ModuleLogic (node, earliest, writebackStage, lastRdStage,first);
+				String[] moduleinterflogic =  ModuleLogic (node, earliest, writebackStage, lastRdStage,first, justSpawn);
 				moduleText += moduleinterflogic[1];
 				interfText += moduleinterflogic[0];
 				for(int stage = earliest; stage <=lastRdStage; stage++) {
@@ -167,7 +173,6 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				
 				// Read interf
 				for (int stage : this.op_stage_instr.get(node).keySet()) {
-					System.out.println("in read");
 					AddToInterface(node,stage); 
 					AddToInterface(allBNodes.RdInstr,stage);
 					if(stage <writebackStage) // for DH 
@@ -191,20 +196,28 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				}
 				
 				// Write interf
-				for (int stage : this.op_stage_instr.get(WrNode).keySet()) {
-					AddToInterface(WrNode,stage); 
-				}
+				if(this.op_stage_instr.containsKey(WrNode)) // maybe it has just spwn
+					for (int stage : this.op_stage_instr.get(WrNode).keySet()) {
+						AddToInterface(WrNode,stage); 
+					}
 				
+				// Spawn interface 
+				SCAIEVNode spawnNode = allBNodes.GetMySpawnNode(WrNode);
+				if(op_stage_instr.containsKey(spawnNode)) {
+					AddToInterface(spawnNode,this.core.GetSpawnStage());
+					AddToInterface(allBNodes.GetAdjSCAIEVNode(spawnNode, AdjacentNode.validReq),this.core.GetSpawnStage());
+					AddToInterface(allBNodes.GetAdjSCAIEVNode(spawnNode, AdjacentNode.addr),this.core.GetSpawnStage());
+				}
 				// Spawn also has addr
+				/* I don't remember what the code below was for...
 				SCAIEVNode spawnNode = allBNodes.GetMySpawnNode(WrNode);
 				if(op_stage_instr.containsKey(spawnNode))
 					for (int stage : this.op_stage_instr.get(spawnNode).keySet()) {
-						System.out.println("in spawn");
 						if(stage>=this.core.GetSpawnStage()) {
 							AddToInterface(allBNodes.GetAdjSCAIEVNode(node, AdjacentNode.addr),stage); 
 						}
 					}
-				
+				*/
 				System.out.println(this.mapInterface);
 				
 			}
@@ -230,7 +243,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 	}
 	
 	
-	private String[] ModuleLogic (SCAIEVNode RdNode, int firststage, int writebackstage, int lastread, boolean commonsigs) {
+	private String[] ModuleLogic (SCAIEVNode RdNode, int firststage, int writebackstage, int lastread, boolean commonsigs, boolean justSpawn) {
 		SCAIEVNode WrNode = allBNodes.GetSCAIEVNode(allBNodes.GetNameWrNode(RdNode));
 		String RdNode_validReq = allBNodes.GetAdjSCAIEVNode(RdNode, AdjacentNode.validReq).name;
 		String WrNode_validReq = allBNodes.GetAdjSCAIEVNode(WrNode, AdjacentNode.validReq).name;
@@ -256,17 +269,17 @@ private HashSet<String> textInterface = new  HashSet<String>();
 		int thirdstage = firststage+2;
 		int spawn = this.core.GetSpawnStage();
 		
-		String WRSECOND = "WRSECOND"+RdNode;
-		String WRTHIRD = "WRTHIRD"+RdNode;
+		String WRSECOND = "WRSECOND"+WrNode;
+		String WRTHIRD = "WRTHIRD"+WrNode;
 		String RDSECOND = "RDSECOND"+RdNode;
 		String RDTHIRD = "RDTHIRD"+RdNode;
 		String MULTIPLEREGS="MULTIPLEREGS"+RdNode;
 
 		String WRSECONDDEF = "";
-		if(writebackstage>firststage)
+		if(writebackstage>firststage && !justSpawn)
 			WRSECONDDEF = "`define "+WRSECOND;
 		String WRTHIRDDEF = "";
-		if(writebackstage>secondstage)
+		if(writebackstage>secondstage && !justSpawn)
 			WRTHIRDDEF = "`define "+WRTHIRD;
 		String RDSECONDDEF ="";
 		if(lastread>firststage)	
@@ -436,6 +449,8 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "		else if(!"+WrStall+"_"+firststage+"_i)\n"
 				+ "			"+WrNode+"_"+thirdstage+"_reg <= ("+WrNode_validReq+"_"+secondstage+"_i && !"+WrNode_validData+"_"+secondstage+"_reg) ? "+WrNode+"_"+secondstage+"_i :"+ WrNode+"_"+secondstage+"_reg; \n"
 				+ "	end\n"
+				+ "`else\n"
+				+ "  wire [32-1: 0]  "+WrNode+"_"+thirdstage+"_reg =0;\n"
 				+ "`endif	\n"
 				+ "\n"
 				+ "// Write data \n"

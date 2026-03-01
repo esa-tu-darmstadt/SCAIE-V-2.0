@@ -867,7 +867,6 @@ public class SCAL implements SCALBackendAPI {
 	    	 if(this.ContainsOpInStage(node, spawnStage) && SETTINGWithScoreboard && node.DH) { // Add it only if spawn node in op_stage_instr (means there are instr runnning decoupled) AND if scoreboard within SCAL desired by user
 	    		 // Differentiate between Wr Regfile and user nodes or address signals 
     			 String instrSig = myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(),  core.GetStartSpawnStage(), "");
-    			 String destSig = instrSig+"[11:7]"; 
     			 SCAIEVNode parentWrNode = this.BNode.GetSCAIEVNode(node.nameParentNode);
     			 SCAIEVNode parentRdNode = this.BNode.GetSCAIEVNode( this.BNode.GetNameRdNode(parentWrNode));
         		 String allIValid = "";
@@ -879,18 +878,28 @@ public class SCAL implements SCALBackendAPI {
 			    		 allIValid += myLanguage.CreateLocalNodeName(BNode.RdIValid.NodeNegInput(),  core.GetStartSpawnStage(), ISAX);
 	    			 }
         		 
+        		 String destSig = instrSig+"[11:7]"; 
+        		 /* Custom addr for user instr was supported in the past. Was removed
     			 if(BNode.IsUserBNode(node))
     				 if(node.elements>1)
     					 destSig = myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(parentWrNode, AdjacentNode.addr).NodeNegInput(),  this.core.GetStartSpawnStage(), "");
     				 else 
     					 destSig = "5'd0";
+    					  */
+    			 if(BNode.IsUserBNode(node) && node.elements==1)
+    				 destSig = "5'd0";
+    				
+    			 
     			 String RdRS1Sig = instrSig+"[19:15]"; 
+    			 /* Custom addr for user instr was supported in the past. Was removed in newer versions. Simplicity favors corectness
     			 if(BNode.IsUserBNode(node))
     				 if(node.elements>1)
     					 RdRS1Sig = myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(parentRdNode, AdjacentNode.addr).NodeNegInput(),  this.core.GetStartSpawnStage(), "");
     				 else 
     					 RdRS1Sig = "5'd0";
-    			 
+    			 */
+    			 if(BNode.IsUserBNode(node) && node.elements==1)
+    				 RdRS1Sig = "5'd0";
     			 
     			 // Compute cancel signal in case of user validReq = 0 
     			 logic += CreateUserCancelSpawn(node, spawnStage);
