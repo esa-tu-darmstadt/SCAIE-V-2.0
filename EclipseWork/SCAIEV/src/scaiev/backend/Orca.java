@@ -166,12 +166,21 @@ public class Orca extends CoreBackend {
 			for(int stage : op_stage_instr.get(BNode.WrFlush).keySet()) {
 				toFile.UpdateContent(this.ModFile(NodeAssignM(BNode.WrFlush, stage)), Parse.declare, new ToWrite(language.CreateDeclSig(BNode.WrFlush, stage, ""),false,true,""));
 				if(stage ==1)
-					toFile.ReplaceContent(this.ModFile(NodeAssignM(BNode.WrFlush, stage)),"to_decode_valid                    => ", new ToWrite("to_decode_valid                    => to_decode_valid or "+language.CreateLocalNodeName(BNode.WrFlush, stage,"")+",", false, true , "") );
+					toFile.ReplaceContent( this.ModFile("orca_core"),"to_decode_valid                    => ", new ToWrite("to_decode_valid                    => to_decode_valid and ( not "+language.CreateNodeName(BNode.WrFlush, stage,"")+"),", false, true , ""));
 				if(stage ==2 && !(this.ContainsOpInStage(BNode.WrPC_valid, 3) || this.ContainsOpInStage(BNode.WrPC_valid, 4))) // TODO, to simulate this
 					toFile.ReplaceContent(this.ModFile(NodeAssignM(BNode.WrFlush, stage)),"quash_decode       => ", new ToWrite("quash_decode       => to_pc_correction_valid or "+language.CreateLocalNodeName(BNode.WrFlush, stage,"")+",", false, true , "") );
 				if(stage ==3)
-					toFile.ReplaceContent(this.ModFile(NodeAssignM(BNode.WrFlush, stage))," to_execute_valid            => to_execute_valid,", new ToWrite(" to_execute_valid            => to_execute_valid or "+language.CreateLocalNodeName(BNode.WrFlush, stage,"")+",", false, true , "") );
+					toFile.ReplaceContent(this.ModFile(NodeAssignM(BNode.WrFlush, stage))," to_execute_valid            => to_execute_valid,", new ToWrite(" to_execute_valid            => to_execute_valid and ( not "+language.CreateLocalNodeName(BNode.WrFlush, stage,"")+",", false, true , "") );
 			}
+		
+		 if (ContainsOpInStage(BNode.WrFlush, 1)) {
+		      String flushCond = language.CreateNodeName(BNode.WrFlush, 1, "") + " = '1'";
+		      toFile.ReplaceContent(
+		          this.ModFile("decode"), "if reset = '1' or quash_decode = '1' then",
+		          new ToWrite("if reset = '1' or quash_decode = '1' or " + flushCond + " then", true, false,
+		              "if from_decode_ready = '1' then"));
+		    }
+		 
 		
 		
 	}
@@ -674,8 +683,10 @@ public class Orca extends CoreBackend {
 			assign_lineToBeInserted +=  language.CreateTextISAXorOrig(PC_clause, "ISAX_to_pc_correction_valid_s","'1'","to_pc_correction_valid");
 			toFile.ReplaceContent(sub_top_file, "to_pc_correction_data        => to_pc_correction_data,", new ToWrite("to_pc_correction_data        => ISAX_to_pc_correction_data_s,",true, false, "I : instruction_fetch"));
 			toFile.ReplaceContent(sub_top_file, "to_pc_correction_valid       =>", new ToWrite("to_pc_correction_valid        => ISAX_to_pc_correction_valid_s,",true, false, "I : instruction_fetch"));
-			if(this.ContainsOpInStage(BNode.WrFlush, 2))
-				toFile.ReplaceContent(sub_top_file, "quash_decode =>", new ToWrite("quash_decode        => to_pc_correction_valid or "+language.CreateNodeName(BNode.WrFlush, 2,"")+",",true, false, "D : decode"));
+			
+			// Commented out because it's covered in IntegrateISAX_WrFlush
+			//if(this.ContainsOpInStage(BNode.WrFlush, 2))
+			//	toFile.ReplaceContent(sub_top_file, "quash_decode =>", new ToWrite("quash_decode        => to_pc_correction_valid or "+language.CreateNodeName(BNode.WrFlush, 2,"")+",",true, false, "D : decode"));
 			
 				
 		}
