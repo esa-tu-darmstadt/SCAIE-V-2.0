@@ -538,7 +538,7 @@ public class SCAL implements SCALBackendAPI {
 		   		 if(!node.isInput)
 					 logic += myLanguage.CreateAssign(myLanguage.CreateFamNodeName(node,spawnStage,ISAX,false), myLanguage.CreateNodeName(node.NodeNegInput(),spawnStage,""));
 		   		// update priority list
-		   		 priorityStr   = Verilog.OpIfNEmpty(priorityStr, " || ") + myLanguage.CreateRegNodeName(BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest()), spawnStage,ISAX);
+		   		 priorityStr   = Verilog.OpIfNEmpty(priorityStr, " || ") + myLanguage.CreateFamRegNodeName(BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest()), spawnStage,ISAX, false);
 		   		 inputFIFOStr  = Verilog.OpIfNEmpty(inputFIFOStr, " + ") + node+"_"+ISAX+"_FIFO_notempty_s ";
 		   	 }
 		   	 
@@ -575,17 +575,17 @@ public class SCAL implements SCALBackendAPI {
 	    				 logic += myLanguage.CreateText1or0(myLanguage.CreateFamNodeName(adjNode,spawnStage,ISAX,false), 
 						                                    myLanguage.CreateRegNodeName(this.ISAX_fire2_r, spawnStage,fireNodeSuffix)
 						                                    +priorityLogic
-						                                    +" && "+myLanguage.CreateRegNodeName(BNode.GetAdjSCAIEVNode(node, AdjacentNode.validReq), spawnStage, ISAX)
+						                                    +" && "+myLanguage.CreateFamRegNodeName(BNode.GetAdjSCAIEVNode(node, AdjacentNode.validReq), spawnStage, ISAX,false)
 						                                    +" && "+myLanguage.CreateNodeName(adjNode.NodeNegInput(),spawnStage,"") );
 	    			 } 
 	    			 // Declare sigs
-	    			 declarations += myLanguage.CreateDeclReg(adjNode, spawnStage, ISAX);
+	    			 declarations += myLanguage.CreateFamDeclReg(adjNode, spawnStage, ISAX,false);
 	    			 // Compute spawn signals to core
 	    			 logicToCoreSpawn += LogicToCoreSpawn(ISAX,spawnStage, adjNode, node,priorityStr );
 	    			 logic += LogicRegsSpawn(adjNode,BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest()), ISAX ,spawnStage,priorityStr,fireNodeSuffix);    
 		   			 if(!priorityStr.isEmpty())
 		   				 priorityStr += " || ";
-		   			 priorityStr   +=myLanguage.CreateRegNodeName(BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest()), spawnStage,ISAX);
+		   			 priorityStr   +=myLanguage.CreateFamRegNodeName(BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest()), spawnStage,ISAX,false);
 	    		 }
 		  	}
 			    
@@ -736,7 +736,7 @@ public class SCAL implements SCALBackendAPI {
 		    		 dataW = BNode.GetAdjSCAIEVNode(node, AdjacentNode.addr).size; // TODO this line versus next one, make it uniform
 	    		 else 
 	    			 dataW = 1;
-	    		 SCAIEVNode validReqNode = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest());
+	    		 SCAIEVNode validReqNode = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidRequest());	    		 
 	    		 SCAIEVNode addrNode = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetAddr());
 
 		         // FIFO Module: Required to store addr in a FIFO? 
@@ -769,7 +769,7 @@ public class SCAL implements SCALBackendAPI {
 	    		 		+ myLanguage.tab+ myLanguage.CreateLocalNodeName(BNode.RdIValid.NodeNegInput(), core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName())+",\n"
 	    		 		+ myLanguage.tab+myLanguage.CreateLocalNodeName(BNode.RdIValid, this.core.GetNodes().get(BNode.GetSCAIEVNode(node.nameParentNode)).GetEarliest(), ISAX)
 	    		 		  +" && ! "+myLanguage.CreateLocalNodeName(BNode.RdStall,  this.core.GetNodes().get(BNode.GetSCAIEVNode(node.nameParentNode)).GetEarliest(), "")+",\n " // write fifo
-	    		 		+ myLanguage.tab+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+",\n"            // read fifo
+	    		 		+ myLanguage.tab+myLanguage.CreateFamNodeName(validReqNode,  spawnStage, ISAX,false)+ShiftmoduleSuffix+",\n"            // read fifo
 	    		 		+ myLanguage.tab+addrReadSig // write data
 	    		 		+ "dummy"+ISAX+","
 	    		 		+ myLanguage.tab+myLanguage.CreateFamNodeName(addrNode,  spawnStage, ISAX,false)+"\n" // read data . No family node name (for Mem we need full name as on interf to ISAX)         
@@ -789,7 +789,7 @@ public class SCAL implements SCALBackendAPI {
 	    		 // Shift Module: Required to store valid bit (trigger of valid response)?
 	    		 if(this.ISAXes.get(ISAX).GetRunsAsDecoupled()) { 
 		    		 dataW = BNode.GetAdjSCAIEVNode(node, AdjacentNode.validReq).size;
-		    		 declarations +=  "wire "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+this.ShiftmoduleSuffix+";\n";
+		    		 declarations +=  "wire "+myLanguage.CreateFamNodeName(validReqNode,  spawnStage, ISAX,false)+this.ShiftmoduleSuffix+";\n";
 		    		 if(SETTINGWithValid && !this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled()){ // Make shift reg available also without scoreboard; for dynamic decoupled, latency unknown, so valid comes from user	    				
 		    			 String rdInstr = myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(),  core.GetStartSpawnStage(), ""); 
 		    			 if( core.GetStartSpawnStage()>= core.GetNodes().get(BNode.RdInstr).GetExpensive())
@@ -805,7 +805,7 @@ public class SCAL implements SCALBackendAPI {
 			   			 		+ myLanguage.tab+flush+",\n"
 			   			 		+ myLanguage.tab+stallShiftReg+",\n"
 			   			 		+ myLanguage.tab+"stall_fence_"+node+"_"+ISAX+"_s, //stall fr fence \n"
-			   			 		+ myLanguage.tab+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+"\n" // read data          
+			   			 		+ myLanguage.tab+myLanguage.CreateFamNodeName(validReqNode,  spawnStage, ISAX,false)+ShiftmoduleSuffix+"\n" // read data          
 			   			 		+ ");\n";
 		    			// Stall stages due to fence 
 		    			for(int stage=0; stage <=  core.GetStartSpawnStage();stage++) {
@@ -817,9 +817,11 @@ public class SCAL implements SCALBackendAPI {
 			    			
 		    		 } else if(!this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled()) {
 		    			 System.out.println("SCAL. WARNING. User selected no shift reg for a decoupled instr. Thus user must implement fence & kill instr within ISAX");
-		    			 logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+" = "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+";\n"; 		
+		    			 logic += "assign "+myLanguage.CreateFamNodeName(validReqNode,  spawnStage, ISAX,false)+ShiftmoduleSuffix+" = "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+";\n"; 		
 		    		 } else // this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled() 
-		    			 logic += "assign "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+ShiftmoduleSuffix+" = |"+myLanguage.CreateFamNodeName(addrNode,  spawnStage, ISAX,false)+";\n";
+		    			 logic += "assign "+myLanguage.CreateFamNodeName(validReqNode,  spawnStage, ISAX,false)+ShiftmoduleSuffix+" = |"+myLanguage.CreateFamNodeName(addrNode,  spawnStage, ISAX,false)+";\n";
+		    		 System.out.println(" !!!!!!! myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)"+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"  myLanguage.CreatefAMNodeName(validReqNode,  spawnStage, ISAX) "+myLanguage.CreateFamNodeName(validReqNode,  spawnStage, ISAX,false));
+		    		 
 	    		 }
 	    		 
 	    		 // Add Stall mechanism if multicycle 
@@ -1664,7 +1666,7 @@ public class SCAL implements SCALBackendAPI {
 		 }
 		 
 		 // If Scoreboard present here, we have to consider its stall to avoid deadlock:  exp, in execute there is a memory instr with DH 
-		 if (spawn_allowed_cond != null && this.SETTINGWithScoreboard) 
+		 if (spawn_allowed_cond != null && this.SETTINGWithScoreboard && node.DH) 
 			 spawn_allowed_cond += " || to_CORE_stall_RS_"+node+"_s";
 		 return spawn_allowed_cond;
 	}
@@ -1682,9 +1684,9 @@ public class SCAL implements SCALBackendAPI {
 	private String LogicRegsSpawn (SCAIEVNode node, SCAIEVNode validNode, String ISAX, int spawnStage, String priority, String fireNodeSuffix ) {
 		String regsSpawn = "";
 		if(node.isSpawn() && node.allowMultipleSpawn && node.isInput) {
-			String mainSig = this.myLanguage.CreateLocalNodeName(node, spawnStage, ISAX);
-			String mainSigReg = this.myLanguage.CreateRegNodeName(node, spawnStage, ISAX);
-			String validSig =  this.myLanguage.CreateLocalNodeName(validNode, spawnStage, ISAX);
+			String mainSig = this.myLanguage.CreateFamLocalNodeName(node, spawnStage, ISAX,false);
+			String mainSigReg = this.myLanguage.CreateFamRegNodeName(node, spawnStage, ISAX,false);
+			String validSig =  this.myLanguage.CreateFamLocalNodeName(validNode, spawnStage, ISAX,false);
 			String validResponse = "";
 			SCAIEVNode validRespNode = BNode.GetAdjSCAIEVNode(node, SCAIEVNode.GetValidResponse());
 			SCAIEVNode parentNode = node;
@@ -1735,7 +1737,7 @@ public class SCAL implements SCALBackendAPI {
 				else
 					body += myLanguage.CreateNodeName(nodeToCore, stage, "") +" = 0;\n";
 			} else if(!node.getAdj().equals(SCAIEVNode.GetValidRequest())) 
-				body += myLanguage.CreateNodeName(nodeToCore, stage, "") +" = "+myLanguage.CreateRegNodeName(node, stage, instr)+";\n";
+				body += myLanguage.CreateNodeName(nodeToCore, stage, "") +" = "+myLanguage.CreateFamRegNodeName(node, stage, instr,false)+";\n";
 			else 
 				return "";
 		}
@@ -1809,9 +1811,9 @@ public class SCAL implements SCALBackendAPI {
 		String  cancelLogicAddr = cancelAddr+" = 0;\n"; 
 		for(String ISAX : this.op_stage_instr.get(node).get(spawnStage)) {
 			if(ISAXes.get(ISAX).GetFirstNode(node).HasAdjSig(AdjacentNode.validReq) ) {
-				cancelLogicValid += " || "+ myLanguage.CreateNodeName(nodeValid, spawnStage, ISAX)+ShiftmoduleSuffix+" && ~"+ myLanguage.CreateNodeName(nodeValid, spawnStage,ISAX);
+				cancelLogicValid += " || "+ myLanguage.CreateFamNodeName(nodeValid,  spawnStage, ISAX,false)+ShiftmoduleSuffix+" && ~"+ myLanguage.CreateNodeName(nodeValid, spawnStage,ISAX);
 				if(node.elements>1)
-					cancelLogicAddr += "if("+ myLanguage.CreateNodeName(nodeValid, spawnStage, ISAX)+ShiftmoduleSuffix+") "+cancelAddr+" = "+myLanguage.CreateNodeName(nodeAddr, spawnStage, ISAX)+";\n";
+					cancelLogicAddr += "if("+ myLanguage.CreateFamNodeName(nodeValid,  spawnStage, ISAX,false)+ShiftmoduleSuffix+") "+cancelAddr+" = "+myLanguage.CreateNodeName(nodeAddr, spawnStage, ISAX)+";\n";
 			}
 		}
 		if(node.elements>1 && cancelLogicValid.length()>15) {
@@ -1837,11 +1839,11 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 		String wire = "wire "; 
 		if(this.SETTINGwithInputFIFO)
 			wire = "reg "; 
-		logic += wire  +"["+node.size+"-1:0]"+  myLanguage.CreateLocalNodeName(node, spawnStage, ISAX)+";\n";
+		logic += wire  +"["+node.size+"-1:0]"+  myLanguage.CreateFamLocalNodeName(node, spawnStage, ISAX,false)+";\n";
 		for(AdjacentNode adjacent : BNode.GetAdj(node)) {
    			 SCAIEVNode adjOperation = BNode.GetAdjSCAIEVNode(node,adjacent);
    			 if(adjOperation.isInput)
-   				logic += wire +"["+adjOperation.size+"-1:0]"+ myLanguage.CreateLocalNodeName(adjOperation, spawnStage, ISAX)+";\n";
+   				logic += wire +"["+adjOperation.size+"-1:0]"+ myLanguage.CreateFamLocalNodeName(adjOperation, spawnStage, ISAX,false)+";\n";
 		}
 	
 		if(this.SETTINGwithInputFIFO && this.ISAXes.get(ISAX).GetRunsAsDecoupled()) { // if it's not decoupled and is multicycle, no need for input FIFO
@@ -1876,7 +1878,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 			
 			// Compute inputs to FIFO 
 			// Write in FIFO?
-			String FIFO_write = "assign "+node+"_"+ISAX+"_FIFO_write_s = ("+myLanguage.CreateRegNodeName(validReq, spawnStage, ISAX) + " && "+myLanguage.CreateNodeName(validReq,  spawnStage, ISAX)+ShiftmoduleSuffix+");\n";
+			String FIFO_write = "assign "+node+"_"+ISAX+"_FIFO_write_s = ("+myLanguage.CreateFamRegNodeName(validReq, spawnStage, ISAX,false) + " && "+myLanguage.CreateFamNodeName(validReq,  spawnStage, ISAX,false)+ShiftmoduleSuffix+");\n";
 			logic += FIFO_write;
 			// What data to write in FIFO?
 			String FIFO_in = node+"_"+ISAX+"_FIFO_in_s = "; 
@@ -1894,19 +1896,19 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 			String userOptValid = "";
 			if(ISAXes.get(ISAX).GetFirstNode(node).HasAdjSig(AdjacentNode.validReq))
 				userOptValid = myLanguage.CreateFamNodeName(validReq, spawnStage, ISAX, false)+" && ";
-			String FIFO_out = myLanguage.CreateLocalNodeName(validReq, spawnStage, ISAX) +" = "+userOptValid +myLanguage.CreateFamNodeName(validReq, spawnStage, ISAX, true)+ShiftmoduleSuffix+" && ((~"+fire2_reg+" | "+myLanguage.CreateFamNodeName(validResp, spawnStage, ISAX,false)+")); // Signals rest of logic valid spawn sig\n";
+			String FIFO_out = myLanguage.CreateFamLocalNodeName(validReq, spawnStage, ISAX,false) +" = "+userOptValid +myLanguage.CreateFamNodeName(validReq, spawnStage, ISAX, false)+ShiftmoduleSuffix+" && ((~"+fire2_reg+" | "+myLanguage.CreateFamNodeName(validResp, spawnStage, ISAX,false)+")); // Signals rest of logic valid spawn sig\n";
 			if(hasAddr)
-				FIFO_out +=  myLanguage.CreateLocalNodeName(addr, spawnStage, ISAX) +" = "+myLanguage.CreateFamNodeName(addr, spawnStage, ISAX,false)+";\n"; 
+				FIFO_out += myLanguage.CreateFamLocalNodeName(addr, spawnStage, ISAX,false) +" = "+myLanguage.CreateFamNodeName(addr, spawnStage, ISAX,false)+";\n"; 
 			if(node.isInput)
-				FIFO_out +=  myLanguage.CreateLocalNodeName(node, spawnStage, ISAX) +" = "+myLanguage.CreateFamNodeName(node, spawnStage, ISAX,false)+";\n";
+				FIFO_out +=  myLanguage.CreateFamLocalNodeName(node, spawnStage, ISAX,false) +" = "+myLanguage.CreateFamNodeName(node, spawnStage, ISAX,false)+";\n";
 			FIFO_out +=  node+"_"+ISAX+"_FIFO_read_s = 0;\n"
-					 +  "if("+node+"_"+ISAX+"_FIFO_notempty_s && (!"+myLanguage.CreateRegNodeName(validReq, spawnStage, ISAX)+" | "+myLanguage.CreateFamNodeName(validResp, spawnStage, ISAX,false)+")) begin \n"	
-					 + myLanguage.tab+" "+ myLanguage.CreateLocalNodeName(validReq, spawnStage, ISAX)+" = 1;\n "
+					 +  "if("+node+"_"+ISAX+"_FIFO_notempty_s && (!"+myLanguage.CreateFamRegNodeName(validReq, spawnStage, ISAX, false)+" | "+myLanguage.CreateFamNodeName(validResp, spawnStage, ISAX,false)+")) begin \n"	
+					 + myLanguage.tab+" "+ myLanguage.CreateFamLocalNodeName(validReq, spawnStage, ISAX, false)+" = 1;\n "
 					 + node+"_"+ISAX+"_FIFO_read_s"+" = 1;\n ";
 			if(node.isInput)
-				FIFO_out += myLanguage.CreateLocalNodeName(node, spawnStage, ISAX)+" = "+node+"_"+ISAX+"_FIFO_out_s["+node.size+"-1:0];\n ";
+				FIFO_out += myLanguage.CreateFamLocalNodeName(node, spawnStage, ISAX,false)+" = "+node+"_"+ISAX+"_FIFO_out_s["+node.size+"-1:0];\n ";
 			if(hasAddr)
-				FIFO_out += myLanguage.CreateLocalNodeName(addr, spawnStage, ISAX)+" = "+node+"_"+ISAX+"_FIFO_out_s["+addr.size+"+32-1 : 32]; \n";
+				FIFO_out +=  myLanguage.CreateFamLocalNodeName(addr, spawnStage, ISAX,false) +" = "+node+"_"+ISAX+"_FIFO_out_s["+addr.size+"+32-1 : 32]; \n";
 			FIFO_out +=  "end\n";
 			logic += myLanguage.CreateInAlways(false, FIFO_out);
 			

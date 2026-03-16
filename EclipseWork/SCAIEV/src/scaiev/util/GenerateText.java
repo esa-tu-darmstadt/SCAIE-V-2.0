@@ -126,11 +126,25 @@ public class GenerateText {
 		return nodeName;
 	}
 	
+	public String CreateFamLocalNodeName (SCAIEVNode operation, int stage, String instr, boolean familyName) {
+		String nodeName = "";
+		String suffix =localSuffix;	
+		nodeName =  CreateBasicNodeName(operation,stage,instr, familyName)+suffix;
+		return nodeName;
+	}
 	
 	public String CreateLocalNodeName (SCAIEVNode operation, int stage, String instr) {
 		String nodeName = "";
 		String suffix =localSuffix;	
 		nodeName =  CreateBasicNodeName(operation,stage,instr, true)+suffix;
+		return nodeName;
+	}
+	
+
+	public String CreateFamRegNodeName (SCAIEVNode operation, int stage, String instr, boolean familyName) {
+		String nodeName = "";
+		String suffix = regSuffix;	
+		nodeName = CreateBasicNodeName(operation,stage,instr, familyName)+suffix;
 		return nodeName;
 	}
 	

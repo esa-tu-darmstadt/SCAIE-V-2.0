@@ -128,6 +128,26 @@ public class Verilog extends GenerateText {
 		decl = "reg "+size+" "+regName+";\n";
 		return decl;	
 	}
+	
+	
+	
+	/**
+	 * Generates text like : signal FamilySignalName_reg  :  std_logic_vector(1 : 0);
+	 * signalName created from <familyOperation,  stage,  instr>
+	 */
+	public String CreateFamDeclReg(SCAIEVNode operation, int stage, String instr, boolean family) {
+		String decl = "";
+		String size = "";
+		if(coreBackend.NodeSize(operation,stage) != 1 ) 
+			size += dictionary.get(DictWords.bitsselectLeft)+" "+operation.size+" -1 : 0 "+dictionary.get(DictWords.bitsselectRight);
+		String regName = "";
+		if(coreBackend.NodeIn(operation, stage))
+			regName = CreateFamRegNodeName(operation,stage,instr,family);
+		else 
+			regName = CreateFamRegNodeName(operation,stage,instr,family);
+		decl = "reg "+size+" "+regName+";\n";
+		return decl;	
+	}
 
 	
 
@@ -532,7 +552,8 @@ public class Verilog extends GenerateText {
 	
 	
 	public String CreateAssign( String assigSig ,String toAssign) {
-		return "assign "+ assigSig +" = "+toAssign+";\n";		
+		return "assign "+ assigSig +" = "+toAssign+";\n";	
+		
 	}
 	
 
