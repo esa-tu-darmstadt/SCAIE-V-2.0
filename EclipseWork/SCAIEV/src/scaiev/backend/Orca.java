@@ -549,7 +549,7 @@ public class Orca extends CoreBackend {
 			
 			if(this.op_stage_instr.containsKey(BNode.RdMem_spawn)) // TODO , support bth rd and wr dependding on opcode
 				rdAddrLogic = language.CreateNodeName(BNode.RdMem_spawn_rdAddr,  this.orca_core.maxStage+1, "") + " <= std_logic_vector(unsigned(sign_extension(REGISTER_SIZE-12-1 downto 0) &\n"
-						+ "                                                 (instruction(31 downto 20) ) ))+unsigned(base_address));\n";
+						+ "                                                 (instruction(31 downto 20) ) )+unsigned(base_address));\n";
 				
 			this.toFile.UpdateContent(this.ModFile("load_store_unit"),"oimm_address <= address_unaligned(REGISTER_SIZE-1 downto 0);", new ToWrite(rdAddrLogic,false,true,"")); //TODO Test
 			
