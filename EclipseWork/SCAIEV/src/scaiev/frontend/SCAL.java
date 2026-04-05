@@ -645,7 +645,7 @@ public class SCAL implements SCALBackendAPI {
 	    	 }
     		 // Committed addr required for DH spawn
 	    	 // if op_stage_instr contains node, it means there are decoupled instr
-	    	 if(this.ContainsOpInStage(node, spawnStage) && node.DH) {
+	    	 if(this.ContainsOpInStage(node, spawnStage) ) { //useful also for mem accesses to order them. Before: && node.DH) {
     			 String interf_commited_rd_spawn = "";
     			 String interf_commited_rd_spawn_valid = "";
         		 for(String ISAX : spawn_instr_stage.get(node).keySet()) {
@@ -661,8 +661,12 @@ public class SCAL implements SCALBackendAPI {
         		 }
         		 if (!interf_commited_rd_spawn_valid.isEmpty()) {
         			 newInterfaceToISAX.add(interf_commited_rd_spawn_valid);
-        			 logic += "assign "+myLanguage.CreateNodeName(BNode.commited_rd_spawn_valid+"_"+node, spawnStage, "",false)+" = "+ myLanguage.CreateRegNodeName(this.ISAX_fire2_r, spawnStage,fireNodeSuffix)+";\n";
-        			 
+        			 if(node.name.contains("Mem")) // FAST PATCH FOR MEMORY. IN FUTURE MEM HERE SHOULD BE ABSTRACTED AWAY //TODO 
+        				 logic += "assign "+myLanguage.CreateNodeName(BNode.commited_rd_spawn_valid+"_"+node, spawnStage, "",false)+" = "+ myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node, AdjacentNode.validResp),spawnStage,"") +";\n";
+        			 else if(BNode.GetAdjSCAIEVNode(node, AdjacentNode.validResp)!=null)
+        				 logic += "assign "+myLanguage.CreateNodeName(BNode.commited_rd_spawn_valid+"_"+node, spawnStage, "",false)+" = "+ myLanguage.CreateRegNodeName(this.ISAX_fire2_r, spawnStage,fireNodeSuffix) +" && "+myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node, AdjacentNode.validResp).NodeNegInput(),spawnStage,"") +";\n";
+        			 else 
+        				 logic += "assign "+myLanguage.CreateNodeName(BNode.commited_rd_spawn_valid+"_"+node, spawnStage, "",false)+" = "+ myLanguage.CreateRegNodeName(this.ISAX_fire2_r, spawnStage,fireNodeSuffix)+";\n";
         		 }   			  				 
    		 
     		 }
@@ -818,10 +822,15 @@ public class SCAL implements SCALBackendAPI {
 		    		 } else if(!this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled()) {
 		    			 System.out.println("SCAL. WARNING. User selected no shift reg for a decoupled instr. Thus user must implement fence & kill instr within ISAX");
 		    			 logic += "assign "+myLanguage.CreateFamNodeName(validReqNode,  spawnStage, ISAX,false)+ShiftmoduleSuffix+" = "+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+";\n"; 		
-		    		 } else // this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled() 
-		    			 logic += "assign "+myLanguage.CreateFamNodeName(validReqNode,  spawnStage, ISAX,false)+ShiftmoduleSuffix+" = |"+myLanguage.CreateFamNodeName(addrNode,  spawnStage, ISAX,false)+";\n";
-		    		 System.out.println(" !!!!!!! myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)"+myLanguage.CreateNodeName(validReqNode,  spawnStage, ISAX)+"  myLanguage.CreatefAMNodeName(validReqNode,  spawnStage, ISAX) "+myLanguage.CreateFamNodeName(validReqNode,  spawnStage, ISAX,false));
-		    		 
+		    		 } else {// this.ISAXes.get(ISAX).GetRunsAsDynamicDecoupled() 
+		    			 if(node.elements>1) 
+		    				 logic += "assign "+myLanguage.CreateFamNodeName(validReqNode,  spawnStage, ISAX,false)+ShiftmoduleSuffix+" = |"+myLanguage.CreateFamNodeName(addrNode,  spawnStage, ISAX,false)+";\n";
+		    			 else {
+		    				 String explanation = "Valid decoupled incoming ISAX transfer = address signal !=0; This is an issue for a 1 element user defined reg. Current workaround: Please connect  user_cancel_connect_to_interf"+node+" to SCAL interf and your ISAX.\n";
+		    				 System.out.println("SCAL. CRITICAL WARNING: "+explanation);
+		    				 logic += "assign "+myLanguage.CreateFamNodeName(validReqNode,  spawnStage, ISAX,false)+ShiftmoduleSuffix+" = user_cancel_connect_to_interf"+node+"; // "+explanation; 
+		    			 }
+		    		 }
 	    		 }
 	    		 
 	    		 // Add Stall mechanism if multicycle 
@@ -1390,25 +1399,28 @@ public class SCAL implements SCALBackendAPI {
         		 earliest = this.core.GetNodes().get(RdNode).GetEarliest();
     			 writebackStage = this.core.GetNodes().get(node).GetLatest();
     			 this.declarations += "wire "+this.myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(RdNode, AdjacentNode.addrReq).NodeNegInput(), earliest, "")+" = 0; // custom instr not supported by the automated flow yet\n ";
-    			 for (int currstage=earliest; currstage <= writebackStage; currstage++ ) 
+    			 for (int currstage=earliest; currstage <= writebackStage; currstage++ ) {
     				this.declarations += "wire "+this.myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node, AdjacentNode.addrReq).NodeNegInput(), currstage, "")+" = 0; // custom instr not supported by the automated flow yet \n";
+    			 }
+    			 
+    			 HashSet<Integer> statestages = new HashSet<Integer>();
+    		     for (int currstage=earliest; currstage <= writebackStage; currstage++ ) {
+    					// AddIn_op_stage_instr(BNode.RdInstr, i, "");// workaround to have rdinstr signal
+    					// Can we generate this interf to core? If not, let's create the register
+    				 AddToCoreInterfHashMap(BNode.RdInstr,currstage);		
+    		    	 if(this.core.GetNodes().get(BNode.RdInstr).GetExpensive()<=currstage) {
+    		    		 statestages.add(currstage);
+    					declarations += "wire [31:0] "+ this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), currstage, "")+";\n";
+    					logic += this.myLanguage.CreateAssign(this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), currstage, ""), this.myLanguage.CreateRegNodeName(BNode.RdInstr, currstage, ""));
+    			     }
+    		     }
+    		     if(!statestages.isEmpty())
+    		    	 addRdNodeReg.put(BNode.RdInstr, statestages);
+    		     
     			 
     		 }
 	     }
-	     HashSet<Integer> statestages = new HashSet<Integer>();
-	     for (int currstage=earliest; currstage <= writebackStage; currstage++ ) {
-				// AddIn_op_stage_instr(BNode.RdInstr, i, "");// workaround to have rdinstr signal
-				// Can we generate this interf to core? If not, let's create the register
-			 AddToCoreInterfHashMap(BNode.RdInstr,currstage);		
-	    	 if(this.core.GetNodes().get(BNode.RdInstr).GetExpensive()<=currstage) {
-	    		 statestages.add(currstage);
-				declarations += "wire [31:0] "+ this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), currstage, "")+";\n";
-				logic += this.myLanguage.CreateAssign(this.myLanguage.CreateNodeName(BNode.RdInstr.NodeNegInput(), currstage, ""), this.myLanguage.CreateRegNodeName(BNode.RdInstr, currstage, ""));
-		     }
-	     }
-	     if(!statestages.isEmpty())
-	    	 addRdNodeReg.put(BNode.RdInstr, statestages);
-	     
+	    
 	     
 	     // Add RdIvalid if we have spawn dec memory, we need to store adddr, but mem addr computed in spawn_start stage + 1. Add rdivalid in +1 for FIFO addr write signal
 	     if((this.op_stage_instr.containsKey(BNode.WrMem_spawn) || this.op_stage_instr.containsKey(BNode.RdMem_spawn)) && (this.core.GetStartSpawnStage() < this.core.GetNodes().get(BNode.WrMem).GetEarliest())) {
@@ -2079,6 +2091,8 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 	}
 
 	private String DHModule(SCAIEVNode spawnNode) {
+		// Local patch 
+		boolean dyn=true;
 		// Compute DH decoding checks for detecting DHs 
 		String DH_rs1 = "";
 		String DH_rs2 = "";
@@ -2147,10 +2161,13 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 		}
 		String returnStr = "" ; 
 		if(this.core.GetStartSpawnStage() < this.core.maxStage)
-			returnStr += "`define LATER_FLUSHES\n";
+			returnStr += "`define LATER_FLUSHES"+spawnNode+"\n";
 		if(this.core.GetStartSpawnStage()+1 < this.core.maxStage)
-			returnStr += "`define LATER_FLUSHES_DH\n";
-		
+			returnStr += "`define LATER_FLUSHES_DH"+spawnNode+"\n";
+		if(sizeAddr==0)
+			returnStr += "`define NO_ADDR"+spawnNode+"\n";
+		if(dyn)
+			returnStr += "`define DYN"+spawnNode+"\n";
 		String rdIValidKill = this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.kill.instr.GetName()); 
 		String rdIValidFence = this.myLanguage.CreateNodeName(BNode.RdIValid.NodeNegInput(), this.core.GetStartSpawnStage(), PredefInstr.fence.instr.GetName()); 
 		
@@ -2164,7 +2181,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ ")(                                                                    \n"
 				+ "   input clk_i,                                                           \n"
 				+ "    input rst_i,   \n"
-				+ " `ifdef LATER_FLUSHES   \n"
+				+ " `ifdef LATER_FLUSHES"+spawnNode+"   \n"
 				+ "    input [WB_STAGE-START_STAGE:0] flush_i,  \n"
 				+ "`endif                                                         \n"
 				+ "    input RdIValid_ISAX0_2_i,  \n"
@@ -2172,21 +2189,29 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "    input "+rdIValidKill+",\n"
 				+ "    input "+rdIValidFence+",\n"
 				+ "    input  WrRD_spawn_valid_i,                                   \n"
-				+ "    input "+sizeZero+" WrRD_spawn_addr_i,                                    \n"
 				+ "    input  cancel_from_user_valid_i,// user validReq bit was zero, but we need to clear its scoreboard dirty bit \n"
-				+ "    input "+sizeZero+"cancel_from_user_addr_i,\n"
+				+ "`ifdef NO_ADDR"+spawnNode+"\n"
+				+ "    input  WrRD_spawn_addr_i,\n"
+				+ "    input  cancel_from_user_addr_i,\n"
+				+ "`else\n"
+				+ "    input [RD_W_P-1:0] WrRD_spawn_addr_i,\n"
+				+ "    input [RD_W_P-1:0] cancel_from_user_addr_i,\n"
+				+ "`endif\n"
 				+ "    output stall_RDRS_o, //  stall from ISAX,  OR spawn DH   \n"
 				+ "    input  [WB_STAGE-START_STAGE:0] stall_RDRS_i // input from core. core stalled. Includes user stall, as these sigs are combined within core  \n"
 				+ ");                                                                     \n"
-				+ "  \n"
-				+ "                                                                      \n"
-				+ "wire dirty_bit_rs1;                                                    \n"
-				+ "wire dirty_bit_rs2;     \n"
-				+ "wire dirty_bit_rd;  \n"
-				+ "wire data_hazard_rs1;   \n"
-				+ "wire data_hazard_rs2;   \n"
-				+ "wire data_hazard_rd;   \n"
-				+ "wire we_spawn_start;            \n"
+				+ "\n"
+				+ "\n"
+				+ "reg  [RD_W_P-1:0] RdInstr_7_11_reg[WB_STAGE - START_STAGE-1:1];     \n"
+				+ "reg [WB_STAGE-START_STAGE:1] RdIValid_reg;   \n"
+				+ "reg wawdyn;"
+				+ "wire dirty_bit_rs1;\n"
+				+ "wire dirty_bit_rs2;\n"
+				+ "wire dirty_bit_rd;\n"
+				+ "wire data_hazard_rs1;\n"
+				+ "wire data_hazard_rs2;\n"
+				+ "wire data_hazard_rd;\n"
+				+ "wire we_spawn_start;\n"
 				+ "reg [2**RD_W_P-1:0] mask_start;  \n"
 				+ "reg [2**RD_W_P-1:0] mask_stop_or_flush;  \n"
 				+ "reg barrier_set;   \n"
@@ -2194,9 +2219,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "reg  [2**RD_W_P-1:0] rd_table_mem ;      \n"
 				+ "reg  [2**RD_W_P-1:0] rd_table_temp;  \n"
 				+ "   \n"
-				+ "`ifdef LATER_FLUSHES_DH                                                                       \n"
-				+ "    reg  [RD_W_P-1:0] RdInstr_7_11_reg[WB_STAGE - START_STAGE-1:0];     \n"
-				+ "    reg [WB_STAGE-START_STAGE:1] RdIValid_reg;   \n"
+				+ "`ifdef LATER_FLUSHES_DH"+spawnNode+"\n"
 				+ "    always @(posedge clk_i ) begin   \n"
 				+ "        if(!stall_RDRS_i[0])  \n"
 				+ "            RdIValid_reg[1] <= RdIValid_ISAX0_2_i; // or of all decoupled spawn  \n"
@@ -2240,7 +2263,11 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "always @(*) begin  \n"
 				+ "    mask_start = {(2**RD_W_P){1'b0}};  \n"
 				+ "    if(we_spawn_start)  \n"
+				+ "`ifdef NO_ADDR"+spawnNode+"\n"
+				+ "        mask_start = 1'b1;   \n"
+				+ "`else\n"
 				+ "        mask_start[RdInstr_RDRS_i[11:7]] = 1'b1;   \n"
+				+ "`endif  \n"
 				+ "end  \n"
 				+ "  \n"
 				+ "always @(*) begin  \n"
@@ -2252,10 +2279,14 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "    if ("+rdIValidKill+") begin  \n"
 				+ "        mask_stop_or_flush = 0;  \n"
 				+ "    end  \n"
-				+ "`ifdef LATER_FLUSHES_DH   \n"
+				+ "`ifdef LATER_FLUSHES_DH"+spawnNode+"\n"
 				+ "	for(int k=1;k<(WB_STAGE - START_STAGE);k=k+1) begin   \n"
 				+ "		if(flush_i[k] && RdIValid_reg[k] )   \n"
-				+ "			mask_stop_or_flush[RdInstr_7_11_reg[k]] = 1'b0;   \n"
+				+ "`ifdef NO_ADDR"+spawnNode+"\n"
+				+ "        mask_stop_or_flush = 1'b0;   \n"
+				+ "`else\n"
+				+ "        mask_stop_or_flush[RdInstr_7_11_reg[k]] = 1'b0;   \n"
+				+ "`endif  \n"
 				+ "	end  \n"
 				+ "`endif  \n"
 				+ "end  \n"
@@ -2265,14 +2296,36 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ " end                                                                        \n"
 				+ "  \n"
 				+ "                                                                       \n"
-				+ "assign dirty_bit_rs1 = rd_table_mem[RdInstr_RDRS_i[19:15]];     \n"
-				+ "assign dirty_bit_rd =  rd_table_mem[RdInstr_RDRS_i[11:7]];   \n"
-				+ "assign data_hazard_rs1 =  !flush_i[0] &&  dirty_bit_rs1 && ("+DH_rs1+");  \n"
+				+ "`ifdef NO_ADDR"+spawnNode+"\n"
+				+ "    assign dirty_bit_rs1 = 1'b1;   \n"
+				+ "    assign dirty_bit_rd =  1'b1;   \n"
+				+ "`else\n"
+				+ "    assign dirty_bit_rs1 = rd_table_mem[RdInstr_RDRS_i[15+RD_W_P-1-:RD_W_P]];  \n"
+				+ "    assign dirty_bit_rd =  rd_table_mem[RdInstr_RDRS_i[7+RD_W_P-1-:RD_W_P]];   \n"
+				+ "`endif  \n"
+				+ "assign data_hazard_rs1 = !flush_i[0] &&  dirty_bit_rs1 && ("+DH_rs1+");  \n"
 				+ "assign data_hazard_rd =  !flush_i[0] && dirty_bit_rd   && ("+DH_rd+");  \n"
 				+ RdRS2DH
-				+ "assign stall_RDRS_o = data_hazard_rs1 || data_hazard_rs2 || data_hazard_rd;           \n"
-				+ "  \n"                                                            
-				+ "endmodule        \n"
+				+ "`ifdef DYN"+spawnNode+"\n"
+				+ "    assign stall_RDRS_o = data_hazard_rs1 || data_hazard_rs2 || data_hazard_rd || wawdyn;\n"
+				+ "`else\n"
+				+ "    assign stall_RDRS_o = data_hazard_rs1 || data_hazard_rs2 || data_hazard_rd;\n"
+				+ "`endif  \n"
+				+ "  \n\n"     
+				+ "`ifdef DYN"+spawnNode+"\n"
+				+ "always @(*) begin\n"
+				+ "    wawdyn =0; \n"
+				+ "    for(int k=1;k<(WB_STAGE - START_STAGE);k=k+1) begin\n" 
+				+ "    `ifdef NO_ADDR"+spawnNode+"\n"
+				+ "        if(RdIValid_reg[k]  &&  RdIValid_ISAX0_2_i)\n" 
+                + "    `else\n"
+                + "        if((RdInstr_7_11_reg[k] ==  RdInstr_RDRS_i[7+RD_W_P-1-:RD_W_P]) &&  RdIValid_ISAX0_2_i)\n" 
+                + "    `endif  \n"
+                + "            wawdyn = 1;\n"
+                + "    end\n"
+                + "end \n"
+                + "`endif  \n"
+				+ "endmodule\n"
 				+ ""; // TODO ISAX Encoding
 		return returnStr;
 	}

@@ -206,7 +206,9 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				if(op_stage_instr.containsKey(spawnNode)) {
 					AddToInterface(spawnNode,this.core.GetSpawnStage());
 					AddToInterface(allBNodes.GetAdjSCAIEVNode(spawnNode, AdjacentNode.validReq),this.core.GetSpawnStage());
-					AddToInterface(allBNodes.GetAdjSCAIEVNode(spawnNode, AdjacentNode.addr),this.core.GetSpawnStage());
+					AddToInterface(allBNodes.GetAdjSCAIEVNode(spawnNode, AdjacentNode.validResp),this.core.GetSpawnStage());
+					if(spawnNode.elements>1) 
+						AddToInterface(allBNodes.GetAdjSCAIEVNode(spawnNode, AdjacentNode.addr),this.core.GetSpawnStage());
 				}
 				// Spawn also has addr
 				/* I don't remember what the code below was for...
@@ -255,7 +257,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 		if(WrNode.elements>1) 
 			WrNode_spawn_addr = allBNodes.GetAdjSCAIEVNode(WrNode_spawn_node, AdjacentNode.addr).name;
 		String WrNode_spawn_validReq = allBNodes.GetAdjSCAIEVNode(WrNode_spawn_node, AdjacentNode.validReq).name;
-		
+		String WrNode_spawn_validResp = allBNodes.GetAdjSCAIEVNode(WrNode_spawn_node, AdjacentNode.validResp).name;
 		String RdStall = BNode.RdStall.name;
 		String WrStall = BNode.WrStall.name;
 		String RdInstr = BNode.RdInstr.name;
@@ -267,6 +269,9 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				
 		int secondstage = firststage+1;
 		int thirdstage = firststage+2;
+		int defaultthirdstage = thirdstage; // default stage number for signals, but if we don.t have so much stages at all, the default definitions should NOT point to overlapping existing signals (thirdstage!=writebackstage)
+		if(writebackstage<=thirdstage)
+			defaultthirdstage=1000+thirdstage;
 		int spawn = this.core.GetSpawnStage();
 		
 		String WRSECOND = "WRSECOND"+WrNode;
@@ -310,6 +315,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "	   input ["+addrW+" -1 : 0] "+WrNode_spawn_addr+"_"+spawn+"_i,\n"
 				+ "	   input ["+regW+" -1 : 0] "+WrNode_spawn+"_"+spawn+"_i,\n"
 				+ "	   input  "+WrNode_spawn_validReq+"_"+spawn+"_i=0,\n"
+				+ "    output "+WrNode_spawn_validResp+"_"+spawn+"_o,\n"
 				+ "	\n";
 	if(commonsigs)
 		interf += "	   input [32 -1 : 0] "+RdInstr+"_"+thirdstage+"_i, \n"
@@ -351,6 +357,7 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "	end\n"
 				+ "`endif\n"
 				+ "\n"
+				+ "assign "+WrNode_spawn_validResp+"_"+spawn+"_o = 1'b1; // when fire2_reg is set, the write happens directly, no FSM as in case of MEM\n\n"
 				+ "`ifdef "+WRTHIRD+"\n"
 				+ "	if ("+WrNode_validReq+"_"+thirdstage+"_i === 1'bz) begin\n"
 				+ "	  $display(\"Signal Wr Intenal Reg valid request in stage "+thirdstage+" not connected\");\n"
@@ -449,12 +456,12 @@ private HashSet<String> textInterface = new  HashSet<String>();
 				+ "		else if(!"+WrStall+"_"+firststage+"_i)\n"
 				+ "			"+WrNode+"_"+thirdstage+"_reg <= ("+WrNode_validReq+"_"+secondstage+"_i && !"+WrNode_validData+"_"+secondstage+"_reg) ? "+WrNode+"_"+secondstage+"_i :"+ WrNode+"_"+secondstage+"_reg; \n"
 				+ "	end\n"
-				+ "`else\n"
-				+ "  wire [32-1: 0]  "+WrNode+"_"+thirdstage+"_reg =0;\n"
-				+ "`endif	\n"
-				+ "\n"
 				+ "// Write data \n"
 				+ "assign "+WrNode+"_"+writebackstage+"_s = "+WrNode_validData+"_"+writebackstage+"_reg ?  "+WrNode+"_"+writebackstage+"_reg : "+WrNode+"_"+writebackstage+"_i;\n"
+				+ "`else\n"
+				+ "  assign  "+WrNode+"_"+writebackstage+"_s =0;\n"
+				+ "`endif	\n"
+				+ "\n"
 				+ " \n"			
 				+ " // Datahazard?\n"
 				+ "wire DH_in_second"+RdNode+",DH_in_third"+RdNode+",DH_fr_second_to_third"+RdNode+";\n"
