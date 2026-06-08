@@ -1,0 +1,3 @@
+CONFIG_SIM_TB_PATH="../../examples/test_programs/extra/zol.S"
+CONFIG_SIM_TB_EXPECTED_PATH="../../examples/test_programs/extra/zol_expected.txt"
+CONFIG_SIM_GCC_OPCODES_DIR="../../examples/test_programs/extra/opcodes"

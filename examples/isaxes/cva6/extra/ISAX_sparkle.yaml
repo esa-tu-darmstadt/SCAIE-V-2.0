@@ -1,0 +1,61 @@
+- instruction: sparkle_ell
+  mask: "0000010----------111-----1111011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdRS1
+      stage: 4
+    - interface: RdRS2
+      stage: 4
+    - interface: RdIValid
+      stage: 4
+    - interface: RdStall
+      stage: 4
+    - interface: WrRD
+      stage: 4
+- instruction: sparkle_rcon
+  mask: "0000-------------110-----1111011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdInstr
+      stage: 4
+    - interface: RdRS1
+      stage: 4
+    - interface: RdIValid
+      stage: 4
+    - interface: RdStall
+      stage: 4
+    - interface: WrRD
+      stage: 4
+- instruction: sparkle_whole_enci_x
+  mask: "1000-------------110-----1111011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdInstr
+      stage: 4
+    - interface: RdRS1
+      stage: 4
+    - interface: RdRS2
+      stage: 4
+    - interface: RdIValid
+      stage: 4
+    - interface: RdStall
+      stage: 4
+    - interface: WrRD
+      stage: 4
+- instruction: sparkle_whole_enci_y
+  mask: "1001-------------110-----1111011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdInstr
+      stage: 4
+    - interface: RdRS1
+      stage: 4
+    - interface: RdRS2
+      stage: 4
+    - interface: RdIValid
+      stage: 4
+    - interface: RdStall
+      stage: 4
+    - interface: WrRD
+      stage: 4
+- last stage: 4

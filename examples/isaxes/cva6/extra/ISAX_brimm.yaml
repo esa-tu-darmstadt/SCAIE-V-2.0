@@ -1,0 +1,19 @@
+- instruction: cv_beqimm
+  mask: "-----------------100-----0001011"
+  sharing group: 1
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdInstr
+      stage: 3
+    - interface: RdRS1
+      stage: 3
+    - interface: RdPC
+      stage: 3
+    - interface: RdIValid
+      stage: 3
+    - interface: RdStall
+      stage: 3
+    - interface: WrPC
+      stage: 3
+      has valid: 1
+- last stage: 4

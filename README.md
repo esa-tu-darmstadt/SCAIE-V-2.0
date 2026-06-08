@@ -312,6 +312,20 @@ Class ToWrite - describes the change to apply to a line, where to insert it (bef
 
 **Package: scaiev.scal** - this package contains the SCAL logic generator implementation. The strategy packages comprise all logic-generating strategy objects for the different SCAL features.
 
+## TRISTAN
+_Section for TRISTAN KPI, as of 06-2026_
+
+_Hardware IP verification (CVA6 integration)_
+
+The testbench setup is described in the [examples](examples) directory. There, the [run_cva6_all.sh](examples/run_cva6_all.sh) script runs the full public test suite on the single- and dual-issue configurations of CVA6.
+
+The following test programs are included in the test suite and have been (successfully) used for the verification of both CVA6 configurations:
+`autoinc` (memory auto-increment), `dotprod` (or, dotp), `dotprodb` (or, dotpb), `lwdotprodb` (or, lw-dotpb), `lwdotprodb_zol2d` (or, lw-dotpb and zol2d), `brimm`, `indirectjmp` (or, indjmp), `sbox`, `sparkle`, `sqrt` (decoupled, semi-coupled), `zol`.
+The `vector` functional test ISAX is missing from this open-source release, as it is part of the closed-source Longnail project.
+
+Code coverage was manually obtained with the `--coverage-line` parameter to Verilator, by altering the Makefile in the generated `util/nailgun/outputs/run_*/sim` directories.
+Over the different test programs and ISAXes, all reachable statements were covered across SCAL (i.e., the generated code in `CommonLogicModule.sv`, counting instantiations of the same logic as one), `scaiev_glue.sv`, and any additions to the CVA6 core sources.
+
 ## How can I cite this work? 
 You can cite the following paper, which used the first SCAIE-V version of the tool:
 Mihaela Damian, Julian Oppermann, Christoph Spang, Andreas Koch, "SCAIE-V: An Open-Source SCAlable Interface for ISA Extensions

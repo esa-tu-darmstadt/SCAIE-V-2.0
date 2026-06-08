@@ -1,0 +1,19 @@
+- instruction: ijmp
+  mask: "-----------------010-----1111011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdInstr
+      stage: 4
+    - interface: RdRS1
+      stage: 4
+    - interface: RdIValid
+      stage: 4
+    - interface: RdStall
+      stage: 4
+    - interface: RdMem
+      stage: 4
+      has valid: 1
+      has addr: 1
+    - interface: WrPC
+      stage: 4
+- last stage: 4

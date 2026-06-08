@@ -79,4 +79,4 @@ finloop:
 
 .data
 test_indata:
-.include "testmatrix_16x16_each.s"
+#include "testmatrix_16x16_each.s"

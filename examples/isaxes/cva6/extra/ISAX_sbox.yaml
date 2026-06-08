@@ -1,0 +1,13 @@
+- instruction: sbox
+  mask: "000010000000-----000-----0101011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdRS1
+      stage: 4
+    - interface: RdIValid
+      stage: 4
+    - interface: RdStall
+      stage: 4
+    - interface: WrRD
+      stage: 4
+- last stage: 4

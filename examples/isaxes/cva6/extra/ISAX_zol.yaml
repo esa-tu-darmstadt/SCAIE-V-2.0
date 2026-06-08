@@ -1,0 +1,56 @@
+- register: ZOLSTARTPC
+  width: 32
+  elements: 1
+- register: ZOLENDPC
+  width: 32
+  elements: 1
+- register: ZOLCOUNTER
+  width: 32
+  elements: 1
+- instruction: setup_zol
+  mask: "-----------------101000000001011"
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdInstr
+      stage: 3
+    - interface: RdPC
+      stage: 3
+    - interface: RdIValid
+      stage: 3
+    - interface: RdStall
+      stage: 3
+    - interface: WrZOLENDPC.addr
+      stage: 3
+    - interface: WrZOLENDPC.data
+      stage: 3
+      has valid: 1
+    - interface: WrZOLSTARTPC.addr
+      stage: 3
+    - interface: WrZOLSTARTPC.data
+      stage: 3
+      has valid: 1
+    - interface: WrZOLCOUNTER.addr
+      stage: 3
+    - interface: WrZOLCOUNTER.data
+      stage: 3
+      has valid: 1
+- always: zol
+  tags: [ "RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX" ]
+  schedule:
+    - interface: RdPC
+      stage: 0
+    - interface: WrPC
+      stage: 0
+      has valid: 1
+    - interface: RdZOLENDPC
+      stage: 0
+    - interface: RdZOLSTARTPC
+      stage: 0
+    - interface: RdZOLCOUNTER
+      stage: 0
+    - interface: WrZOLCOUNTER.addr
+      stage: 0
+    - interface: WrZOLCOUNTER.data
+      stage: 0
+      has valid: 1
+- last stage: 4

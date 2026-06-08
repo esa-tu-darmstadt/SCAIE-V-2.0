@@ -1662,7 +1662,7 @@ public class CVA6 extends CoreBackend {
     
     addLogic("assign scaiev_decode_pcOverride = %s;\n"
         .formatted(language.CreateNodeName(node_WrZOLOverride, stage_decode_port[0], "")));
-    addLogic("assign scaiev_decode_pcOverride_valid = %s;\n"
+    addLogic("assign scaiev_decode_pcOverride_valid = %s && scaiev_decode_isValid[0];\n"
         .formatted(language.CreateNodeName(node_WrZOLOverride_valid, stage_decode_port[0], "")));
   }
 

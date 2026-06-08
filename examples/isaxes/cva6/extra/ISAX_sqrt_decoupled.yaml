@@ -1,0 +1,14 @@
+- instruction: sqrt_decoupled
+  tags: ["RdStallFlush-Is-Per-ISAX", "ReadResults-Are-Per-ISAX"]
+  mask: "000011000000-----000-----0001011"
+  schedule:
+    - interface: RdRS1
+      stage: 3
+    - interface: RdStall
+      stage: 3
+    - interface: RdStall
+      stage: 4
+    - interface: WrRD
+      stage: 13
+      is decoupled: 1
+- last stage: 4
