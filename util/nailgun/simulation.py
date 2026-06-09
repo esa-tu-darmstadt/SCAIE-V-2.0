@@ -53,6 +53,8 @@ def run_tb(kconfig_syms, out_dir, core_name, isax_yaml_paths, elf_files, tb_expe
     py_files = glob.glob(os.path.join("sim", '*.py'))
     # Also copy additionally required tools
     py_files.append(os.path.join("tools", "isax_yaml_tools.py"))
+    if os.path.exists("tools/ArbInt.py"):
+        py_files.append(os.path.join("tools", "ArbInt.py"))
 
     # Copy each file and package to the output simulation folder
     for file in py_files:
@@ -236,9 +238,9 @@ def setup_renode(py_isax_file, tb_paths, core_support, out_dir, yaml_files):
     if py_isax_file and os.path.exists(py_isax_file):
         isax_py_path = f"{renode_dir}/{py_isax_file_name}"
         shutil.copy(py_isax_file, renode_dir)
-    if os.path.exists("deps/longnail"):
-        shutil.copy("deps/longnail/sim/ArbInt.py", renode_dir)
-    else:
+    if os.path.exists("deps/longnail/shortnail"):
+        shutil.copy("deps/longnail/shortnail/sim/ArbInt.py", renode_dir)
+    elif not os.path.exists("tools/ArbInt.py"):
         isax_py_path = None
     return isax_py_path
 

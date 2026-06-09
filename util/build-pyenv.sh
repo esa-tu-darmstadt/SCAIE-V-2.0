@@ -14,6 +14,9 @@ if ! [ -f $COCOTB_ENV/bin/activate ]; then
 fi
 source $COCOTB_ENV/bin/activate
 
+set -e
+SITEPACKAGES=$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')
+set +e
 if [[ requirements.txt -nt .pyenv_installed.stamp ]] || ! [ -f .pyenv_installed.stamp ]; then
 	set -e
 	pip install -r requirements.txt
@@ -21,3 +24,12 @@ if [[ requirements.txt -nt .pyenv_installed.stamp ]] || ! [ -f .pyenv_installed.
 	set +e
 fi
 
+export CMAKE_PREFIX_PATH=$SITEPACKAGES/pybind11/share/cmake/pybind11:$CMAKE_PREFIX_PATH
+
+set -e
+pushd nailgun/deps/pyriscv-vp >/dev/null
+make vps
+cd vp
+pip install -e .
+popd >/dev/null
+set +e

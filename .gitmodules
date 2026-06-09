@@ -16,3 +16,6 @@
 [submodule "CoresSrc/CVA6"]
 	path = CoresSrc/CVA6
 	url = https://github.com/esa-tu-darmstadt/cva6-sv.git
+[submodule "util/nailgun/deps/pyriscv-vp"]
+	path = util/nailgun/deps/pyriscv-vp
+	url = ../pyriscv-vp.git

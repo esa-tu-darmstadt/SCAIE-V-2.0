@@ -29,7 +29,10 @@ class _SystemBusStub:
 
 class _MachineStub:
     def __init__(self, adapter: ISSTbAdapter):
+        self.dut = adapter.dut
         self.SystemBus = _SystemBusStub(adapter)
+    def InfoLog(self, line):
+        self.dut._log.info(line)
 
 class _CPUStub:
     def __init__(self, adapter: ISSTbAdapter):

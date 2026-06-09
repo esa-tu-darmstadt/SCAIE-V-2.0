@@ -54,11 +54,10 @@ _start:
     #resdata[0..24] = [0x01100220, 0x01100220, 0x02200330, 0x87654321, 0x02200330, 0x87654321]
 
 # Completion interrupt.
-# NOTE: For cores that can write memory out of order, a write fence may be required here.
+    FENCE w,ow
     la s0, _ctrlmem
-    autoinc_setup s0, zero
     li t0, 1
-    autoinc_sw_inc t0
+    sw t0, 0(s0)
 
     finloop:
     j finloop
