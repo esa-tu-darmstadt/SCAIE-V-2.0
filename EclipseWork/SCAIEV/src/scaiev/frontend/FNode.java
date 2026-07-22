@@ -2,6 +2,8 @@ package scaiev.frontend;
 
 import java.util.HashSet;
 
+import scaiev.frontend.SCAIEVNode.AdjacentNode;
+
 /***********************
  * 
  * Frontend supported nodes
@@ -10,7 +12,10 @@ import java.util.HashSet;
 public class FNode{
 
 	// To add a new node, add it here and in GetAllFrontendNodes. No 999 ID allowed, it is considered illegal. Check GetIllegalID()!!
+	// !!! When you add a new feature like "noInterfToCore", update operation.NodeNegInput too 
 	public static SCAIEVNode WrRD     = new SCAIEVNode("WrRD",32,true) {{DH = true;}};
+public static SCAIEVNode WrInternal  = new SCAIEVNode("WrInternal",32,true) {{DH = true;this.noInterfToCore=true;}};
+public static SCAIEVNode RdInternal = new SCAIEVNode("RdInternal",32,false) {{DH = true;this.noInterfToCore=true;}};
 	public static SCAIEVNode WrMem    = new SCAIEVNode("WrMem",32,true) {{this.elements = 2; }};//2 is a dummy value for the system to know that this interef requires mandatory addr signal to core. {{this.familyName = "Mem";}}; // input data to core
 	public static SCAIEVNode RdMem    = new SCAIEVNode("RdMem",32,false){{this.elements = 2; }};//2 is a dummy value for the system to know that this interef requires mandatory addr signal to core. {{this.familyName = "Mem"; nameQousinNode = WrMem.name; WrMem.nameQousinNode = this.name; }}; // output data from core
 	public static SCAIEVNode WrPC     = new SCAIEVNode("WrPC",32,true);	
@@ -18,8 +23,10 @@ public class FNode{
 	public static SCAIEVNode RdImm     = new SCAIEVNode("RdImm",32,true);	
 	public static SCAIEVNode RdRS1    = new SCAIEVNode("RdRS1",32,false);
 	public static SCAIEVNode RdRS2    = new SCAIEVNode("RdRS2",32,false);
+	public static SCAIEVNode RdRS3    = new SCAIEVNode("RdRS3",32,false);
+	
 	public static SCAIEVNode RdInstr  = new SCAIEVNode("RdInstr",32,false) ;
-	public static SCAIEVNode RdIValid = new SCAIEVNode("RdIValid",1,false) {{oneInterfToISAX = false;}};//{{RdIValid.forEachInstr = true;}}; // interface to be generated for each Instr
+	public static SCAIEVNode RdIValid = new SCAIEVNode("RdIValid",1,false) {{oneInterfToISAX = false; this.noInterfToCore = true;}};//{{RdIValid.forEachInstr = true;}}; // interface to be generated for each Instr
 	public static SCAIEVNode RdStall  = new SCAIEVNode("RdStall",1,false);
 	public static SCAIEVNode WrStall  = new SCAIEVNode("WrStall",1,true){{oneInterfToISAX = false;}};
 	public static SCAIEVNode RdFlush  = new SCAIEVNode("RdFlush",1,false);
@@ -36,10 +43,12 @@ public class FNode{
 	public HashSet<SCAIEVNode>  GetAllFrontendNodes(){
 	 HashSet<SCAIEVNode> fnodes = new HashSet<SCAIEVNode>();
 		fnodes.add(WrRD);
+		fnodes.add(WrInternal);
 		fnodes.add(WrMem);
 		fnodes.add(RdMem);
 		fnodes.add(WrPC);
 		fnodes.add(RdPC);
+		fnodes.add(RdInternal);
 		fnodes.add(RdRS1);
 		fnodes.add(RdRS2);
 		fnodes.add(RdInstr);
@@ -89,11 +98,17 @@ public class FNode{
 	}
 	
 	public String GetNameWrNode(SCAIEVNode node) {
-		return wrName+node.name.split(rdName)[1];
+		if(node.name.contains(rdName))
+			return wrName+node.name.split(rdName)[1];
+		else 
+			return node.name; // maybe write node, bc it does not have the Rd within the name
 	}
 	
 	public String GetNameRdNode(SCAIEVNode node) {
-		return rdName+node.name.split(wrName)[1];
+		if(node.name.contains(wrName))
+			return rdName+node.name.split(wrName)[1];
+		else 
+			return node.name;
 	}
 	
 	public static int GetIllegalID() {

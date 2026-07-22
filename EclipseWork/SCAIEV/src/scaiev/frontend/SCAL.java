@@ -1,5 +1,6 @@
 package scaiev.frontend;
 
+import java.util.Collections;
 // TODO RDIVALID DUMMY REMOVE
 // TODO WRCSR
 // TODO rd/wrmem not later than mem stage but prev to writeback should be translated to spwn
@@ -1397,11 +1398,13 @@ public class SCAL implements SCALBackendAPI {
     		 if( node.isInput && this.BNode.IsUserBNode(node) && !node.isSpawn() && node.elements>1) { // we need addr, so instr fields. if not required, could be optimized away by setting the addr valid sig to ct 1
     			 SCAIEVNode RdNode = BNode.GetSCAIEVNode(BNode.GetNameRdNode(node));				
         		 earliest = this.core.GetNodes().get(RdNode).GetEarliest();
-    			 writebackStage = this.core.GetNodes().get(node).GetLatest();
+    			 // was, but changed it bc it.s -1 for nodes supporting spawn: writebackStage = this.core.GetNodes().get(node).GetLatest();
+        		 writebackStage = Collections.max(this.op_stage_instr.get(node).keySet()); 
     			 this.declarations += "wire "+this.myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(RdNode, AdjacentNode.addrReq).NodeNegInput(), earliest, "")+" = 0; // custom instr not supported by the automated flow yet\n ";
     			 for (int currstage=earliest; currstage <= writebackStage; currstage++ ) {
     				this.declarations += "wire "+this.myLanguage.CreateNodeName(BNode.GetAdjSCAIEVNode(node, AdjacentNode.addrReq).NodeNegInput(), currstage, "")+" = 0; // custom instr not supported by the automated flow yet \n";
     			 }
+    			 
     			 
     			 HashSet<Integer> statestages = new HashSet<Integer>();
     		     for (int currstage=earliest; currstage <= writebackStage; currstage++ ) {
@@ -1908,7 +1911,8 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 			String userOptValid = "";
 			if(ISAXes.get(ISAX).GetFirstNode(node).HasAdjSig(AdjacentNode.validReq))
 				userOptValid = myLanguage.CreateFamNodeName(validReq, spawnStage, ISAX, false)+" && ";
-			String FIFO_out = myLanguage.CreateFamLocalNodeName(validReq, spawnStage, ISAX,false) +" = "+userOptValid +myLanguage.CreateFamNodeName(validReq, spawnStage, ISAX, false)+ShiftmoduleSuffix+" && ((~"+fire2_reg+" | "+myLanguage.CreateFamNodeName(validResp, spawnStage, ISAX,false)+")); // Signals rest of logic valid spawn sig\n";
+			String fire_reg = fire2_reg.replace("2", "");
+			String FIFO_out = myLanguage.CreateFamLocalNodeName(validReq, spawnStage, ISAX,false) +" = "+userOptValid +myLanguage.CreateFamNodeName(validReq, spawnStage, ISAX, false)+ShiftmoduleSuffix+" && ((~("+fire2_reg+" | "+fire_reg+") | "+myLanguage.CreateFamNodeName(validResp, spawnStage, ISAX,false)+")); // Signals rest of logic valid spawn sig\n";
 			if(hasAddr)
 				FIFO_out += myLanguage.CreateFamLocalNodeName(addr, spawnStage, ISAX,false) +" = "+myLanguage.CreateFamNodeName(addr, spawnStage, ISAX,false)+";\n"; 
 			if(node.isInput)
@@ -2202,7 +2206,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ ");                                                                     \n"
 				+ "\n"
 				+ "\n"
-				+ "reg  [RD_W_P-1:0] RdInstr_7_11_reg[WB_STAGE - START_STAGE-1:1];     \n"
+				+ "reg  [RD_W_P-1:0] RdInstr_7_11_reg[WB_STAGE - START_STAGE:1];     \n"
 				+ "reg [WB_STAGE-START_STAGE:1] RdIValid_reg;   \n"
 				+ "reg wawdyn;"
 				+ "wire dirty_bit_rs1;\n"
@@ -2214,7 +2218,6 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "wire we_spawn_start;\n"
 				+ "reg [2**RD_W_P-1:0] mask_start;  \n"
 				+ "reg [2**RD_W_P-1:0] mask_stop_or_flush;  \n"
-				+ "reg barrier_set;   \n"
 				+ "									  \n"
 				+ "reg  [2**RD_W_P-1:0] rd_table_mem ;      \n"
 				+ "reg  [2**RD_W_P-1:0] rd_table_temp;  \n"
@@ -2232,19 +2235,23 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "                RdIValid_reg[k] <= RdIValid_reg[k-1];  \n"
 				+ "        end   \n"
 				+ "        if(rst_i) begin  \n"
-				+ "            for(int k=1;k<(WB_STAGE - START_STAGE);k=k+1) \n"
+				+ "            for(int k=1;k<=(WB_STAGE - START_STAGE);k=k+1) \n"
 				+ "                RdIValid_reg[k] <= 0; \n"
 				+ "        end      \n"
 				+ "    end  \n"
 				+ "    always @(posedge clk_i ) begin   \n"
 				+ "        if(!stall_RDRS_i[0])  \n"
 				+ "            RdInstr_7_11_reg[1] <= RdInstr_RDRS_i[11:7];  \n"
-				+ "        for(int k=2;k<(WB_STAGE - START_STAGE);k=k+1) begin   \n"
-				+ "        if(!stall_RDRS_i[k-1])  \n"
-				+ "             RdInstr_7_11_reg[k] <= RdInstr_7_11_reg[k-1];  \n"
-				+ "        end  \n"
+				+ "        if((flush_i[1] && stall_RDRS_i[0]) || (flush_i[0] && !stall_RDRS_i[0]) || ( stall_RDRS_i[0] && !stall_RDRS_i[1]))  \n"
+                + "            RdInstr_7_11_reg[1] <= '0;\n"
+				+ "        for(int k=2;k<=(WB_STAGE - START_STAGE);k=k+1) begin   \n"
+				+ "            if((flush_i[k] && stall_RDRS_i[k-1]) || (flush_i[k-1] && !stall_RDRS_i[k-1]) || ( stall_RDRS_i[k-1] && !stall_RDRS_i[k]))  \n"
+				+ "                 RdInstr_7_11_reg[k] <= '0; \n"
+                + "            else if(!stall_RDRS_i[k-1])  \n"
+				+ "                 RdInstr_7_11_reg[k] <= RdInstr_7_11_reg[k-1];  \n"
+				+ "            end  \n"
 				+ "        if(rst_i) begin  \n"
-				+ "            for(int k=1;k<(WB_STAGE - START_STAGE);k=k+1) \n"
+				+ "            for(int k=1;k<=(WB_STAGE - START_STAGE);k=k+1) \n"
 				+ "                RdInstr_7_11_reg[k] <= 0; \n"
 				+ "        end  \n"
 				+ "    end  \n"
@@ -2280,7 +2287,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "        mask_stop_or_flush = 0;  \n"
 				+ "    end  \n"
 				+ "`ifdef LATER_FLUSHES_DH"+spawnNode+"\n"
-				+ "	for(int k=1;k<(WB_STAGE - START_STAGE);k=k+1) begin   \n"
+				+ "	for(int k=1;k<=(WB_STAGE - START_STAGE);k=k+1) begin   \n"
 				+ "		if(flush_i[k] && RdIValid_reg[k] )   \n"
 				+ "`ifdef NO_ADDR"+spawnNode+"\n"
 				+ "        mask_stop_or_flush = 1'b0;   \n"
@@ -2315,7 +2322,7 @@ private String AddOptionalInputFIFO(SCAIEVNode node, String fire2_reg) {
 				+ "`ifdef DYN"+spawnNode+"\n"
 				+ "always @(*) begin\n"
 				+ "    wawdyn =0; \n"
-				+ "    for(int k=1;k<(WB_STAGE - START_STAGE);k=k+1) begin\n" 
+				+ "    for(int k=1;k<=(WB_STAGE - START_STAGE);k=k+1) begin\n" 
 				+ "    `ifdef NO_ADDR"+spawnNode+"\n"
 				+ "        if(RdIValid_reg[k]  &&  RdIValid_ISAX0_2_i)\n" 
                 + "    `else\n"

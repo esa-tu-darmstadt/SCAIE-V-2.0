@@ -30,10 +30,16 @@ public class AutomaticDemoTest {
 	
 	public static void main(String[] args) {
 		//////////   SETTINGS   //////////
-		String testFilePath = "TestMe.yaml";
-		String core = "ORCA";
+	    String testFilePath =  args[0]; //"TestMe_modelHLSport.yaml";
+	    String core =  args[1];  //"VexRiscv_5s";
+	    
+	 //   if(!core.equals("Piccolo") && !core.equals("ORCA") && !core.equals("PicoRV32") && !core.equals("VexRiscv_5s"))
+	//		throw new RuntimeException("Wrong parameter "+core+". The second parameter should be: Piccolo/ORCA/PicoRV32/VexRiscv_5s");
+	    System.out.println("INFO. Starting SCAIE-V tool. Core is "+core+". YAML file is: "+testFilePath);
+		
 		//////////   GENERATE   //////////
 		SCAIEV shim = new SCAIEV();
+
 		if(readRequest(testFilePath, core, shim)) {
 			shim.DefNewNodes(earliest_operation);
 			try {
@@ -157,13 +163,13 @@ public class AutomaticDemoTest {
 									adjSignals.add(AdjacentNode.validResp);
 								if(nodeSetting.toString().equals("has addr"))
 									adjSignals.add(AdjacentNode.addr);
-								if(nodeSetting.toString().equals("is decoupled")) {
+								if(nodeSetting.toString().equals("is decoupled") && ((Integer)readNode.get(nodeSetting)>0)) {
 									if(decoupled && dynamic_decoupled)
 										System.out.println("WARNING. AutomaticDemoTest. The tool currently supports either decoupled instruction or dynamic dec. instr. (so all nodes must obey to 1 of the 2, mixture currently not possible). Thus, having a node \"is decoupled\" and the next one dynamic decoupled will lead to faulty generation. Make them both either dynamic or not dyn.");
 									
 									decoupled = true;
 								}
-								if(nodeSetting.toString().equals("is dynamic decoupled")) {
+								if(nodeSetting.toString().equals("is dynamic decoupled") && ((Integer)readNode.get(nodeSetting)>0)) {
 									if(decoupled && !dynamic_decoupled)
 										System.out.println("WARNING. AutomaticDemoTest. The tool currently supports either decoupled instruction or dynamic dec. instr. (so all nodes must obey to 1 of the 2, mixture currently not possible). Thus, having a node \"is decoupled\" and the next one dynamic decoupled will lead to faulty generation. Make them both either dynamic or not dyn.");
 									dynamic_decoupled = true;

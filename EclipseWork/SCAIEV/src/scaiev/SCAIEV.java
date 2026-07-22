@@ -41,6 +41,8 @@ public class SCAIEV {
 	public BNode BNodes = new BNode(); 
 	public FNode FNodes = new FNode(); 
 	
+	// Selected SCAIE-V Core
+	public Core core; 
     // SCAIE-V Adaptive Layer
     private SCAL scalLayer = new SCAL();
 	
@@ -52,6 +54,18 @@ public class SCAIEV {
 		System.out.println("SHIM. Instantiated shim layer. Supported nodes are: "+FNodes.toString());
 		this.coreDatab = new CoreDatab();
 		coreDatab.ReadAvailCores("./Cores");
+	}
+	
+	public SCAIEV(String coreName) {
+		// Print currently supported nodes 
+		System.out.println("SHIM. Instantiated shim layer. Supported nodes are: "+FNodes.toString());
+		this.coreDatab = new CoreDatab();
+		coreDatab.ReadAvailCores("./Cores");
+		// Workaround for ModelHLS flow which fails without line below. Having VexRiscv_5s in Vex modelHLS class generates error later on in bash script.  TODO cleaner solution
+		if(coreName.equals("VexRiscv"))
+			coreName = "VexRiscv_5s"; // default version for Vex is user does not specify which version
+		this.core = coreDatab.GetCore(coreName);
+		
 	}
 	
 	public void SetErrLevel (boolean errLevelHigh) {
@@ -77,17 +91,17 @@ public class SCAIEV {
 		
 		
 		// Select Core
-		Core core = coreDatab.GetCore(coreName);
+		core = coreDatab.GetCore(coreName);
 		
-		AddCommitStagesToNodes(core); // update FNodes based on core datasheet (their commit stages, only for relevant nodes)
+		AddCommitStagesToNodes(); // update FNodes based on core datasheet (their commit stages, only for relevant nodes)
 
 		// Create HashMap with <operations, <stages,instructions>>. 
-		CreateOpStageInstr(core);		
+		CreateOpStageInstr();		
 		
 		// Print generated hashMap as Info for user
 		OpStageInstrToString(); 
 		
-		AddUserNodesToCore(core);
+		AddUserNodesToCore();
 		scalLayer.BNode = BNodes; scalLayer.FNode = FNodes;	
 		
 		// Check errors
@@ -115,6 +129,7 @@ public class SCAIEV {
 			coreInstanceOpt = Optional.of(new PicoRV32());
 			scalLayer.PrepareEarliest(coreInstanceOpt.get().PrepareEarliest());
 		}
+		
 		// Generate Interface
 		// First generate common logic
 		System.out.println("INFO: spawn operations with actual stage numbers: "+spawn_instr_stage);
@@ -154,7 +169,7 @@ public class SCAIEV {
 		return success;
 	}
 	
-	private void CreateOpStageInstr(Core core) throws FrontendNodeException {
+	private void CreateOpStageInstr() throws FrontendNodeException {
 		int rdrsStage = core.GetNodes().get(BNode.RdRS1).GetEarliest();
 		boolean barrierInstrRequired = false;
 		
@@ -259,7 +274,7 @@ public class SCAIEV {
 		
 	}
 	
-	private void AddCommitStagesToNodes (Core core){
+	public void AddCommitStagesToNodes (){
 		// Add default values for all BNodes 
 		for(SCAIEVNode node : this.BNodes.GetAllBackNodes()) {
 			if(!node.isInput && !node.isAdj() &&  core.GetNodes().containsKey(node))  // Non-User Rd Nodes already have earliest defined in Core's datasheet. Only commit stage must be defined
@@ -327,7 +342,7 @@ public class SCAIEV {
 		}
 	}
 	
-	private void AddUserNodesToCore (Core core){
+	private void AddUserNodesToCore (){
 		boolean added = false;
 		for(SCAIEVNode operation: this.op_stage_instr.keySet()) {
 			if(this.BNodes.IsUserBNode(operation) && !operation.isSpawn()) {
@@ -374,15 +389,31 @@ public class SCAIEV {
 				}
 				 
 				added = true; 
-				if(!operation.isInput)  // Read Node
-					earliest = earliest_useroperation.get(FNodes.GetNameWrNode(operation)); // earliest_useroperation has just write nodes (due to wrnode.addr)
-				else // WrNode
-					earliest = earliest_useroperation.get(operation);
-				// TODO latest for WrNode should be infinite
-				if(operation.isInput) {
-					CoreNode corenode = new CoreNode(earliest, 0,latest, latest+1, operation.name); // default values, it is anyways supposed user defined node well
-					core.PutNode(operation, corenode);
+				if(!earliest_useroperation.isEmpty()  && earliest_useroperation.containsKey(FNodes.GetNameWrNode(operation))) {
+					if(!operation.isInput)  // Read Node
+						earliest = earliest_useroperation.get(FNodes.GetNameWrNode(operation)); // earliest_useroperation has just write nodes (due to wrnode.addr)
+					else // WrNode
+						earliest = earliest_useroperation.get(operation);
 				} else {
+					earliest=10000; 
+					for (SCAIEVNode searchnode: this.op_stage_instr.keySet())
+						if(operation.equals(searchnode) || BNodes.GetSCAIEVNode(FNodes.GetNameWrNode(operation) ).equals(searchnode) ) 
+							for (int stage: this.op_stage_instr.get(searchnode).keySet())
+								if (stage < earliest)
+									earliest=stage;							
+				}
+					
+				// TODO latest for WrNode should be infinite
+				// Write node
+				if(operation.isInput) {// if write node 
+					CoreNode corenode = new CoreNode(earliest, 0,-1, latest+1, operation.name); // default values, it is anyways supposed user defined node well
+					core.PutNode(operation, corenode);
+				} else if(!operation.isInput && !this.op_stage_instr.containsKey(otheroperation) ) {//  if no ISAX has write node (just spawn)
+					CoreNode corenode = new CoreNode(earliest, 0,-1, latest+1, otheroperation.name); // default values, it is anyways supposed user defined node well
+					core.PutNode(otheroperation, corenode);
+				}
+				// Read node
+				if(!operation.isInput)  { 
 					CoreNode corenode = new CoreNode(earliest, 0,latest, earliest+1, operation.name); // default values, it is anyways supposed user defined node well
 					core.PutNode(operation, corenode);
 				}

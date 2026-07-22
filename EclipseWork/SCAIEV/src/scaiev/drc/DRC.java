@@ -67,8 +67,12 @@ public class DRC {
 						 end_constrain_cycle = core.GetNodes().get(operation).GetLatest();
 						 start_constrain_cycle = core.GetNodes().get(operation).GetEarliest();
 						 if(stage<start_constrain_cycle || stage>end_constrain_cycle) {
-							 System.out.println("ERROR. DRC. For an instruction node "+operation+" was scheduled in wrong cycle "+stage+". Earliest = "+start_constrain_cycle+" latest = "+end_constrain_cycle);
-							 System.exit(1);					
+							 if(end_constrain_cycle<0)
+								 System.out.println("WARNING. DRC. For an instruction node "+operation+" was scheduled in cycle "+stage+". Earliest = "+start_constrain_cycle+" latest = "+end_constrain_cycle+" latest <0 = can support decoupled. Is this desired?");
+							 else { 
+								 System.out.println("ERROR. DRC. For an instruction node "+operation+" was scheduled in wrong cycle "+stage+". Earliest = "+start_constrain_cycle+" latest = "+end_constrain_cycle);
+							     System.exit(1);
+							 }
 						 }
 					 } else if(operation.isSpawn() && (stage==max_stage+1))
 						 System.out.println("INFO. DRC. Spawn requirement detected in DRC."); 

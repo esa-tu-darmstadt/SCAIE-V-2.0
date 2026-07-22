@@ -92,7 +92,7 @@ public class CoreDatab {
 						for(SCAIEVNode fnode: nodes_of1_core.keySet())
 							if(nodes_of1_core.get(fnode).GetLatest()==0)
 								nodes_of1_core.get(fnode).latestTime = maxStage;
-						System.out.println("INFO: Core, with max nr stages/states: "+maxStage+" and SCAIE-V operations: "+nodes_of1_core);
+					//	System.out.println("INFO: Core, with max nr stages/states: "+maxStage+" and SCAIE-V operations: "+nodes_of1_core);
  
 						newCore.PutNodes(nodes_of1_core);
 						newCore.maxStage = maxStage;

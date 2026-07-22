@@ -210,7 +210,8 @@ public class PicoRV32 extends CoreBackend {
 			if(this.ContainsOpInStage(BNode.WrStall, 1)) {
 				// avoid simulator error that signal used before definition
 				addDeclaration("localparam cpu_state_ld_rs1 = 8'b00100000;\n"); 
-				toFile.UpdateContent(this.ModFile("picorv32"), "(CATCH_ILLINSN || WITH_PCPI) && instr_trap: begin", new ToWrite("("+language.CreateNodeName(BNode.WrStall, 1,"")+") : begin end\n",false,true, "",true));
+				// was, but synth removed a lot of logic in picorv, weird. toFile.UpdateContent(this.ModFile("picorv32"), "(CATCH_ILLINSN || WITH_PCPI) && instr_trap: begin", new ToWrite("("+language.CreateNodeName(BNode.WrStall, 1,"")+") : begin end\n",false,true, "",true));
+				toFile.UpdateContent(this.ModFile("picorv32"), "reg_op2 <= 'bx;", new ToWrite("if(!"+language.CreateNodeName(BNode.WrStall, 1,"")+") \n",false,true, "",false));
 				
 				toFile.ReplaceContent(this.ModFile("picorv32"), "localparam cpu_state_ld_rs1", new ToWrite(" ",false,true,""));
 				toFile.ReplaceContent(this.ModFile("picorv32"), "reg [7:0] cpu_state;", new ToWrite(" ",false,true,""));
@@ -285,7 +286,7 @@ public class PicoRV32 extends CoreBackend {
 			
 			if(this.ContainsOpInStage(BNode.WrStall, 1)) // it should contain it anyways due to spawn
 				stall += " || "+language.CreateNodeName(BNode.WrStall, 1, "");
-			logic += language.CreateAssign( language.CreateNodeName(BNode.ISAX_spawnAllowed, 1, ""),"(cpu_state == cpu_state_ld_rs1) && (mem_state==0)" +stall);
+			logic += language.CreateAssign( language.CreateNodeName(BNode.ISAX_spawnAllowed, 1, ""),"(cpu_state == cpu_state_fetch && ~RdStall_0_o) && (mem_state==0) " +stall);
 			addLogic(logic);
 		}
 		

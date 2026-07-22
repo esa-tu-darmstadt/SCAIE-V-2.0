@@ -145,7 +145,7 @@ public class VHDL extends GenerateText {
 		// Add top interface	
 		interf_lineToBeInserted = sig_name+" : "+sig_in+" "+sig_type+" "+size+";-- ISAX\n";
 		if(special_case)
-			interf_lineToBeInserted = sig_name+" : "+"buffer"+" "+size+";-- ISAX\n";
+			interf_lineToBeInserted = sig_name+" : "+"buffer"+" "+sig_type+" "+size+";-- ISAX\n";
 		return interf_lineToBeInserted;
 	}
 	

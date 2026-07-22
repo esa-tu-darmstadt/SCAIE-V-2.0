@@ -22,7 +22,16 @@ public class BNode extends FNode{
 	public static SCAIEVNode WrRD_validData    = new SCAIEVNode(FNode.WrRD   	, AdjacentNode.validData, 1 , true, false) {{noInterfToISAX = true; DH = true;}}; 
 	public static SCAIEVNode WrRD_addr         = new SCAIEVNode(FNode.WrRD		, AdjacentNode.addr		, 5 , true, false); // JUST for dynamic decoupled wrrd
 	public static SCAIEVNode WrRD_addr_valid   = new SCAIEVNode(BNode.WrRD	, AdjacentNode.addrReq	, 5 , true, false);
-	public static SCAIEVNode RdMem_validReq    = new SCAIEVNode(FNode.RdMem		, AdjacentNode.validReq	, 1 , true, false); 
+	public static SCAIEVNode WrInternal_valid        = new SCAIEVNode(FNode.WrInternal   	, AdjacentNode.validReq	, 1 , true, false) {{this.noInterfToCore = true;}}; 
+	public static SCAIEVNode WrInternal_validData    = new SCAIEVNode(FNode.WrInternal   	, AdjacentNode.validData, 1 , true, false) {{noInterfToISAX = true; DH = true;this.noInterfToCore = true;}}; 
+public static SCAIEVNode WrInternal_addr= new SCAIEVNode(FNode.WrInternal, AdjacentNode.addr, 3 , true, false) {{this.noInterfToCore = true;}};
+public static SCAIEVNode RdInternal_addr= new SCAIEVNode(FNode.RdInternal, AdjacentNode.addr, 3 , true, false) {{this.noInterfToCore = true;}};
+	public static SCAIEVNode RdInternal_valid        = new SCAIEVNode(FNode.RdInternal   	, AdjacentNode.validReq	, 1 , true, false) {{this.noInterfToCore = true;}}; 
+    public static  SCAIEVNode WrInternal_addr_valid = new SCAIEVNode(FNode.WrInternal,AdjacentNode.addrReq	, 1, true, false) {{noInterfToISAX = true;this.attachedNode = WrInternal_addr.name;}};
+    public static  SCAIEVNode RdInternal_addr_valid = new SCAIEVNode(FNode.RdInternal,AdjacentNode.addrReq	, 1, true, false) {{noInterfToISAX = true;this.attachedNode = RdInternal_addr.name;}};
+	
+    
+    public static SCAIEVNode RdMem_validReq    = new SCAIEVNode(FNode.RdMem		, AdjacentNode.validReq	, 1 , true, false); 
 	public static SCAIEVNode WrMem_validReq    = new SCAIEVNode(FNode.WrMem		, AdjacentNode.validReq	, 1 , true, false); 
 	public static SCAIEVNode RdMem_addr        = new SCAIEVNode(FNode.RdMem		, AdjacentNode.addr		, 32, true, false);
 	public static SCAIEVNode RdMem_addr_valid  = new SCAIEVNode(BNode.RdMem		, AdjacentNode.addrReq		, 1, true, false){{this.attachedNode = RdMem_addr.name;}};
@@ -38,6 +47,15 @@ public class BNode extends FNode{
 	public static SCAIEVNode WrRD_spawn_addr         = new SCAIEVNode(WrRD_spawn, AdjacentNode.addr		, 5 , true, true){{noInterfToISAX = true; mandatory = true;}};
 //	public static SCAIEVNode WrRD_spawn_addrCommited = new SCAIEVNode(WrRD_spawn, AdjacentNode.addrCommited, 5 , true, false);
 	public static SCAIEVNode WrRD_spawn_allowed      = new SCAIEVNode(WrRD_spawn, AdjacentNode.spawnAllowed, 1, false, true);
+	
+	public static SCAIEVNode WrInternal_spawn        = new SCAIEVNode(FNode.WrInternal		, AdjacentNode.none		, 32, true, true) {{DH = true;this.elements = 32;this.allowMultipleSpawn = true; this.noInterfToCore = true;}};
+	public static SCAIEVNode WrInternal_spawn_valid  = new SCAIEVNode(WrInternal_spawn		, AdjacentNode.validReq	, 1 , true, true) {{this.noInterfToCore = true;}}; 					
+	public static SCAIEVNode WrInternal_spawn_validResp    = new SCAIEVNode(WrInternal_spawn, AdjacentNode.validResp	, 1 , false, true) {{oneInterfToISAX = false;this.noInterfToCore = true;}};
+	public static SCAIEVNode WrInternal_spawn_addr         = new SCAIEVNode(WrInternal_spawn, AdjacentNode.addr		, 5 , true, true){{noInterfToISAX = true; mandatory = true;this.noInterfToCore = true;}};
+//	public static SCAIEVNode WrInternal_spawn_addrCommited = new SCAIEVNode(WrInternal_spawn, AdjacentNode.addrCommited, 5 , true, false) {{this.noInterfToCore = true;}};
+	public static SCAIEVNode WrInternal_spawn_allowed      = new SCAIEVNode(WrInternal_spawn, AdjacentNode.spawnAllowed, 1, false, true) {{this.noInterfToCore = true;}};
+	
+	
 	
 	public static SCAIEVNode RdMem_spawn           = new SCAIEVNode(FNode.RdMem  , AdjacentNode.none		, 32, false, true) {{this.familyName = "Mem";oneInterfToISAX = false; this.nameQousinNode = "WrMem_spawn"; this.allowMultipleSpawn = true;}}; // TODO unstable solution with nameQousin here
 	public static SCAIEVNode RdMem_spawn_validReq  = new SCAIEVNode(RdMem_spawn	 , AdjacentNode.validReq	, 1, true, true); 
@@ -70,9 +88,14 @@ public class BNode extends FNode{
 	public static SCAIEVNode ISAX_spawnStall_regF_s = new SCAIEVNode("isax_spawnStall_regF_s", 1, false);
 	public static SCAIEVNode ISAX_spawnStall_mem_s  = new SCAIEVNode("isax_spawnStall_mem_s", 1, false);
 	
+	public static SCAIEVNode RdPipe    = new SCAIEVNode("RdPipe", 32, false) {{noInterfToISAX = true;this.noInterfToCore=true;}};
+	public static SCAIEVNode WrPipe    = new SCAIEVNode("WrPipe", 32, false) {{noInterfToISAX = true;this.noInterfToCore=true;}};
+	
+	
 	public  HashSet<SCAIEVNode> user_BNode = new  HashSet<SCAIEVNode>();
 	
-	public void AddUserBNode (String name, int width, int elements) {
+	public void AddUserBNode (String name, int width, int elements) {		
+		// User added new state
 		SCAIEVNode RdNode = new SCAIEVNode(rdName+name, width, false);
 		RdNode.elements  = elements;
 		SCAIEVNode WrNode = new SCAIEVNode(wrName+name, width, true) {{DH = true;}};
@@ -113,10 +136,33 @@ public class BNode extends FNode{
 	
 	public boolean IsUserBNode(SCAIEVNode node) {
 		//System.out.println("user node "+user_BNode);
-		return user_BNode.contains(node);
+		return user_BNode.contains(node) || node.equals(FNode.WrInternal) ||   node.equals(FNode.RdInternal) ; // Rd/Wr internal are custom regs defined in cores sources. An alternative to defining custom regs in yaml
 	}
 	public  HashSet<SCAIEVNode>  GetAllBackNodes(){
 		HashSet<SCAIEVNode> bnodes = GetAllFrontendNodes();
+		
+		// Default added user node for new internal state elements (easier to integrate) 
+		RdInternal_addr.elements = (int) Math.pow(2, RdInternal_addr.size);	
+		WrInternal_addr.elements = (int) Math.pow(2, WrInternal_addr.size);	
+		FNode.RdInternal.elements = (int) Math.pow(2, RdInternal_addr.size);	
+		FNode.WrInternal.elements = (int) Math.pow(2, WrInternal_addr.size);	
+		user_FNode.add(FNode.WrInternal);
+		user_FNode.add(FNode.RdInternal);
+		user_BNode.add(RdInternal_valid);
+		user_BNode.add(WrInternal_valid);
+		user_BNode.add(WrInternal_validData);
+		user_BNode.add(WrInternal_addr);
+		user_BNode.add(WrInternal_addr_valid);
+		user_BNode.add(RdInternal_addr);
+		user_BNode.add(RdInternal_addr_valid);
+		user_BNode.add(FNode.WrInternal);
+		user_BNode.add(FNode.RdInternal);
+		user_BNode.add(WrInternal_spawn_valid);
+		user_BNode.add(WrInternal_spawn_addr);
+		user_BNode.add(WrInternal_spawn_validResp);
+		user_BNode.add(WrInternal_spawn);
+		
+				
 		if(!this.user_BNode.isEmpty()) bnodes.addAll(this.user_BNode);
 		bnodes.add(WrRD_valid);
 		bnodes.add(WrRD_validData);
@@ -157,6 +203,9 @@ public class BNode extends FNode{
 		bnodes.add(ISAX_spawnAllowed);
 		bnodes.add(ISAX_spawnStall_regF_s);
 		bnodes.add(ISAX_spawnStall_mem_s);
+		
+		bnodes.add(RdPipe);
+		bnodes.add(WrPipe);
 		return bnodes;
 	}
 	

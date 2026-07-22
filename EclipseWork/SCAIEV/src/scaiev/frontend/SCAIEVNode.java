@@ -34,6 +34,7 @@ public class SCAIEVNode {
 	public boolean allowMultipleSpawn = false; 	// By default true for all spawn nodes. WrPC_spawn should have it false, as no multiple spawn instructions are allowed to concurrently update PC..it doesn't make sense
 	public String nameQousinNode = "";			// For example, rdmem and wrmem are qousin nodes. Spawn fire logic must be computed for bnoth these nodes because they use the same resources
 	public boolean noInterfToISAX = false;		// Don't generate interface to ISAX for this node
+	public boolean noInterfToCore = false;		// Don't generate interface to Core for this node
 	public String familyName = "";   			// used when nameQousinNode not empty. For exp for WrMem and RdMem, familyName = Mem
 	public boolean DH = false;					// Datahazard required? For exp for WrRD spawn
 	public int elements = 0; 					// used by user-added nodes (number of regfile elements)
@@ -134,6 +135,7 @@ public class SCAIEVNode {
 		returnNode.allowMultipleSpawn = this.allowMultipleSpawn;
 		returnNode.nameParentNode = this.nameParentNode;
 		returnNode.oneInterfToISAX = this.oneInterfToISAX;
+		returnNode.noInterfToCore=this.noInterfToCore;
 		returnNode.DH = this.DH;
 		return  returnNode;
 	}
