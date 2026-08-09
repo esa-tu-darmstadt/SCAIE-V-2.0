@@ -49,6 +49,7 @@ public class PicoRV32 extends CoreBackend {
 	
 		IntegrateISAX_IOs(topModule);
 		IntegrateISAX_NoIllegalInstr();
+		IntegrateISAX_RdFlush(); 
 		IntegrateISAX_RdInstr();
 		IntegrateISAX_SpawnRD(); // don't switch spawn with wrrd. spawn has priority
 		IntegrateISAX_SpawnMem();
@@ -125,6 +126,21 @@ public class PicoRV32 extends CoreBackend {
 		} 
 	}
 	
+	private void IntegrateISAX_RdFlush() {
+		if(this.ContainsOpInStage(BNode.RdFlush  ,3)) {
+			String addText = "reg bubble_fetch; // required to avoid double valid signal in case fetch is longer due to mem interf\n"
+				+"always @(posedge clk) begin\n "
+				+"    if(!resetn) \n"
+				+"        bubble_fetch <=0;\n"
+				+"    else if(bubble_fetch && cpu_state !=  cpu_state_fetch)\n"
+				+"        bubble_fetch <=0;\n"
+				+"    else if(cpu_state ==  cpu_state_fetch)\n"
+				+"        bubble_fetch <=1; \n"
+				+"end \n";
+			
+			addLogic(addText);
+		}
+	}
 	private void IntegrateISAX_RdInstr() {
 		String text = "";
 		if(this.ContainsOpInStage(BNode.RdInstr, 0)) {
@@ -578,7 +594,7 @@ public class PicoRV32 extends CoreBackend {
 	this.PutNode( " ", "(!(decoder_trigger) || (cpu_state !=  cpu_state_fetch)) ", "picorv32", BNode.RdFlush,0);
 	this.PutNode( " ", "(cpu_state !=  cpu_state_ld_rs1) ", "picorv32", BNode.RdFlush,1);
 	this.PutNode( " ", " ~(|cpu_state[3:0]) || "+ language.CreateLocalNodeName(BNode.WrFlush, 2, ""), "picorv32", BNode.RdFlush,2);
-	this.PutNode( " ",  "(cpu_state !=  cpu_state_fetch)", "picorv32", BNode.RdFlush,3); // TODO should be improved
+	this.PutNode( " ",  "(cpu_state !=  cpu_state_fetch ||  bubble_fetch==1)", "picorv32", BNode.RdFlush,3); // TODO should be improved
 	
 // WrFlush does not make sense without WrPC for this core and WrFlush is set in SCAL in case of WrPC
 	this.PutNode( " ", "", "picorv32", BNode.WrFlush,0);
