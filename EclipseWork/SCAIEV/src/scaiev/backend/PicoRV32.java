@@ -137,8 +137,8 @@ public class PicoRV32 extends CoreBackend {
 				+"    else if(cpu_state ==  cpu_state_fetch)\n"
 				+"        bubble_fetch <=1; \n"
 				+"end \n";
-			
-			addLogic(addText);
+			toFile.UpdateContent(this.ModFile(topModule),"localparam integer irq_timer",  new ToWrite(addText,false,true,"",true,topModule)); // ensure its declaration is BEFORE RdFlush
+
 		}
 	}
 	private void IntegrateISAX_RdInstr() {
