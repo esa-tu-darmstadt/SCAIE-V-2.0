@@ -423,6 +423,22 @@ public class VexRiscv extends CoreBackend{
 			toFile.UpdateContent(filePlugin,"val stallMem = Bool();\nstallMem := False;\nio."+ this.language.CreateNodeName(BNode.RdStall, memStage, "") +" := execute.arbitration.isStuckByOthers || stallMem;\n");
 		}
 		
+		if(this.ContainsOpInStage(BNode.RdStall, memStage)) {
+			String textFix = "always @(*) begin \n"
+					+ "assign RdStall_3_o = memory_arbitration_isStuckByOthers || memory_arbitration_haltItself_isax; \n"
+					+ " memory_arbitration_haltItself = 1'b0; \n"
+                    + "if(when_DBusSimplePlugin_l482) begin \n"
+                    + "memory_arbitration_haltItself = 1'b1; \n"
+                    + "end \n"
+                    + "if(when_MulDivIterativePlugin_l128) begin \n"
+                    + "if(when_MulDivIterativePlugin_l129) begin \n"
+                    + "memory_arbitration_haltItself = 1'b1; \n"
+                    + "end \n"
+                    + " end \n"
+                    + "end \n";
+			toFile.UpdateContent(filePlugin,"// Known bug for RdStall_3: it currently triggers only if writeback is stalled, not if mem bus stalls. Current workaround in generated verilog till fix: "+textFix);
+					
+	 }		
 		// WrPC valid clause
 	 
 		if(ContainsOpInStage(BNode.WrPC,stage))  {
